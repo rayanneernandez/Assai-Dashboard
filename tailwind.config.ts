@@ -47,6 +47,12 @@ export default {
           DEFAULT: "hsl(var(--card))",
           foreground: "hsl(var(--card-foreground))",
         },
+        stat: {
+          visitors: "hsl(var(--stat-visitors))",
+          men: "hsl(var(--stat-men))",
+          women: "hsl(var(--stat-women))",
+          age: "hsl(var(--stat-age))",
+        },
         sidebar: {
           DEFAULT: "hsl(var(--sidebar-background))",
           foreground: "hsl(var(--sidebar-foreground))",

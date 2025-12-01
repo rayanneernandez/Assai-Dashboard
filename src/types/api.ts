@@ -6,6 +6,7 @@ export interface Visitor {
   deviceId: string;
   hour?: number;
   dayOfWeek?: string;
+  smile?: boolean;
 }
 
 export interface Device {
@@ -27,4 +28,20 @@ export interface VisitorStats {
     male: Record<number, number>;
     female: Record<number, number>;
   };
+}
+
+export interface VisitorsPage {
+  items: Array<{
+    visitor_id: string;
+    timestamp: string;
+    store_id: string;
+    store_name?: string;
+    gender: "M" | "F";
+    age: number;
+    day_of_week: string;
+    smile: boolean;
+  }>;
+  total: number;
+  page: number;
+  pageSize: number;
 }

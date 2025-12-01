@@ -1,14 +1,19 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Users, UserCheck, UserX, Calendar as CalendarIcon } from "lucide-react";
+import { Users, Calendar as CalendarIcon } from "lucide-react";
 import { DashboardHeader } from "@/components/DashboardHeader";
 import { DashboardSidebar } from "@/components/DashboardSidebar";
 import { DashboardFilters } from "@/components/DashboardFilters";
 import { StatCard } from "@/components/StatCard";
 import { ChatAssistant } from "@/components/ChatAssistant";
 import { Card } from "@/components/ui/card";
+import { toast } from "@/components/ui/use-toast";
+
+
 import { fetchDevices, fetchVisitors } from "@/services/api";
+import { Device, Visitor } from "@/types/api";
 import { calculateStats } from "@/utils/statsCalculator";
+import backend from "@/services/backend";
 import {
   BarChart,
   Bar,
@@ -25,6 +30,42 @@ import {
   Line,
 } from "recharts";
 
+const IconMale = (props: any) => (
+  <svg viewBox="0 0 24 24" {...props}>
+    <circle cx="12" cy="6" r="2" fill="currentColor" />
+    <rect x="10" y="9" width="4" height="7" rx="1" fill="currentColor" />
+    <rect x="7.5" y="10" width="2" height="5" rx="1" fill="currentColor" />
+    <rect x="14.5" y="10" width="2" height="5" rx="1" fill="currentColor" />
+    <rect x="10" y="16" width="1.6" height="5" rx="0.8" fill="currentColor" />
+    <rect x="12.4" y="16" width="1.6" height="5" rx="0.8" fill="currentColor" />
+  </svg>
+);
+
+const IconFemale = (props: any) => (
+  <svg viewBox="0 0 24 24" {...props}>
+    <circle cx="12" cy="6" r="2" fill="currentColor" />
+    <path d="M12 9 L16 15 H8 Z" fill="currentColor" />
+    <rect x="10.2" y="15" width="1.6" height="5" rx="0.8" fill="currentColor" />
+    <rect x="12.2" y="15" width="1.6" height="5" rx="0.8" fill="currentColor" />
+    <rect x="7.5" y="10" width="2" height="4" rx="1" fill="currentColor" />
+    <rect x="14.5" y="10" width="2" height="4" rx="1" fill="currentColor" />
+  </svg>
+);
+
+const HourTooltip = ({ label, payload, active }: any) => {
+  if (!active || !payload || payload.length === 0) return null;
+  return (
+    <div className="rounded-md bg-white/95 shadow px-2 py-1 text-sm">
+      <div className="font-semibold">{`${label}h`}</div>
+      {payload.map((p: any, i: number) => (
+        <div key={i} className="text-xs" style={{ color: p.color }}>
+          {`${p.name} : ${p.value}`}
+        </div>
+      ))}
+    </div>
+  );
+};
+
 const Index = () => {
   const today = new Date().toISOString().split("T")[0];
   const [selectedDevice, setSelectedDevice] = useState("all");
@@ -37,12 +78,12 @@ const Index = () => {
     end: today,
   });
 
-  const { data: devices = [] } = useQuery({
+  const { data: devices = [], error: devicesError } = useQuery<Device[]>({
     queryKey: ["devices"],
     queryFn: fetchDevices,
   });
 
-  const { data: visitors = [], isLoading } = useQuery({
+  const { data: visitors = [], isLoading, error: visitorsError } = useQuery<Visitor[]>({
     queryKey: ["visitors", appliedFilters.device, appliedFilters.start, appliedFilters.end],
     queryFn: () =>
       fetchVisitors(
@@ -52,7 +93,34 @@ const Index = () => {
       ),
   });
 
-  const stats = calculateStats(visitors);
+  const { data: backendStats, isLoading: isBackendLoading, error: backendError } = useQuery({
+    queryKey: ["backendStats", appliedFilters.device, appliedFilters.start, appliedFilters.end],
+    queryFn: () =>
+      backend.fetchVisitorStats(
+        appliedFilters.device === "all" ? undefined : appliedFilters.device,
+        appliedFilters.start,
+        appliedFilters.end
+      ),
+  });
+
+  const stats = backendStats && backendStats.total > 0 ? backendStats : calculateStats(visitors);
+
+  useEffect(() => {
+    if (devicesError) toast({ title: "Erro ao buscar lojas", description: String(devicesError) });
+  }, [devicesError]);
+
+  useEffect(() => {
+    if (visitorsError) toast({ title: "Erro ao buscar visitantes", description: String(visitorsError) });
+  }, [visitorsError]);
+
+  useEffect(() => {
+    if (backendError) {
+      const msg = String(backendError);
+      if (!/Failed to fetch/i.test(msg)) {
+        toast({ title: "Erro ao buscar stats do backend", description: msg });
+      }
+    }
+  }, [backendError]);
 
   const handleApplyFilters = () => {
     setAppliedFilters({
@@ -62,15 +130,20 @@ const Index = () => {
     });
   };
 
+  useEffect(() => {
+    setAppliedFilters({ device: selectedDevice, start: startDate, end: endDate });
+  }, [selectedDevice, startDate, endDate]);
+
   // Prepare chart data
-  const dayOfWeekData = Object.entries(stats.byDayOfWeek).map(([day, count]) => ({
+  const dayOrder = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"];
+  const dayOfWeekData = dayOrder.map((day) => ({
     day,
-    visitantes: count,
+    visitantes: stats.byDayOfWeek[day] || 0,
   }));
 
   const genderData = [
-    { name: "Masculino", value: stats.men, color: "#0047BB" },
-    { name: "Feminino", value: stats.women, color: "#E74C3C" },
+    { name: "Masculino", value: stats.men, color: "#e73c3cff" },
+    { name: "Feminino", value: stats.women, color: "#e8e419ff" },
   ];
 
   const ageGroupData = Object.entries(stats.byAgeGroup).map(([group, count]) => ({
@@ -108,7 +181,7 @@ const Index = () => {
             onApplyFilters={handleApplyFilters}
           />
 
-          {isLoading ? (
+          {(isBackendLoading && isLoading) ? (
             <div className="text-center py-12">Carregando dados...</div>
           ) : (
             <>
@@ -123,13 +196,13 @@ const Index = () => {
                 <StatCard
                   title="Total de Homens"
                   value={stats.men}
-                  icon={UserCheck}
+                  icon={IconMale}
                   colorClass="bg-stat-men"
                 />
                 <StatCard
                   title="Total de Mulheres"
                   value={stats.women}
-                  icon={UserX}
+                  icon={IconFemale}
                   colorClass="bg-stat-women"
                 />
                 <StatCard
@@ -149,9 +222,9 @@ const Index = () => {
                   <ResponsiveContainer width="100%" height={300}>
                     <BarChart data={dayOfWeekData}>
                       <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="day" />
+                      <XAxis dataKey="day" tickFormatter={(v) => String(v)} />
                       <YAxis />
-                      <Tooltip />
+                      <Tooltip labelFormatter={(label) => String(label)} />
                       <Bar dataKey="visitantes" fill="#0047BB" />
                     </BarChart>
                   </ResponsiveContainer>
@@ -194,9 +267,9 @@ const Index = () => {
                   <ResponsiveContainer width="100%" height={300}>
                     <BarChart data={ageGroupData}>
                       <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="faixa" label={{ value: "Faixa etária", position: "insideBottom", offset: -5 }} />
+                      <XAxis dataKey="faixa" tickFormatter={(v) => String(v)} label={{ value: "Faixa etária", position: "insideBottom", offset: -5 }} />
                       <YAxis label={{ value: "Visitantes", angle: -90, position: "insideLeft" }} />
-                      <Tooltip />
+                      <Tooltip labelFormatter={(label) => String(label)} />
                       <Bar dataKey="visitantes" fill="#0047BB" />
                     </BarChart>
                   </ResponsiveContainer>
@@ -209,9 +282,9 @@ const Index = () => {
                   <ResponsiveContainer width="100%" height={300}>
                     <LineChart data={hourlyData}>
                       <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="hora" label={{ value: "Horário", position: "insideBottom", offset: -5 }} />
+                      <XAxis dataKey="hora" ticks={Array.from({ length: 24 }, (_, i) => i)} tickFormatter={(v) => `${v}h`} label={{ value: "Horário (h)", position: "insideBottom", offset: -5 }} />
                       <YAxis label={{ value: "Número de Visitantes", angle: -90, position: "insideLeft" }} />
-                      <Tooltip />
+                      <Tooltip content={<HourTooltip />} />
                       <Line
                         type="monotone"
                         dataKey="visitantes"
@@ -234,9 +307,9 @@ const Index = () => {
                 <ResponsiveContainer width="100%" height={300}>
                   <LineChart data={genderHourlyData}>
                     <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="hora" label={{ value: "Horário", position: "insideBottom", offset: -5 }} />
+                    <XAxis dataKey="hora" ticks={Array.from({ length: 24 }, (_, i) => i)} tickFormatter={(v) => `${v}h`} label={{ value: "Horário (h)", position: "insideBottom", offset: -5 }} />
                     <YAxis label={{ value: "Número de Visitantes", angle: -90, position: "insideLeft" }} />
-                    <Tooltip />
+                    <Tooltip content={<HourTooltip />} />
                     <Legend />
                     <Line
                       type="monotone"
@@ -265,7 +338,7 @@ const Index = () => {
         </main>
       </div>
       
-      <ChatAssistant />
+      <ChatAssistant visitors={visitors} devices={devices} stats={stats} />
     </div>
   );
 };

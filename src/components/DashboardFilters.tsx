@@ -26,15 +26,15 @@ export const DashboardFilters = ({
   onApplyFilters,
 }: DashboardFiltersProps) => {
   return (
-    <div className="bg-card p-6 rounded-lg shadow-sm mb-6">
+    <div className="bg-card p-6 rounded-lg shadow-md mb-6 border">
       <div className="flex flex-wrap items-end gap-4">
         <div className="flex-1 min-w-[200px]">
-          <label className="flex items-center gap-2 text-sm font-medium mb-2">
+          <label className="flex items-center gap-2 text-sm font-medium mb-2 text-primary">
             <Store className="w-4 h-4" />
             Loja
           </label>
           <Select value={selectedDevice} onValueChange={onDeviceChange}>
-            <SelectTrigger>
+            <SelectTrigger className="text-primary">
               <SelectValue placeholder="Todas as Lojas" />
             </SelectTrigger>
             <SelectContent>
@@ -49,7 +49,7 @@ export const DashboardFilters = ({
         </div>
 
         <div className="flex-1 min-w-[200px]">
-          <label className="flex items-center gap-2 text-sm font-medium mb-2">
+          <label className="flex items-center gap-2 text-sm font-medium mb-2 text-primary">
             <Calendar className="w-4 h-4" />
             Período
           </label>
@@ -58,14 +58,14 @@ export const DashboardFilters = ({
               type="date"
               value={startDate}
               onChange={(e) => onStartDateChange(e.target.value)}
-              className="flex-1"
+              className="flex-1 text-primary focus-visible:ring-0 focus-visible:ring-offset-0"
             />
             <span className="flex items-center px-2">→</span>
             <Input
               type="date"
               value={endDate}
               onChange={(e) => onEndDateChange(e.target.value)}
-              className="flex-1"
+              className="flex-1 border-primary text-primary focus-visible:ring-primary"
             />
           </div>
         </div>

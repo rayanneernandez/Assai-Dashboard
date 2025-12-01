@@ -10,7 +10,15 @@ interface Message {
   content: string;
 }
 
-export const ChatAssistant = () => {
+import { Visitor, Device, VisitorStats } from "@/types/api";
+
+interface ChatAssistantProps {
+  visitors: Visitor[];
+  devices: Device[];
+  stats: VisitorStats;
+}
+
+export const ChatAssistant = ({ visitors, devices, stats }: ChatAssistantProps) => {
   const [isOpen, setIsOpen] = useState(false);
   const [isMaximized, setIsMaximized] = useState(false);
   const [messages, setMessages] = useState<Message[]>([
@@ -28,21 +36,42 @@ export const ChatAssistant = () => {
     }
   }, [messages]);
 
+  const generateAnswer = (q: string) => {
+    const text = q.toLowerCase();
+    if (text.includes("total") && text.includes("visit")) return `Total de visitantes: ${stats.total}`;
+    if (text.includes("homem")) return `Total de homens: ${stats.men}`;
+    if (text.includes("mulher")) {
+      const m = text.match(/(?:às|as)\s*(\d{1,2})/);
+      if (m) {
+        const h = parseInt(m[1]);
+        const f = visitors.filter(v => new Date(v.timestamp).getHours() === h && v.gender === "F").length;
+        return `Mulheres às ${h}h: ${f}`;
+      }
+      return `Total de mulheres: ${stats.women}`;
+    }
+    if (text.includes("idade") && text.includes("média")) return `Idade média: ${stats.averageAge} anos`;
+    const dayMap: Record<string,string> = { seg: "Seg", segunda: "Seg", ter: "Ter", terça: "Ter", qua: "Qua", quarta: "Qua", qui: "Qui", quinta: "Qui", sex: "Sex", sexta: "Sex", sab: "Sáb", sábado: "Sáb", dom: "Dom", domingo: "Dom" };
+    for (const k in dayMap) {
+      if (text.includes(k)) return `Visitantes em ${dayMap[k]}: ${stats.byDayOfWeek[dayMap[k]] || 0}`;
+    }
+    const hm = text.match(/(?:às|as)\s*(\d{1,2})/);
+    if (hm) {
+      const h = parseInt(hm[1]);
+      const totalH = visitors.filter(v => new Date(v.timestamp).getHours() === h).length;
+      return `Visitantes às ${h}h: ${totalH}`;
+    }
+    return `Total: ${stats.total} | Homens: ${stats.men} | Mulheres: ${stats.women} | Idade média: ${stats.averageAge} anos`;
+  };
+
   const handleSend = () => {
     if (!input.trim()) return;
 
     const userMessage: Message = { role: "user", content: input };
     setMessages((prev) => [...prev, userMessage]);
+    const reply = generateAnswer(input);
     setInput("");
-
-    // Simulação de resposta (substituir com AI depois)
-    setTimeout(() => {
-      const assistantMessage: Message = {
-        role: "assistant",
-        content: "Entendi sua pergunta. Em breve terei integração completa com IA para responder melhor!",
-      };
-      setMessages((prev) => [...prev, assistantMessage]);
-    }, 1000);
+    const assistantMessage: Message = { role: "assistant", content: reply };
+    setMessages((prev) => [...prev, assistantMessage]);
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {

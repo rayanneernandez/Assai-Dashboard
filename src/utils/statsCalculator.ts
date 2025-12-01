@@ -8,7 +8,15 @@ export const calculateStats = (visitors: Visitor[]): VisitorStats => {
     men: 0,
     women: 0,
     averageAge: 0,
-    byDayOfWeek: {},
+    byDayOfWeek: {
+      Seg: 0,
+      Ter: 0,
+      Qua: 0,
+      Qui: 0,
+      Sex: 0,
+      Sáb: 0,
+      Dom: 0,
+    },
     byAgeGroup: {
       "18-25": 0,
       "26-35": 0,
@@ -46,7 +54,7 @@ export const calculateStats = (visitors: Visitor[]): VisitorStats => {
     // Day of week distribution
     if (visitor.timestamp) {
       const date = new Date(visitor.timestamp);
-      const dayIndex = date.getDay();
+      const dayIndex = date.getUTCDay();
       const dayName = DAYS_ORDER[dayIndex === 0 ? 6 : dayIndex - 1];
       stats.byDayOfWeek[dayName] = (stats.byDayOfWeek[dayName] || 0) + 1;
     }

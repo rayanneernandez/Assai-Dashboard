@@ -21,19 +21,17 @@ export const DashboardHeader = ({ onToggleSidebar }: DashboardHeaderProps) => {
 
   return (
     <header className="bg-primary text-primary-foreground shadow-md">
-      <div className="px-6 py-4 flex items-center justify-between">
-        <div className="flex items-center gap-4">
+      <div className="px-4 py-3 flex items-center justify-between">
+        <div className="flex items-center gap-2">
           <Button
             variant="ghost"
             size="icon"
             onClick={onToggleSidebar}
             className="text-white hover:bg-white/10"
           >
-            <Menu className="w-6 h-6" />
+            <Menu className="w-10 h-10" />
           </Button>
-          <div className="w-12 h-12 bg-white rounded-md flex items-center justify-center">
-            <span className="text-primary font-bold text-lg">A</span>
-          </div>
+          <img src="/logo.png" alt="Assaí Atacadista" className="w-16 h-16 object-contain" />
           <div>
             <h1 className="text-xl font-bold">Assaí Atacadista</h1>
             <p className="text-sm opacity-90">Dashboard de Análise</p>

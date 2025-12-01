@@ -12,22 +12,26 @@ const Login = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    
-    // Simulação de login - aceita qualquer email/senha
-    if (email && password) {
-      toast({
-        title: "Login realizado com sucesso!",
-        description: "Bem-vindo ao Dashboard",
+    if (!email || !password) {
+      toast({ title: "Erro no login", description: "Por favor, preencha todos os campos", variant: "destructive" });
+      return;
+    }
+    try {
+      const resp = await fetch("http://localhost:3001/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
       });
+      if (!resp.ok) {
+        const t = await resp.text();
+        throw new Error(t || `Erro ${resp.status}`);
+      }
+      toast({ title: "Login realizado com sucesso!", description: "Bem-vindo ao Dashboard" });
       navigate("/");
-    } else {
-      toast({
-        title: "Erro no login",
-        description: "Por favor, preencha todos os campos",
-        variant: "destructive",
-      });
+    } catch (err) {
+      toast({ title: "Erro no login", description: String(err), variant: "destructive" });
     }
   };
 

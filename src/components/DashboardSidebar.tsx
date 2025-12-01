@@ -8,11 +8,9 @@ interface DashboardSidebarProps {
 export const DashboardSidebar = ({ isOpen }: DashboardSidebarProps) => {
   return (
     <aside
-      className={`${
-        isOpen ? "w-48" : "w-0"
-      } bg-sidebar min-h-screen transition-all duration-300 overflow-hidden`}
+      className={`${isOpen ? "w-40" : "w-0"} bg-sidebar min-h-screen transition-all duration-300 overflow-hidden`}
     >
-      <div className="w-48 p-4">
+      <div className="w-40 p-4">
         <div className="mb-8">
           <h2 className="text-sidebar-foreground font-semibold text-lg px-3">Menu</h2>
         </div>

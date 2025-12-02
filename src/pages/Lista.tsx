@@ -211,7 +211,7 @@ const Lista = () => {
                     displayVisitors.map((visitor) => (
                       <TableRow key={visitor.id}>
                         <TableCell className="font-medium">
-                          {format(new Date(visitor.timestamp), "dd/MM/yyyy HH:mm", { locale: ptBR })}
+                          {(() => { const d = new Date(String(visitor.timestamp)); return isNaN(d.getTime()) ? String(visitor.timestamp) : format(d, "dd/MM/yyyy HH:mm", { locale: ptBR }); })()}
                         </TableCell>
                         <TableCell>{getDeviceName(visitor.deviceId)}</TableCell>
                         <TableCell>

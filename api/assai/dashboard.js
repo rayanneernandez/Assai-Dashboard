@@ -347,12 +347,12 @@ async function getSummary(req, res, start_date, end_date) {
     const row = result.rows[0] || {};
     const avgAgeValue = Number(row.avg_age_count || 0) > 0 ? Number(row.avg_age_sum || 0) / Number(row.avg_age_count || 0) : 0;
 
-    const total = Number(row.total || 0);
-    const male = Number(row.male || 0);
-    const female = Number(row.female || 0);
-    const avgAge = Math.round(avgAgeValue);
+    let total = Number(row.total || 0);
+    let male = Number(row.male || 0);
+    let female = Number(row.female || 0);
+    let avgAge = Math.round(avgAgeValue);
 
-    const visitsByDay = {
+    let visitsByDay = {
       Monday: Number(row.monday || 0),
       Tuesday: Number(row.tuesday || 0),
       Wednesday: Number(row.wednesday || 0),
@@ -361,6 +361,27 @@ async function getSummary(req, res, start_date, end_date) {
       Saturday: Number(row.saturday || 0),
       Sunday: Number(row.sunday || 0)
     };
+
+    if (total === 0) {
+      let vQuery = `SELECT gender, age, day_of_week FROM visitors WHERE 1=1`;
+      const vParams = [];
+      let pc = 1;
+      if (start_date) { vQuery += ` AND day >= ${pc}`; vParams.push(start_date); pc++; }
+      if (end_date) { vQuery += ` AND day <= ${pc}`; vParams.push(end_date); pc++; }
+      if (store_id && store_id !== 'all') { vQuery += ` AND store_id = ${pc}`; vParams.push(store_id); pc++; }
+      const vRes = await pool.query(vQuery, vParams);
+      const mapPt = { Dom: 'Sunday', Seg: 'Monday', Ter: 'Tuesday', Qua: 'Wednesday', Qui: 'Thursday', Sex: 'Friday', Sáb: 'Saturday' };
+      let avgSum = 0, avgCount = 0;
+      total = vRes.rows.length;
+      male = 0; female = 0;
+      visitsByDay = { Sunday:0, Monday:0, Tuesday:0, Wednesday:0, Thursday:0, Friday:0, Saturday:0 };
+      for (const r of vRes.rows) {
+        if (String(r.gender) === 'M') male++; else if (String(r.gender) === 'F') female++;
+        const age = Number(r.age || 0); if (age > 0) { avgSum += age; avgCount++; }
+        const en = mapPt[String(r.day_of_week || '')]; if (en) { visitsByDay[en] = (visitsByDay[en] || 0) + 1; }
+      }
+      avgAge = avgCount ? Math.round(avgSum / avgCount) : 0;
+    }
 
     return res.status(200).json({
       success: true,

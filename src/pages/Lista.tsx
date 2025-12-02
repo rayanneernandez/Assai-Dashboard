@@ -119,7 +119,8 @@ const Lista = () => {
 
   useEffect(() => {
     const controller = new AbortController();
-    const url = `http://localhost:3001/api/visitors/list?start=${appliedFilters.start}&end=${appliedFilters.end}&page=1&pageSize=1`;
+    const base = typeof window !== "undefined" ? window.location.origin : "";
+    const url = `${base}/api/assai/dashboard?endpoint=visitors&start_date=${appliedFilters.start}&end_date=${appliedFilters.end}&store_id=${appliedFilters.device}`;
     fetch(url, { signal: controller.signal })
       .then((r) => setBackendAvailable(r.ok))
       .catch(() => setBackendAvailable(false));

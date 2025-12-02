@@ -1,18 +1,33 @@
 import type { VisitorStats, VisitorsPage } from "@/types/api";
 
-const BACKEND_URL = (import.meta as any).env?.VITE_BACKEND_URL ?? "http://localhost:3001/api";
+const BACKEND_URL = (import.meta as any).env?.VITE_BACKEND_URL ?? (typeof window !== "undefined" ? window.location.origin + "/api/assai" : "/api/assai");
 
 export async function fetchVisitorStats(deviceId?: string, start?: string, end?: string): Promise<VisitorStats> {
   const params = new URLSearchParams();
-  if (start) params.set("start", start);
-  if (end) params.set("end", end);
-  if (deviceId) params.set("deviceId", deviceId);
+  params.set("endpoint", "summary");
+  if (start) params.set("start_date", start);
+  if (end) params.set("end_date", end);
+  if (deviceId) params.set("store_id", deviceId);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5000);
   try {
-    const resp = await fetch(`${BACKEND_URL}/stats/visitors?${params.toString()}`, { signal: controller.signal });
+    const resp = await fetch(`${BACKEND_URL}/dashboard?${params.toString()}`, { signal: controller.signal });
     if (!resp.ok) throw new Error(`Backend error [${resp.status}] ${await resp.text()}`);
-    return await resp.json();
+    const json = await resp.json();
+    const visitsByDay = (json as any).visitsByDay ?? {};
+    const toPt: Record<string, string> = { Sunday: "Dom", Monday: "Seg", Tuesday: "Ter", Wednesday: "Qua", Thursday: "Qui", Friday: "Sex", Saturday: "Sáb" };
+    const byDayOfWeek: Record<string, number> = {};
+    Object.entries(toPt).forEach(([en, pt]) => { byDayOfWeek[pt] = Number((visitsByDay as any)[en] ?? 0); });
+    return {
+      total: Number((json as any).totalVisitors ?? 0),
+      men: Number((json as any).totalMale ?? 0),
+      women: Number((json as any).totalFemale ?? 0),
+      averageAge: Number((json as any).averageAge ?? 0),
+      byDayOfWeek,
+      byAgeGroup: {},
+      byHour: {},
+      byGenderHour: { male: {}, female: {} },
+    };
   } finally {
     clearTimeout(timeout);
   }
@@ -20,17 +35,30 @@ export async function fetchVisitorStats(deviceId?: string, start?: string, end?:
 
 export async function fetchVisitorsPage(deviceId?: string, start?: string, end?: string, page = 1, pageSize = 40): Promise<VisitorsPage> {
   const params = new URLSearchParams();
-  if (start) params.set("start", start);
-  if (end) params.set("end", end);
-  if (deviceId) params.set("deviceId", deviceId);
-  params.set("page", String(page));
-  params.set("pageSize", String(pageSize));
+  params.set("endpoint", "visitors");
+  if (start) params.set("start_date", start);
+  if (end) params.set("end_date", end);
+  params.set("store_id", deviceId && deviceId !== "all" ? String(deviceId) : "all");
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5000);
   try {
-    const resp = await fetch(`${BACKEND_URL}/visitors/list?${params.toString()}`, { signal: controller.signal });
+    const resp = await fetch(`${BACKEND_URL}/dashboard?${params.toString()}`, { signal: controller.signal });
     if (!resp.ok) throw new Error(`Backend error [${resp.status}] ${await resp.text()}`);
-    return await resp.json();
+    const json = await resp.json();
+    const rows: any[] = Array.isArray((json as any).data) ? (json as any).data : [];
+    const total = rows.length;
+    const startIdx = Math.max(0, (page - 1) * pageSize);
+    const items = rows.slice(startIdx, startIdx + pageSize).map((r) => ({
+      visitor_id: String(r.id ?? r.visitor_id ?? ""),
+      timestamp: String(r.timestamp ?? new Date().toISOString()),
+      store_id: String(r.store_id ?? ""),
+      store_name: String(r.store_name ?? ""),
+      gender: (String(r.gender ?? "").toLowerCase().startsWith("m") ? "M" : "F") as "M" | "F",
+      age: Number(r.age ?? 0),
+      day_of_week: String(r.day_of_week ?? ""),
+      smile: Boolean(r.smile),
+    }));
+    return { items, total, page, pageSize };
   } finally {
     clearTimeout(timeout);
   }

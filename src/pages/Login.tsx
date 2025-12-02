@@ -19,7 +19,8 @@ const Login = () => {
       return;
     }
     try {
-      const resp = await fetch("http://localhost:3001/api/auth/login", {
+      const base = (import.meta as any).env?.VITE_BACKEND_URL || "";
+      const resp = await fetch(`${base}/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),

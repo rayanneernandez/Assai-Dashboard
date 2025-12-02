@@ -241,7 +241,7 @@ async function insertVisitors(items) {
   if (!items || items.length === 0) return;
   
   const q = `INSERT INTO public.visitors 
-             (visitor_id, day_date, timestamp, store_id, store_name, gender, age, day_of_week, smile)
+             (visitor_id, day, timestamp, store_id, store_name, gender, age, day_of_week, smile)
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) 
              ON CONFLICT DO NOTHING`;
   
@@ -402,7 +402,7 @@ app.get("/api/visitors/list", async (req, res) => {
     const offset = (p - 1) * ps;
     
     // CORREÇÃO AQUI: usar day_date em vez de day
-    let whereConditions = ["day_date >= $1", "day_date <= $2"];
+    let whereConditions = ["day >= $1", "day <= $2"];
     const params = [start, end];
     
     // Adicionar filtro de loja se fornecido
@@ -429,7 +429,7 @@ app.get("/api/visitors/list", async (req, res) => {
     const dataQuery = `
       SELECT 
         visitor_id, 
-        day_date, 
+        day, 
         timestamp, 
         store_id, 
         store_name, 
@@ -440,7 +440,7 @@ app.get("/api/visitors/list", async (req, res) => {
       FROM public.visitors 
       WHERE ${whereClause}
       ORDER BY timestamp DESC
-      LIMIT $${limitParamIndex} OFFSET $${offsetParamIndex}
+      LIMIT ${limitParamIndex} OFFSET ${offsetParamIndex}
     `;
     
     dataParams.push(ps, offset);
@@ -517,8 +517,9 @@ async function refreshDayForStore(day, storeId) {
       const d = new Date(ts);
       const di = d.getUTCDay();
       const dayOfWeek = mapPt[di];
-      const smileRaw = v.smile ?? v.additional_attributes?.smile ?? "";
-      const smile = String(smileRaw).toLowerCase() === "yes";
+      const attrs = Array.isArray(v.additional_atributes) ? v.additional_atributes : [];
+      const last = attrs.length ? attrs[attrs.length - 1] : {};
+      const smile = String(last?.smile ?? v.smile ?? "").toLowerCase() === "yes";
       
       return {
         visitor_id: String(v.visitor_id ?? v.session_id ?? v.id ?? (v.tracks?.[0]?.id ?? "")),

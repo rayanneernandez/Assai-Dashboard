@@ -83,7 +83,7 @@ async function getVisitors(req, res, start_date, end_date, store_id) {
     let query = `
       SELECT 
         visitor_id as id,
-        day_date as day,
+        day as day,
         store_id,
         store_name,
         timestamp,
@@ -99,20 +99,21 @@ async function getVisitors(req, res, start_date, end_date, store_id) {
     let paramCount = 1;
     
     if (start_date) {
-      query += ` AND day_date >= ${paramCount}`;
+      query += ` AND day >= ${paramCount}`;
       params.push(start_date);
       paramCount++;
     }
     
     if (end_date) {
-      query += ` AND day_date <= ${paramCount}`;
+      query += ` AND day <= ${paramCount}`;
       params.push(end_date);
       paramCount++;
     }
     
     if (store_id && store_id !== 'all') {
-      query += ` AND store_id = $${paramCount}`;
+      query += ` AND store_id = ${paramCount}`;
       params.push(store_id);
+      paramCount++;
     }
     
     query += ` ORDER BY timestamp DESC LIMIT 100`;
@@ -175,86 +176,124 @@ async function getVisitors(req, res, start_date, end_date, store_id) {
 // ===========================================
 async function getSummary(req, res, start_date, end_date) {
   try {
-    // Buscar dados do banco
+    const { store_id, source } = req.query;
+    if (source === 'displayforce') {
+      const s = start_date || new Date().toISOString().slice(0,10);
+      const e = end_date || s;
+      const days = [];
+      let d = new Date(`${s}T00:00:00Z`);
+      const endD = new Date(`${e}T00:00:00Z`);
+      while (d <= endD) { days.push(d.toISOString().slice(0,10)); d = new Date(d.getTime() + 86400000); }
+      const map = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+      let total = 0, male = 0, female = 0, avgSum = 0, avgCount = 0;
+      const visitsByDay = { Sunday:0, Monday:0, Tuesday:0, Wednesday:0, Thursday:0, Friday:0, Saturday:0 };
+      for (const day of days) {
+        let offset = 0;
+        const limitReq = 500;
+        while (true) {
+          const bodyPayload = { start: `${day}T00:00:00Z`, end: `${day}T23:59:59Z`, limit: limitReq, offset, tracks: true };
+          if (store_id && store_id !== 'all') bodyPayload.device_id = store_id;
+          const response = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method: 'POST', headers: { 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type': 'application/json' }, body: JSON.stringify(bodyPayload) });
+          if (!response.ok) { const t = await response.text().catch(()=>"" ); throw new Error(`DF stats ${response.status} ${t}`); }
+          const page = await response.json();
+          const arr = Array.isArray(page.payload || page.data) ? (page.payload || page.data) : [];
+          for (const v of arr) {
+            total++;
+            if (v.sex === 1) male++; else female++;
+            const age = Number(v.age || 0); if (age>0) { avgSum += age; avgCount++; }
+            const ts = String(v.start || v.tracks?.[0]?.start || new Date().toISOString());
+            const wd = map[new Date(ts).getUTCDay()];
+            visitsByDay[wd] = (visitsByDay[wd] || 0) + 1;
+          }
+          const pg = page.pagination; const pageLimit = Number(pg?.limit ?? limitReq);
+          if (pg?.total && total >= Number(pg.total)) break;
+          if (arr.length < pageLimit) break;
+          offset += pageLimit;
+        }
+      }
+      return res.status(200).json({
+        success: true,
+        totalVisitors: total,
+        totalMale: male,
+        totalFemale: female,
+        averageAge: avgCount ? Math.round(avgSum / avgCount) : 0,
+        visitsByDay
+      });
+    }
+    // Buscar dados do dashboard diário
     let query = `
-      SELECT 
-        COUNT(*) as total,
-        COUNT(CASE WHEN gender = 'M' THEN 1 END) as male,
-        COUNT(CASE WHEN gender = 'F' THEN 1 END) as female,
-        AVG(age) as avg_age
-      FROM visitors
+      SELECT
+        COALESCE(SUM(total_visitors),0) as total,
+        COALESCE(SUM(male),0) as male,
+        COALESCE(SUM(female),0) as female,
+        COALESCE(SUM(avg_age_sum),0) as avg_age_sum,
+        COALESCE(SUM(avg_age_count),0) as avg_age_count,
+        COALESCE(SUM(monday),0) as monday,
+        COALESCE(SUM(tuesday),0) as tuesday,
+        COALESCE(SUM(wednesday),0) as wednesday,
+        COALESCE(SUM(thursday),0) as thursday,
+        COALESCE(SUM(friday),0) as friday,
+        COALESCE(SUM(saturday),0) as saturday,
+        COALESCE(SUM(sunday),0) as sunday
+      FROM dashboard_daily
       WHERE 1=1
     `;
-    
+
     const params = [];
     let paramCount = 1;
-    
+
     if (start_date) {
-      query += ` AND day_date >= ${paramCount}`;
+      query += ` AND day >= ${paramCount}`;
       params.push(start_date);
       paramCount++;
     }
-    
+
     if (end_date) {
-      query += ` AND day_date <= ${paramCount}`;
+      query += ` AND day <= ${paramCount}`;
       params.push(end_date);
       paramCount++;
     }
-    
+
+    if (store_id && store_id !== 'all') {
+      query += ` AND store_id = ${paramCount}`;
+      params.push(store_id);
+      paramCount++;
+    }
+
     console.log('📊 Summary query:', query);
-    
+
     const result = await pool.query(query, params);
     const row = result.rows[0] || {};
-    
-    // Buscar distribuição por dia
-    const dayQuery = `
-      SELECT 
-        day_of_week,
-        COUNT(*) as count
-      FROM visitors
-      WHERE 1=1
-      ${start_date ? `AND day >= '${start_date}'` : ''}
-      ${end_date ? `AND day <= '${end_date}'` : ''}
-      GROUP BY day_of_week
-    `;
-    
-    const dayResult = await pool.query(dayQuery);
-    
-    // Mapear dias
-    const dayMap = {
-      'Dom': 'Sunday', 'Seg': 'Monday', 'Ter': 'Tuesday',
-      'Qua': 'Wednesday', 'Qui': 'Thursday', 'Sex': 'Friday', 'Sáb': 'Saturday'
+    const avgAgeValue = Number(row.avg_age_count || 0) > 0 ? Number(row.avg_age_sum || 0) / Number(row.avg_age_count || 0) : 0;
+
+    const total = Number(row.total || 0);
+    const male = Number(row.male || 0);
+    const female = Number(row.female || 0);
+    const avgAge = Math.round(avgAgeValue);
+
+    const visitsByDay = {
+      Monday: Number(row.monday || 0),
+      Tuesday: Number(row.tuesday || 0),
+      Wednesday: Number(row.wednesday || 0),
+      Thursday: Number(row.thursday || 0),
+      Friday: Number(row.friday || 0),
+      Saturday: Number(row.saturday || 0),
+      Sunday: Number(row.sunday || 0)
     };
-    
-    const visitsByDay = {};
-    dayResult.rows.forEach(r => {
-      const englishDay = dayMap[r.day_of_week] || r.day_of_week;
-      visitsByDay[englishDay] = parseInt(r.count);
-    });
-    
-    // Preencher dias faltantes com 0
-    Object.values(dayMap).forEach(day => {
-      if (!visitsByDay[day]) visitsByDay[day] = 0;
-    });
-    
-    const total = parseInt(row.total) || 7466;
-    const male = parseInt(row.male) || 5054;
-    const female = parseInt(row.female) || 2412;
-    const avgAge = Math.round(parseFloat(row.avg_age) || 31);
-    
+
     return res.status(200).json({
       success: true,
       totalVisitors: total,
       totalMale: male,
       totalFemale: female,
       averageAge: avgAge,
-      visitsByDay: visitsByDay,
+      visitsByDay,
       genderDistribution: {
-        male: total > 0 ? Math.round((male / total) * 1000) / 10 : 67.7,
-        female: total > 0 ? Math.round((female / total) * 1000) / 10 : 32.3
+        male: total > 0 ? Math.round((male / total) * 1000) / 10 : 0,
+        female: total > 0 ? Math.round((female / total) * 1000) / 10 : 0
       },
       peakHours: ["14:00-15:00", "15:00-16:00", "16:00-17:00"],
-      query: { start_date, end_date }
+      query: { start_date, end_date, store_id: store_id || 'all' }
     });
     
   } catch (error) {

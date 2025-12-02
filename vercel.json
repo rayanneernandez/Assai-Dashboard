@@ -10,11 +10,8 @@
   ],
   "routes": [
     {
-      "handle": "filesystem"
-    },
-    {
       "src": "/api/(.*)",
-      "dest": "/server/server.js"
+      "dest": "/api/$1"
     },
     {
       "src": "/(.*)",

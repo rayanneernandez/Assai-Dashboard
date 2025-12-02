@@ -1,4 +1,7 @@
 // api/stats/visitors.js - VERSÃO SUPER SIMPLES
+
+const API_TOKEN = process.env.DISPLAYFORCE_API_TOKEN || process.env.DISPLAYFORCE_TOKEN || '4AUH-BX6H-G2RJ-G7PB';
+const API_BASE_URL = process.env.DISPLAYFORCE_API_URL || 'https://api.displayforce.ai/public/v1';
 export default async function handler(req, res) {
   // Simula dados para teste
   const { start, end } = req.query;

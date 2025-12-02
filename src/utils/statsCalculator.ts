@@ -61,7 +61,7 @@ export const calculateStats = (visitors: Visitor[]): VisitorStats => {
 
     // Hourly distribution
     if (visitor.timestamp) {
-      const hour = new Date(visitor.timestamp).getHours();
+      const hour = new Date(visitor.timestamp).getUTCHours();
       stats.byHour[hour] = (stats.byHour[hour] || 0) + 1;
       
       if (visitor.gender === "M") {

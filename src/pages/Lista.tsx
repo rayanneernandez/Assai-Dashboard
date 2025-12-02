@@ -53,6 +53,7 @@ const Lista = () => {
         appliedFilters.start,
         appliedFilters.end
       ),
+    enabled: false,
   });
 
   const { data: backendPage, isLoading: isBackendLoading, error: backendPageError } = useQuery({
@@ -65,7 +66,11 @@ const Lista = () => {
         page,
         pageSize
       ),
-    enabled: backendAvailable,
+    enabled: true,
+    staleTime: 5_000,
+    refetchOnWindowFocus: true,
+    refetchOnReconnect: true,
+    refetchInterval: appliedFilters.start === todayStr && appliedFilters.end === todayStr ? 10_000 : false,
   });
 
   const stats = calculateStats(visitors);
@@ -137,12 +142,12 @@ const Lista = () => {
       smile: i.smile,
     })) ?? [];
 
-  const totalCount = backendPage?.total ?? visitors.length;
+  const totalCount = backendPage?.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
   const currentPage = Math.min(page, totalPages);
   const startIndex = (currentPage - 1) * pageSize;
   const paginatedVisitors = visitors.slice(startIndex, startIndex + pageSize);
-  const displayVisitors = backendItems.length > 0 ? backendItems : paginatedVisitors;
+  const displayVisitors = backendItems;
 
   return (
     <div className="min-h-screen bg-background flex">

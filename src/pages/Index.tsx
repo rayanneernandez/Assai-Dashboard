@@ -11,7 +11,7 @@ import { toast } from "@/components/ui/use-toast";
 
 
 import { fetchDevices, fetchVisitors } from "@/services/api";
-import { Device, Visitor } from "@/types/api";
+import { Device, Visitor, VisitorStats } from "@/types/api";
 import { calculateStats } from "@/utils/statsCalculator";
 import backend from "@/services/backend";
 import {
@@ -83,6 +83,26 @@ const Index = () => {
     queryFn: fetchDevices,
   });
 
+
+
+  const { data: backendStats, isLoading: isBackendLoading, error: backendError } = useQuery<VisitorStats>({
+    queryKey: ["backendStats", appliedFilters.device, appliedFilters.start, appliedFilters.end],
+    queryFn: () =>
+      backend.fetchVisitorStats(
+        appliedFilters.device === "all" ? undefined : appliedFilters.device,
+        appliedFilters.start,
+        appliedFilters.end
+      ),
+    staleTime: 5_000,
+    refetchInterval: 5_000,
+    refetchOnWindowFocus: true,
+    refetchOnReconnect: true,
+    refetchIntervalInBackground: true,
+    refetchOnMount: true,
+    placeholderData: (prev) => prev as VisitorStats | undefined,
+    retry: 0,
+  });
+
   const { data: visitors = [], isLoading, error: visitorsError } = useQuery<Visitor[]>({
     queryKey: ["visitors", appliedFilters.device, appliedFilters.start, appliedFilters.end],
     queryFn: () =>
@@ -91,19 +111,11 @@ const Index = () => {
         appliedFilters.start,
         appliedFilters.end
       ),
+    enabled: !backendStats || !!backendError,
+    retry: 0,
   });
 
-  const { data: backendStats, isLoading: isBackendLoading, error: backendError } = useQuery({
-    queryKey: ["backendStats", appliedFilters.device, appliedFilters.start, appliedFilters.end],
-    queryFn: () =>
-      backend.fetchVisitorStats(
-        appliedFilters.device === "all" ? undefined : appliedFilters.device,
-        appliedFilters.start,
-        appliedFilters.end
-      ),
-  });
-
-  const stats = backendStats && backendStats.total > 0 ? backendStats : calculateStats(visitors);
+  const stats: VisitorStats = backendStats ?? calculateStats(visitors);
 
   useEffect(() => {
     if (devicesError) toast({ title: "Erro ao buscar lojas", description: String(devicesError) });
@@ -181,10 +193,7 @@ const Index = () => {
             onApplyFilters={handleApplyFilters}
           />
 
-          {(isBackendLoading && isLoading) ? (
-            <div className="text-center py-12">Carregando dados...</div>
-          ) : (
-            <>
+
               {/* Stats Cards */}
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-6">
                 <StatCard
@@ -293,11 +302,6 @@ const Index = () => {
                       />
                     </LineChart>
                   </ResponsiveContainer>
-                  {stats.total === 0 && (
-                    <p className="text-center text-muted-foreground mt-4">
-                      Nenhum dado disponível para o período selecionado
-                    </p>
-                  )}
                 </Card>
               </div>
 
@@ -331,10 +335,9 @@ const Index = () => {
                   <p className="text-center text-muted-foreground mt-4">
                     Nenhum dado disponível para o período selecionado
                   </p>
-                )}
-              </Card>
-            </>
+      
           )}
+              </Card>
         </main>
       </div>
       

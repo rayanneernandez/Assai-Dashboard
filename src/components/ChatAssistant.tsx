@@ -4,6 +4,7 @@ import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Card } from "./ui/card";
 import { ScrollArea } from "./ui/scroll-area";
+import backend from "@/services/backend";
 
 interface Message {
   role: "user" | "assistant";
@@ -36,15 +37,46 @@ export const ChatAssistant = ({ visitors, devices, stats }: ChatAssistantProps) 
     }
   }, [messages]);
 
-  const generateAnswer = (q: string) => {
+  const generateAnswer = async (q: string) => {
     const text = q.toLowerCase();
+    const dateMatch = text.match(/(\d{2})[\/\-](\d{2})[\/\-](\d{4})|(\d{4})-(\d{2})-(\d{2})/);
+    let day: string | null = null;
+    if (text.includes("hoje")) {
+      day = new Date().toISOString().split("T")[0];
+    } else if (text.includes("ontem")) {
+      const d = new Date(); d.setDate(d.getDate() - 1); day = d.toISOString().split("T")[0];
+    } else if (dateMatch) {
+      if (dateMatch[1]) {
+        const dd = dateMatch[1], mm = dateMatch[2], yyyy = dateMatch[3];
+        day = `${yyyy}-${mm}-${dd}`;
+      } else {
+        const yyyy = dateMatch[4], mm = dateMatch[5], dd = dateMatch[6];
+        day = `${yyyy}-${mm}-${dd}`;
+      }
+    }
+    if (day) {
+      try {
+        const s = await backend.fetchVisitorStats(undefined, day, day);
+        if (text.includes("homem")) return `Total de homens em ${day}: ${s.men}`;
+        if (text.includes("mulher")) return `Total de mulheres em ${day}: ${s.women}`;
+        const hm = text.match(/(?:às|as)\s*(\d{1,2})/);
+        if (hm) {
+          const h = parseInt(hm[1]);
+          const totalH = s.byHour[h] || 0;
+          return `Visitantes às ${h}h em ${day}: ${totalH}`;
+        }
+        return `Total de visitantes em ${day}: ${s.total}`;
+      } catch {
+        return `Não consegui consultar o banco para ${day}. Total atual no dashboard: ${stats.total}`;
+      }
+    }
     if (text.includes("total") && text.includes("visit")) return `Total de visitantes: ${stats.total}`;
     if (text.includes("homem")) return `Total de homens: ${stats.men}`;
     if (text.includes("mulher")) {
       const m = text.match(/(?:às|as)\s*(\d{1,2})/);
       if (m) {
         const h = parseInt(m[1]);
-        const f = visitors.filter(v => new Date(v.timestamp).getHours() === h && v.gender === "F").length;
+        const f = visitors.filter(v => new Date(v.timestamp).getUTCHours() === h && v.gender === "F").length;
         return `Mulheres às ${h}h: ${f}`;
       }
       return `Total de mulheres: ${stats.women}`;
@@ -57,19 +89,20 @@ export const ChatAssistant = ({ visitors, devices, stats }: ChatAssistantProps) 
     const hm = text.match(/(?:às|as)\s*(\d{1,2})/);
     if (hm) {
       const h = parseInt(hm[1]);
-      const totalH = visitors.filter(v => new Date(v.timestamp).getHours() === h).length;
+      const totalH = visitors.filter(v => new Date(v.timestamp).getUTCHours() === h).length;
       return `Visitantes às ${h}h: ${totalH}`;
     }
     return `Total: ${stats.total} | Homens: ${stats.men} | Mulheres: ${stats.women} | Idade média: ${stats.averageAge} anos`;
   };
 
-  const handleSend = () => {
+  const handleSend = async () => {
     if (!input.trim()) return;
 
     const userMessage: Message = { role: "user", content: input };
     setMessages((prev) => [...prev, userMessage]);
-    const reply = generateAnswer(input);
+    const q = input;
     setInput("");
+    const reply = await generateAnswer(q);
     const assistantMessage: Message = { role: "assistant", content: reply };
     setMessages((prev) => [...prev, assistantMessage]);
   };

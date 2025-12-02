@@ -78,7 +78,7 @@ export const fetchVisitors = async (
     }
 
     const DAYS = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"];
-    return all.map((v) => {
+    const mapped = all.map((v) => {
       const ts = String(v.start ?? v.tracks?.[0]?.start ?? new Date().toISOString());
       const d = new Date(ts);
       const di = d.getUTCDay();
@@ -96,6 +96,8 @@ export const fetchVisitors = async (
         smile,
       };
     });
+    const unique = Array.from(new Map(mapped.map((m) => [m.id, m])).values());
+    return unique;
   } catch (error) {
     console.error("Error fetching visitors:", error);
     throw error instanceof Error ? error : new Error(String(error));

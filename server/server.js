@@ -1,4 +1,4 @@
-﻿import "dotenv/config";
+﻿import dotenv from "dotenv";
 import express from "express";
 import cors from "cors";
 import fetch from "node-fetch";
@@ -7,6 +7,9 @@ import pg from "pg";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+
+dotenv.config({ path: path.join(process.cwd(), "server", ".env") });
+dotenv.config();
 
 const app = express();
 app.use(cors());
@@ -101,7 +104,7 @@ async function fetchDayAllPages(token, day, deviceId) {
       additional_attributes: ["smile","pitch","yaw","x","y","height"]
     };
     if (deviceId) body.device_id = deviceId;
-    const resp = await fetch("https://api.displayforce.ai/public/v1/stats/visitor/list?", {
+    const resp = await fetch("https://api.displayforce.ai/public/v1/stats/visitor/list", {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-API-Token": token },
       body: JSON.stringify(body)
@@ -164,11 +167,13 @@ async function upsertHourly(day, storeId, byHour, byGenderHour) {
 
 async function insertVisitors(items) {
   if (!items || items.length === 0) return;
-  const q = `INSERT INTO public.visitors (visitor_id, timestamp, store_id, store_name, gender, age, day_of_week, smile)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT DO NOTHING`;
+  const q = `INSERT INTO public.visitors (visitor_id, day_date, timestamp, store_id, store_name, gender, age, day_of_week, smile)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING`;
   for (const i of items) {
+    const day = String(i.timestamp).slice(0, 10);
     await pool.query(q, [
       i.visitor_id,
+      day,
       i.timestamp,
       i.store_id,
       i.store_name || null,
@@ -199,7 +204,13 @@ app.get("/api/stats/visitors", async (req, res) => {
       "SELECT * FROM public.dashboard_daily WHERE day = ANY($1) AND (store_id IS NOT DISTINCT FROM $2)",
       [days, storeId]
     );
-    const cachedMap = new Map(cached.map(r => [r.day.toISOString().slice(0,10), r]));
+    const cachedMap = new Map(
+      cached.map((r) => {
+        const dv = r.day;
+        const dayStr = typeof dv === "string" ? dv.slice(0, 10) : new Date(dv).toISOString().slice(0, 10);
+        return [dayStr, r];
+      })
+    );
 
     const agg = {
       total: 0, men: 0, women: 0, averageAge: 0,
@@ -215,52 +226,35 @@ app.get("/api/stats/visitors", async (req, res) => {
       let row = cachedMap.get(day);
       const isToday = day === new Date().toISOString().slice(0,10);
       const isStale = isToday && row && row.updated_at && (Date.now() - new Date(row.updated_at).getTime() > 5 * 60 * 1000);
-      let a = null;
-      if (!row || isStale) {
-        const payload = await fetchDayAllPages(token, day, storeId === "all" ? null : storeId);
-        a = aggregateVisitors(payload);
-        const weekdayRow = {
-          monday: a.byWeekday.monday || 0,
-          tuesday: a.byWeekday.tuesday || 0,
-          wednesday: a.byWeekday.wednesday || 0,
-          thursday: a.byWeekday.thursday || 0,
-          friday: a.byWeekday.friday || 0,
-          saturday: a.byWeekday.saturday || 0,
-          sunday: a.byWeekday.sunday || 0
-        };
-        const toSave = {
-          total_visitors: a.total,
-          male: a.men,
-          female: a.women,
-          avg_age_sum: a.avgAgeSum,
-          avg_age_count: a.avgAgeCount,
-          age_18_25: a.byAge["18-25"] || 0,
-          age_26_35: a.byAge["26-35"] || 0,
-          age_36_45: a.byAge["36-45"] || 0,
-          age_46_60: a.byAge["46-60"] || 0,
-          age_60_plus: a.byAge["60+"] || 0,
-          ...weekdayRow
-        };
-        await upsertDaily(day, storeId, toSave);
-        row = { day, store_id: storeId, updated_at: new Date().toISOString(), ...toSave };
+      if (!row) {
+        await refreshDayForStore(day, storeId);
+        const { rows: r2 } = await pool.query(
+          "SELECT * FROM public.dashboard_daily WHERE day=$1 AND (store_id IS NOT DISTINCT FROM $2)",
+          [day, storeId]
+        );
+        row = r2[0];
+      } else if (isStale) {
+        setImmediate(() => {
+          refreshDayForStore(day, storeId).catch((e) => console.error("bg refresh error", e));
+        });
       }
-      agg.total += Number(row.total_visitors || 0);
-      agg.men += Number(row.male || 0);
-      agg.women += Number(row.female || 0);
-      avgSum += Number(row.avg_age_sum || 0);
-      avgCount += Number(row.avg_age_count || 0);
-      agg.byAgeGroup["18-25"] += Number(row.age_18_25 || 0);
-      agg.byAgeGroup["26-35"] += Number(row.age_26_35 || 0);
-      agg.byAgeGroup["36-45"] += Number(row.age_36_45 || 0);
-      agg.byAgeGroup["46-60"] += Number(row.age_46_60 || 0);
-      agg.byAgeGroup["60+"] += Number(row.age_60_plus || 0);
-      agg.byDayOfWeek["Seg"] += Number(row.monday || 0);
-      agg.byDayOfWeek["Ter"] += Number(row.tuesday || 0);
-      agg.byDayOfWeek["Qua"] += Number(row.wednesday || 0);
-      agg.byDayOfWeek["Qui"] += Number(row.thursday || 0);
-      agg.byDayOfWeek["Sex"] += Number(row.friday || 0);
-      agg.byDayOfWeek["Sáb"] += Number(row.saturday || 0);
-      agg.byDayOfWeek["Dom"] += Number(row.sunday || 0);
+      agg.total += Number(row?.total_visitors || 0);
+      agg.men += Number(row?.male || 0);
+      agg.women += Number(row?.female || 0);
+      avgSum += Number(row?.avg_age_sum || 0);
+      avgCount += Number(row?.avg_age_count || 0);
+      agg.byAgeGroup["18-25"] += Number(row?.age_18_25 || 0);
+      agg.byAgeGroup["26-35"] += Number(row?.age_26_35 || 0);
+      agg.byAgeGroup["36-45"] += Number(row?.age_36_45 || 0);
+      agg.byAgeGroup["46-60"] += Number(row?.age_46_60 || 0);
+      agg.byAgeGroup["60+"] += Number(row?.age_60_plus || 0);
+      agg.byDayOfWeek["Seg"] += Number(row?.monday || 0);
+      agg.byDayOfWeek["Ter"] += Number(row?.tuesday || 0);
+      agg.byDayOfWeek["Qua"] += Number(row?.wednesday || 0);
+      agg.byDayOfWeek["Qui"] += Number(row?.thursday || 0);
+      agg.byDayOfWeek["Sex"] += Number(row?.friday || 0);
+      agg.byDayOfWeek["Sáb"] += Number(row?.saturday || 0);
+      agg.byDayOfWeek["Dom"] += Number(row?.sunday || 0);
       const { rows: hourly } = await pool.query(
         "SELECT hour, total, male, female FROM public.dashboard_hourly WHERE day=$1 AND (store_id IS NOT DISTINCT FROM $2)",
         [day, storeId]
@@ -271,15 +265,6 @@ app.get("/api/stats/visitors", async (req, res) => {
           agg.byHour[h] = (agg.byHour[h] || 0) + Number(r.total || 0);
           agg.byGenderHour.male[h] = (agg.byGenderHour.male[h] || 0) + Number(r.male || 0);
           agg.byGenderHour.female[h] = (agg.byGenderHour.female[h] || 0) + Number(r.female || 0);
-        }
-      } else if (a) {
-        for (let h = 0; h < 24; h++) {
-          const cnt = Number(a.byHour[h] || 0);
-          if (cnt) agg.byHour[h] = (agg.byHour[h] || 0) + cnt;
-          const m = Number(a.byGenderHour.male[h] || 0);
-          const f = Number(a.byGenderHour.female[h] || 0);
-          if (m) agg.byGenderHour.male[h] = (agg.byGenderHour.male[h] || 0) + m;
-          if (f) agg.byGenderHour.female[h] = (agg.byGenderHour.female[h] || 0) + f;
         }
       }
     }
@@ -337,6 +322,7 @@ async function refreshDayForStore(day, storeId) {
       age: Number(v.age ?? 0),
       day_of_week: dayOfWeek,
       smile,
+      day: ts.slice(0,10),
     };
   });
   await insertVisitors(items);
@@ -369,7 +355,7 @@ function scheduleRefresh() {
     await refreshDayForStore(day, "all");
   };
   run().catch((e) => console.error("refresh error", e));
-  setInterval(() => run().catch((e) => console.error("refresh error", e)), 5 * 60 * 1000);
+  setInterval(() => run().catch((e) => console.error("refresh error", e)), 60_000);
 }
 
 scheduleBackfill(7);
@@ -379,24 +365,48 @@ app.get("/api/visitors/list", async (req, res) => {
   try {
     const { start, end, deviceId, page = "1", pageSize = "40" } = req.query;
     if (!start || !end) return res.status(400).json({ error: "start e end YYYY-MM-DD são obrigatórios" });
+    
     const p = Math.max(1, parseInt(String(page)) || 1);
     const ps = Math.min(1000, Math.max(1, parseInt(String(pageSize)) || 40));
-    const where = [];
-    const params = [];
-    params.push(start);
-    params.push(end);
-    where.push("timestamp::date BETWEEN $1 AND $2");
-    if (deviceId) { params.push(String(deviceId)); where.push(`store_id = ${params.length}`); }
-    const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
-    const { rows: cRows } = await pool.query(`SELECT COUNT(*)::int AS total FROM public.visitors ${whereSql}`, params);
-    const total = cRows[0]?.total ?? 0;
     const offset = (p - 1) * ps;
-    const listSql = `SELECT visitor_id, timestamp, store_id, store_name, gender, age, day_of_week, smile FROM public.visitors ${whereSql} ORDER BY timestamp DESC LIMIT ${params.length+1} OFFSET ${params.length+2}`;
-    const listParams = [...params, ps, offset];
-    const { rows } = await pool.query(listSql, listParams);
-    return res.json({ items: rows, total, page: p, pageSize: ps });
+    
+    let baseWhere = "day >= $1 AND day <= $2";
+    const queryParams = [start, end];
+    if (deviceId && deviceId !== "all") {
+      baseWhere += " AND store_id IS NOT DISTINCT FROM $3";
+      queryParams.push(String(deviceId));
+    }
+    
+    const countSql = `SELECT COUNT(*)::int AS total FROM public.visitors WHERE ${baseWhere}`;
+    const { rows: cRows } = await pool.query(countSql, queryParams);
+    const total = cRows[0]?.total ?? 0;
+    
+    let listSql = `SELECT visitor_id, day, timestamp, store_id, store_name, gender, age, day_of_week, smile FROM public.visitors WHERE ${baseWhere} ORDER BY timestamp DESC`;
+    const params2 = [...queryParams];
+    if (queryParams.length === 2) {
+      listSql += " LIMIT $3 OFFSET $4";
+      params2.push(ps, offset);
+    } else {
+      listSql += " LIMIT $4 OFFSET $5";
+      params2.push(ps, offset);
+    }
+    
+    const { rows } = await pool.query(listSql, params2);
+    
+    return res.json({ 
+      items: rows, 
+      total, 
+      page: p, 
+      pageSize: ps,
+      totalPages: Math.ceil(total / ps)
+    });
   } catch (e) {
-    return res.status(500).json({ error: String(e.message || e) });
+    console.error("Error in /api/visitors/list:", e.message);
+    console.error("Stack trace:", e.stack);
+    return res.status(500).json({ 
+      error: "Erro interno no servidor",
+      details: e.message 
+    });
   }
 });
 

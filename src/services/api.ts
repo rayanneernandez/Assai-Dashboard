@@ -1,6 +1,6 @@
 import { Device, Visitor } from "@/types/api";
 
-const API_BASE_URL = (import.meta as any).env?.VITE_API_URL ?? (typeof window !== "undefined" ? window.location.origin + "/api/assai" : "/api/assai");
+const API_BASE_URL = (import.meta as any).env?.VITE_API_URL || (typeof window !== "undefined" ? window.location.origin + "/api/assai" : "/api/assai");
 const API_TOKEN = (import.meta as any).env?.VITE_DISPLAYFORCE_API_TOKEN ?? "4AUH-BX6H-G2RJ-G7PB";
 
 const headers = {
@@ -20,7 +20,12 @@ export const fetchDevices = async (): Promise<Device[]> => {
     const data = await response.json();
     const list = (data as any).devices ?? (data as any).data ?? [];
     return Array.isArray(list)
-      ? (list as any[]).map((d: any) => ({ id: String(d.id ?? d.device_id ?? ""), name: String(d.name ?? d.title ?? "Dispositivo"), location: String(d.location ?? d.store ?? ""), status: String(d.status ?? "active") }))
+      ? (list as any[]).map((d: any) => ({
+          id: String(d.id ?? d.device_id ?? ""),
+          name: String(d.name ?? d.title ?? "Dispositivo"),
+          location: String(d.address?.description ?? d.location ?? ""),
+          status: String(d.connection_state ?? d.status ?? "unknown"),
+        }))
       : [];
   } catch (error) {
     console.error("Error fetching devices:", error);

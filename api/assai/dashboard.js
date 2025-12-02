@@ -324,15 +324,25 @@ async function getDevices(req, res) {
   try {
     console.log('🌐 Calling DisplayForce API...');
     
-    const response = await fetch('https://api.displayforce.ai/public/v1/device/list', {
-      method: 'POST',
+    let response = await fetch('https://api.displayforce.ai/public/v1/device/list', {
+      method: 'GET',
       headers: {
         'X-API-Token': DISPLAYFORCE_TOKEN,
-        'Content-Type': 'application/json',
         'Accept': 'application/json'
-      },
-      body: JSON.stringify({})
+      }
     });
+    
+    if (!response.ok && response.status === 405) {
+      response = await fetch('https://api.displayforce.ai/public/v1/device/list', {
+        method: 'POST',
+        headers: {
+          'X-API-Token': DISPLAYFORCE_TOKEN,
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
+        body: JSON.stringify({})
+      });
+    }
     
     if (!response.ok) {
       throw new Error(`DisplayForce: ${response.status}`);

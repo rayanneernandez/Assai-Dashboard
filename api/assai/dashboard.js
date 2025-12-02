@@ -79,7 +79,7 @@ async function getVisitors(req, res, start_date, end_date, store_id) {
     let query = `
       SELECT 
         visitor_id as id,
-        date,
+        day,
         store_id,
         store_name,
         timestamp,
@@ -95,13 +95,13 @@ async function getVisitors(req, res, start_date, end_date, store_id) {
     let paramCount = 1;
     
     if (start_date) {
-      query += ` AND date >= $${paramCount}`;
+      query += ` AND day >= ${paramCount}`;
       params.push(start_date);
       paramCount++;
     }
     
     if (end_date) {
-      query += ` AND date <= $${paramCount}`;
+      query += ` AND day <= ${paramCount}`;
       params.push(end_date);
       paramCount++;
     }
@@ -120,7 +120,7 @@ async function getVisitors(req, res, start_date, end_date, store_id) {
     // Formatar resposta
     const visitors = result.rows.map(row => ({
       id: row.id,
-      date: row.date,
+      date: row.day,
       store_id: row.store_id,
       store_name: row.store_name || `Loja ${row.store_id}`,
       timestamp: row.timestamp,
@@ -183,13 +183,13 @@ async function getSummary(req, res, start_date, end_date) {
     let paramCount = 1;
     
     if (start_date) {
-      query += ` AND date >= $${paramCount}`;
+      query += ` AND day >= ${paramCount}`;
       params.push(start_date);
       paramCount++;
     }
     
     if (end_date) {
-      query += ` AND date <= $${paramCount}`;
+      query += ` AND day <= ${paramCount}`;
       params.push(end_date);
     }
     
@@ -205,8 +205,8 @@ async function getSummary(req, res, start_date, end_date) {
         COUNT(*) as count
       FROM visitors
       WHERE 1=1
-      ${start_date ? `AND date >= '${start_date}'` : ''}
-      ${end_date ? `AND date <= '${end_date}'` : ''}
+      ${start_date ? `AND day >= '${start_date}'` : ''}
+      ${end_date ? `AND day <= '${end_date}'` : ''}
       GROUP BY day_of_week
     `;
     
@@ -325,11 +325,13 @@ async function getDevices(req, res) {
     console.log('🌐 Calling DisplayForce API...');
     
     const response = await fetch('https://api.displayforce.ai/public/v1/device/list', {
-      method: 'GET',
+      method: 'POST',
       headers: {
-        'Authorization': `Bearer ${DISPLAYFORCE_TOKEN}`,
+        'X-API-Token': DISPLAYFORCE_TOKEN,
+        'Content-Type': 'application/json',
         'Accept': 'application/json'
-      }
+      },
+      body: JSON.stringify({})
     });
     
     if (!response.ok) {

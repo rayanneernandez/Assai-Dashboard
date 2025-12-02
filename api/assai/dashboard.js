@@ -116,7 +116,7 @@ async function getVisitors(req, res, start_date, end_date, store_id) {
       paramCount++;
     }
     
-    query += ` ORDER BY timestamp DESC LIMIT 100`;
+    query += ` ORDER BY timestamp DESC LIMIT 1000`;
     
     console.log('📋 Query:', query.substring(0, 150));
     

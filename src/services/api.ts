@@ -49,6 +49,7 @@ export const fetchVisitors = async (
     params.set("start_date", startDate || today);
     params.set("end_date", endDate || today);
     params.set("store_id", deviceId && deviceId !== "all" ? deviceId : "all");
+    params.set("source", "displayforce");
 
     const response = await fetch(`${API_BASE_URL}/dashboard?${params.toString()}`);
     if (!response.ok) {
@@ -75,7 +76,7 @@ export const fetchVisitors = async (
       } as Visitor;
     });
 
-    const unique = Array.from(new Map(mapped.map((m) => [m.id, m])).values());
+    const unique = Array.from(new Map(mapped.map((m) => [`${m.id}-${m.timestamp}`, m])).values());
     return unique;
   } catch (error) {
     console.error("Error fetching visitors:", error);

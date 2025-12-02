@@ -21,7 +21,7 @@ export default async function handler(req, res) {
     return res.status(200).end();
   }
   
-  const { endpoint, start_date, end_date, store_id } = req.query;
+  const { endpoint, start_date, end_date, store_id, source } = req.query;
   
   try {
     console.log(`📊 API Request: ${endpoint || 'none'}`);
@@ -77,6 +77,9 @@ export default async function handler(req, res) {
 // ===========================================
 async function getVisitors(req, res, start_date, end_date, store_id) {
   try {
+    if (req.query.source === 'displayforce') {
+      return await getVisitorsFromDisplayForce(res, start_date, end_date, store_id);
+    }
     let query = `
       SELECT 
         visitor_id as id,
@@ -139,79 +142,7 @@ async function getVisitors(req, res, start_date, end_date, store_id) {
       });
     }
     
-    const startISO = `${(start_date || new Date().toISOString().split('T')[0])}T00:00:00Z`;
-    const endISO = `${(end_date || new Date().toISOString().split('T')[0])}T23:59:59Z`;
-    const limit = 500;
-    let offset = 0;
-    const all = [];
-    
-    while (true) {
-      const bodyPayload = {
-        start: startISO,
-        end: endISO,
-        limit,
-        offset,
-        tracks: true,
-        face_quality: true,
-        glasses: true,
-        facial_hair: true,
-        hair_color: true,
-        hair_type: true,
-        headwear: true,
-      };
-      if (store_id && store_id !== 'all') bodyPayload.device_id = store_id;
-      
-      const response = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, {
-        method: 'POST',
-        headers: { 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type': 'application/json' },
-        body: JSON.stringify(bodyPayload)
-      });
-      if (!response.ok) {
-        const body = await response.text().catch(() => '');
-        throw new Error(`DisplayForce stats: ${response.status} ${response.statusText} ${body}`);
-      }
-      const page = await response.json();
-      const payload = page.payload || page.data || [];
-      const arr = Array.isArray(payload) ? payload : [];
-      all.push(...arr);
-      const pg = page.pagination;
-      const pageLimit = Number(pg?.limit ?? limit);
-      if (pg?.total && all.length >= Number(pg.total)) break;
-      if (arr.length < pageLimit) break;
-      offset += pageLimit;
-      if (offset >= 20000) break;
-    }
-    
-    const DAYS = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
-    const visitors = all.map((v) => {
-      const ts = String(v.start ?? v.tracks?.[0]?.start ?? new Date().toISOString());
-      const d = new Date(ts);
-      const di = d.getUTCDay();
-      const day_of_week = DAYS[di];
-      const attrs = Array.isArray(v.additional_atributes) ? v.additional_atributes : [];
-      const last = attrs.length ? attrs[attrs.length - 1] : {};
-      const smile = String(last?.smile ?? v.smile ?? '').toLowerCase() === 'yes';
-      const deviceId = String(v.tracks?.[0]?.device_id ?? (Array.isArray(v.devices) ? v.devices[0] : ''));
-      return {
-        id: String(v.visitor_id ?? v.session_id ?? v.id ?? ''),
-        date: ts.slice(0,10),
-        store_id: deviceId,
-        store_name: `Loja ${deviceId}`,
-        timestamp: ts,
-        gender: (v.sex === 1 ? 'Masculino' : 'Feminino'),
-        age: Number(v.age ?? 0),
-        day_of_week,
-        smile,
-      };
-    });
-    
-    return res.status(200).json({
-      success: true,
-      data: visitors,
-      count: visitors.length,
-      source: 'displayforce',
-      query: { start_date, end_date, store_id }
-    });
+    return await getVisitorsFromDisplayForce(res, start_date, end_date, store_id);
     
   } catch (error) {
     console.error('❌ Visitors error:', error);
@@ -259,13 +190,13 @@ async function getSummary(req, res, start_date, end_date) {
     let paramCount = 1;
     
     if (start_date) {
-      query += ` AND day >= ${paramCount}`;
+      query += ` AND day_date >= ${paramCount}`;
       params.push(start_date);
       paramCount++;
     }
     
     if (end_date) {
-      query += ` AND day <= ${paramCount}`;
+      query += ` AND day_date <= ${paramCount}`;
       params.push(end_date);
       paramCount++;
     }

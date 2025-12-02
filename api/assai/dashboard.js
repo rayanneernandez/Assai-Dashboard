@@ -9,6 +9,7 @@ const pool = new Pool({
 
 // Token da DisplayForce
 const DISPLAYFORCE_TOKEN = process.env.DISPLAYFORCE_API_TOKEN || '4AUH-BX6H-G2RJ-G7PB';
+const DISPLAYFORCE_BASE = process.env.DISPLAYFORCE_API_URL || 'https://api.displayforce.ai/public/v1';
 
 export default async function handler(req, res) {
   // Configurar CORS
@@ -191,6 +192,7 @@ async function getSummary(req, res, start_date, end_date) {
     if (end_date) {
       query += ` AND day <= ${paramCount}`;
       params.push(end_date);
+      paramCount++;
     }
     
     console.log('📊 Summary query:', query);
@@ -324,23 +326,23 @@ async function getDevices(req, res) {
   try {
     console.log('🌐 Calling DisplayForce API...');
     
-    let response = await fetch('https://api.displayforce.ai/public/v1/device/list', {
-      method: 'GET',
+    let response = await fetch(`${DISPLAYFORCE_BASE}/device/list`, {
+      method: 'POST',
       headers: {
         'X-API-Token': DISPLAYFORCE_TOKEN,
+        'Content-Type': 'application/json',
         'Accept': 'application/json'
-      }
+      },
+      body: JSON.stringify({})
     });
     
     if (!response.ok && response.status === 405) {
-      response = await fetch('https://api.displayforce.ai/public/v1/device/list', {
-        method: 'POST',
+      response = await fetch(`${DISPLAYFORCE_BASE}/device/list`, {
+        method: 'GET',
         headers: {
           'X-API-Token': DISPLAYFORCE_TOKEN,
-          'Content-Type': 'application/json',
           'Accept': 'application/json'
-        },
-        body: JSON.stringify({})
+        }
       });
     }
     

@@ -23,19 +23,11 @@ try {
 dotenv.config();
 
 const app = express();
+const DISPLAYFORCE_BASE = process.env.DISPLAYFORCE_API_URL || "https://api.displayforce.ai/public/v1";
+const DISPLAYFORCE_TOKEN_ENV = process.env.DISPLAYFORCE_API_TOKEN || process.env.DISPLAYFORCE_TOKEN || "";
 
-// CORS configurado para produção
-const corsOptions = {
-  origin: [
-    'http://localhost:5173',
-    'http://localhost:3000',
-    'https://*.vercel.app',
-    'https://assai-dashboard.vercel.app'
-  ],
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  credentials: false
-};
-app.use(cors(corsOptions));
+// CORS aberto para uso público
+app.use(cors());
 app.use(express.json());
 
 // Configuração do banco de dados
@@ -163,7 +155,7 @@ async function fetchDayAllPages(token, day, deviceId) {
     
     if (deviceId) body.device_id = deviceId;
     
-    const resp = await fetch("https://api.displayforce.ai/public/v1/stats/visitor/list", {
+    const resp = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-API-Token": token },
       body: JSON.stringify(body)
@@ -272,7 +264,7 @@ app.get("/api/stats/visitors", async (req, res) => {
   try {
     console.log("📊 GET /api/stats/visitors", req.query);
     
-    const token = process.env.DISPLAYFORCE_TOKEN;
+    const token = DISPLAYFORCE_TOKEN_ENV;
     if (!token) {
       return res.status(500).json({ error: "DISPLAYFORCE_TOKEN não configurado" });
     }
@@ -481,7 +473,7 @@ async function refreshDayForStore(day, storeId) {
   try {
     console.log(`🔄 Atualizando dados para ${day}, loja: ${storeId}`);
     
-    const token = process.env.DISPLAYFORCE_TOKEN;
+    const token = DISPLAYFORCE_TOKEN_ENV;
     if (!token) {
       throw new Error("DISPLAYFORCE_TOKEN não configurado");
     }
@@ -664,7 +656,8 @@ setTimeout(() => {
 const port = process.env.PORT || 3001;
 app.listen(port, '0.0.0.0', () => {
   console.log(`🚀 Backend rodando na porta ${port}`);
-  console.log(`🌐 Health check: http://localhost:${port}/api/health`);
-  console.log(`📊 Dashboard: http://localhost:${port}/api/stats/visitors?start=2025-12-01&end=2025-12-02`);
-  console.log(`📋 Lista: http://localhost:${port}/api/visitors/list?start=2025-12-01&end=2025-12-02&page=1&pageSize=20`);
+  const base = process.env.PUBLIC_URL || `http://0.0.0.0:${port}`;
+  console.log(`🌐 Health check: ${base}/api/health`);
+  console.log(`📊 Dashboard: ${base}/api/stats/visitors?start=2025-12-01&end=2025-12-02`);
+  console.log(`📋 Lista: ${base}/api/visitors/list?start=2025-12-01&end=2025-12-02&page=1&pageSize=20`);
 });

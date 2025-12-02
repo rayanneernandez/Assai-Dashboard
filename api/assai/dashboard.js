@@ -80,7 +80,7 @@ async function getVisitors(req, res, start_date, end_date, store_id) {
     let query = `
       SELECT 
         visitor_id as id,
-        day,
+        day_date as day,
         store_id,
         store_name,
         timestamp,
@@ -96,13 +96,13 @@ async function getVisitors(req, res, start_date, end_date, store_id) {
     let paramCount = 1;
     
     if (start_date) {
-      query += ` AND day >= ${paramCount}`;
+      query += ` AND day_date >= ${paramCount}`;
       params.push(start_date);
       paramCount++;
     }
     
     if (end_date) {
-      query += ` AND day <= ${paramCount}`;
+      query += ` AND day_date <= ${paramCount}`;
       params.push(end_date);
       paramCount++;
     }
@@ -175,9 +175,11 @@ async function getVisitors(req, res, start_date, end_date, store_id) {
       const arr = Array.isArray(payload) ? payload : [];
       all.push(...arr);
       const pg = page.pagination;
-      if (!pg || arr.length < limit || (pg.total && all.length >= pg.total)) break;
-      offset += limit;
-      if (offset >= 2000) break;
+      const pageLimit = Number(pg?.limit ?? limit);
+      if (pg?.total && all.length >= Number(pg.total)) break;
+      if (arr.length < pageLimit) break;
+      offset += pageLimit;
+      if (offset >= 20000) break;
     }
     
     const DAYS = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];

@@ -1,6 +1,10 @@
 import { Device, Visitor } from "@/types/api";
 
-const API_BASE_URL = (import.meta as any).env?.VITE_API_URL || (typeof window !== "undefined" ? window.location.origin + "/api/assai" : "/api/assai");
+const RAW_BASE = (import.meta as any).env?.VITE_API_URL;
+const BASE_TRIM = typeof RAW_BASE === "string" ? RAW_BASE.trim().replace(/\/+$/, "") : "";
+const API_BASE_URL = BASE_TRIM
+  ? (/\/api\/assai$/.test(BASE_TRIM) ? BASE_TRIM : `${BASE_TRIM}/api/assai`)
+  : (typeof window !== "undefined" ? `${window.location.origin}/api/assai` : "/api/assai");
 const API_TOKEN = (import.meta as any).env?.VITE_DISPLAYFORCE_API_TOKEN ?? "4AUH-BX6H-G2RJ-G7PB";
 
 const headers = {

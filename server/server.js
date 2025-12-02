@@ -172,8 +172,10 @@ async function fetchDayAllPages(token, day, deviceId) {
     all.push(...arr);
     
     const pg = json.pagination;
-    if (!pg || arr.length < limit || (pg.total && all.length >= pg.total)) break;
-    offset += limit;
+    const pageLimit = Number(pg?.limit ?? limit);
+    if (pg?.total && all.length >= Number(pg.total)) break;
+    if (arr.length < pageLimit) break;
+    offset += pageLimit;
   }
   
   return all;

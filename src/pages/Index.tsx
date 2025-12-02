@@ -111,11 +111,13 @@ const Index = () => {
         appliedFilters.start,
         appliedFilters.end
       ),
-    enabled: !backendStats || !!backendError,
+    enabled: true,
     retry: 0,
+    staleTime: 5_000,
   });
 
-  const stats: VisitorStats = backendStats ?? calculateStats(visitors);
+  const computed = calculateStats(visitors);
+  const stats: VisitorStats = backendStats ? backendStats : computed;
 
   useEffect(() => {
     if (devicesError) toast({ title: "Erro ao buscar lojas", description: String(devicesError) });

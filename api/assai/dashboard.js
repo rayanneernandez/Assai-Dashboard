@@ -172,8 +172,12 @@ async function getVisitors(req, res, start_date, end_date, store_id) {
 }
 
 async function getVisitorsFromDisplayForce(res, start_date, end_date, store_id) {
-  const startISO = `${(start_date || new Date().toISOString().split('T')[0])}T00:00:00Z`;
-  const endISO = `${(end_date || new Date().toISOString().split('T')[0])}T23:59:59Z`;
+  const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
+  const sign = tz >= 0 ? "+" : "-";
+  const hh = String(Math.abs(tz)).padStart(2, "0");
+  const tzStr = `${sign}${hh}:00`;
+  const startISO = `${(start_date || new Date().toISOString().split('T')[0])}T00:00:00${tzStr}`;
+  const endISO = `${(end_date || new Date().toISOString().split('T')[0])}T23:59:59${tzStr}`;
   const LIMIT_REQ = 500;
   let offset = 0;
   const all = [];
@@ -214,8 +218,9 @@ async function getVisitorsFromDisplayForce(res, start_date, end_date, store_id) 
   const DAYS = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
   const visitors = all.map((v) => {
     const ts = String(v.start ?? v.tracks?.[0]?.start ?? new Date().toISOString());
-    const d = new Date(ts);
-    const di = d.getUTCDay();
+    const base = new Date(ts);
+    const local = new Date(base.getTime() + tz * 3600000);
+    const di = local.getUTCDay();
     const day_of_week = DAYS[di];
     const attrs = Array.isArray(v.additional_atributes) ? v.additional_atributes : [];
     const last = attrs.length ? attrs[attrs.length - 1] : {};
@@ -223,7 +228,7 @@ async function getVisitorsFromDisplayForce(res, start_date, end_date, store_id) 
     const deviceId = String(v.tracks?.[0]?.device_id ?? (Array.isArray(v.devices) ? v.devices[0] : ''));
     return {
       id: String(v.visitor_id ?? v.session_id ?? v.id ?? ''),
-      date: ts.slice(0,10),
+      date: local.toISOString().slice(0,10),
       store_id: deviceId,
       store_name: `Loja ${deviceId}`,
       timestamp: ts,

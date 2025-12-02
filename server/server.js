@@ -101,6 +101,7 @@ function aggregateVisitors(payload) {
   const byGenderHour = { male: {}, female: {} };
   let total = 0, men = 0, women = 0, avgAgeSum = 0, avgAgeCount = 0;
   
+  const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
   for (const v of payload) {
     total++;
     const g = v.sex === 1 ? "M" : "F";
@@ -116,12 +117,13 @@ function aggregateVisitors(payload) {
     
     const ts = v.start || (v.tracks && v.tracks[0] && v.tracks[0].start);
     if (ts) {
-      const d = new Date(ts);
+      const base = new Date(ts);
+      const local = new Date(base.getTime() + tz * 3600000);
       const map = ["sunday","monday","tuesday","wednesday","thursday","friday","saturday"];
-      const key = map[d.getUTCDay()];
+      const key = map[local.getUTCDay()];
       byWeekday[key] = (byWeekday[key] || 0) + 1;
       
-      const h = d.getUTCHours();
+      const h = local.getUTCHours();
       byHour[h] = (byHour[h] || 0) + 1;
       
       if (g === "M") byGenderHour.male[h] = (byGenderHour.male[h] || 0) + 1; 
@@ -138,9 +140,13 @@ async function fetchDayAllPages(token, day, deviceId) {
   const all = [];
   
   while (true) {
+    const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
+    const sign = tz >= 0 ? "+" : "-";
+    const hh = String(Math.abs(tz)).padStart(2, "0");
+    const tzStr = `${sign}${hh}:00`;
     const body = {
-      start: `${day}T00:00:00Z`,
-      end: `${day}T23:59:59Z`,
+      start: `${day}T00:00:00${tzStr}`,
+      end: `${day}T23:59:59${tzStr}`,
       limit,
       offset,
       tracks: true,

@@ -23,6 +23,7 @@ export async function fetchVisitorStats(deviceId?: string, start?: string, end?:
     if (start) params.set("start_date", start);
     if (end) params.set("end_date", end);
     if (deviceId) params.set("store_id", deviceId);
+    params.set("source", "displayforce");
     const resp = await fetch(`${base}/api/assai/dashboard?${params.toString()}`, { signal: controller.signal });
     if (!resp.ok) throw new Error(`Backend error [${resp.status}] ${await resp.text()}`);
     const json = await resp.json();
@@ -68,6 +69,7 @@ export async function fetchVisitorsPage(deviceId?: string, start?: string, end?:
     if (start) params.set("start_date", start);
     if (end) params.set("end_date", end);
     params.set("store_id", deviceId && deviceId !== "all" ? String(deviceId) : "all");
+    params.set("source", "displayforce");
     const resp = await fetch(`${base}/api/assai/dashboard?${params.toString()}`, { signal: controller.signal });
     if (!resp.ok) throw new Error(`Backend error [${resp.status}] ${await resp.text()}`);
     const json = await resp.json();

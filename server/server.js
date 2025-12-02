@@ -407,8 +407,8 @@ app.get("/api/visitors/list", async (req, res) => {
     const ps = Math.min(1000, Math.max(1, parseInt(String(pageSize)) || 40));
     const offset = (p - 1) * ps;
     
-    // CORREÇÃO AQUI: usar day_date em vez de day
-    let whereConditions = ["day >= $1", "day <= $2"];
+    // Usando 'day' (coluna correta) para filtros de data
+let whereConditions = ["day >= $1", "day <= $2"];
     const params = [start, end];
     
     // Adicionar filtro de loja se fornecido
@@ -428,7 +428,7 @@ app.get("/api/visitors/list", async (req, res) => {
     const total = countResult.rows[0]?.total ?? 0;
     
     // Query de dados
-    const dataParams = [...params]; // Copiar parâmetros
+    const dataParams = [...params];
     const limitParamIndex = dataParams.length + 1;
     const offsetParamIndex = dataParams.length + 2;
     

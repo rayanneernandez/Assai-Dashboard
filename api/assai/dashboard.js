@@ -238,6 +238,17 @@ async function getVisitorsFromDisplayForce(res, start_date, end_date, store_id) 
       smile,
     };
   });
+  try {
+    for (const r of visitors) {
+      await pool.query(
+        `INSERT INTO public.visitors (visitor_id, day, timestamp, store_id, store_name, gender, age, day_of_week, smile)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING`,
+        [r.id, r.date, r.timestamp, r.store_id, r.store_name || null, r.gender === 'Masculino' ? 'M' : 'F', r.age, r.day_of_week, r.smile]
+      );
+    }
+  } catch (e) {
+    console.error('❌ Erro ao inserir visitantes (DF->DB):', e.message);
+  }
   return res.status(200).json({ success: true, data: visitors, count: visitors.length, source: 'displayforce', query: { start_date, end_date, store_id } });
 }
 

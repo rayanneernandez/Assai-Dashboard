@@ -23,10 +23,15 @@ export async function fetchVisitorStats(deviceId?: string, start?: string, end?:
     if (start) params.set("start_date", start);
     if (end) params.set("end_date", end);
     if (deviceId) params.set("store_id", deviceId);
-    params.set("source", "displayforce");
-    const resp = await fetch(`${base}/api/assai/dashboard?${params.toString()}`, { signal: controller.signal });
+
+    let resp = await fetch(`${base}/api/assai/dashboard?${params.toString()}`, { signal: controller.signal });
     if (!resp.ok) throw new Error(`Backend error [${resp.status}] ${await resp.text()}`);
-    const json = await resp.json();
+    let json = await resp.json();
+    if (Number((json as any).totalVisitors ?? 0) === 0) {
+      params.set("source", "displayforce");
+      resp = await fetch(`${base}/api/assai/dashboard?${params.toString()}`, { signal: controller.signal });
+      if (resp.ok) json = await resp.json();
+    }
     const visitsByDay = (json as any).visitsByDay ?? {};
     const toPt: Record<string, string> = { Sunday: "Dom", Monday: "Seg", Tuesday: "Ter", Wednesday: "Qua", Thursday: "Qui", Friday: "Sex", Saturday: "Sáb" };
     const byDayOfWeek: Record<string, number> = {};

@@ -31,7 +31,7 @@ export async function fetchVisitorStats(deviceId?: string, start?: string, end?:
       const endD = new Date(effEnd + "T00:00:00Z");
       const rangeDays = Math.max(1, Math.round((endD.getTime() - startD.getTime())/86400000) + 1);
       const isTodayOnly = effStart === today && effEnd === today;
-      if (isTodayOnly || (rangeDays <= 7 && Number.isFinite(rangeDays))) {
+      if (isTodayOnly) {
         const rf = new URLSearchParams();
         rf.set("endpoint", "refresh");
         rf.set("start_date", effStart);
@@ -57,7 +57,7 @@ export async function fetchVisitorStats(deviceId?: string, start?: string, end?:
     const tot = Number((json as any).totalVisitors ?? 0);
     const isFallback = Boolean((json as any).isFallback);
     const byHourEmpty = Object.keys((json as any).byHour ?? {}).length === 0;
-    if (rangeDays <= 3 && (tot === 0 || isFallback || byHourEmpty || Object.keys(json).length === 0)) {
+    if (effStart === today && effEnd === today && (tot === 0 || isFallback || Object.keys(json).length === 0)) {
       params.set("source", "displayforce");
       resp = await fetch(`${base}/api/assai/dashboard?${params.toString()}`, { signal: controller.signal });
       if (!resp.ok) throw new Error(`Backend error [${resp.status}] ${await resp.text()}`);

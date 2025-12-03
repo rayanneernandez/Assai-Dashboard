@@ -58,7 +58,7 @@ export const fetchVisitors = async (
     params.set("endpoint", "visitors");
     params.set("start_date", startDate || today);
     params.set("end_date", endDate || today);
-    params.set("store_id", deviceId && deviceId !== "all" ? deviceId : "all");
+    if (deviceId && deviceId !== "all") params.set("store_id", deviceId);
 
 
     const response = await fetch(`${API_BASE_URL}/dashboard?${params.toString()}`, { headers: { Accept: "application/json" } });

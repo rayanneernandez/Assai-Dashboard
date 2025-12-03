@@ -84,13 +84,20 @@ export default async function handler(req, res) {
 // ===========================================
 async function getVisitors(req, res, start_date, end_date, store_id) {
   try {
-    if (req.query.source === 'displayforce') {
-      return await getVisitorsFromDisplayForce(res, start_date, end_date, store_id);
+    // Se pedirem explicitamente displayforce, mantém
+    if (req.query.source === "displayforce") {
+      return await getVisitorsFromDisplayForce(
+        res,
+        start_date,
+        end_date,
+        store_id
+      );
     }
+
     let query = `
       SELECT 
-        visitor_id as id,
-        day as day,
+        visitor_id AS id,
+        day        AS day,
         store_id,
         store_name,
         timestamp,
@@ -101,64 +108,48 @@ async function getVisitors(req, res, start_date, end_date, store_id) {
       FROM visitors
       WHERE 1=1
     `;
-    
+
     const params = [];
     let paramCount = 1;
-    
+
     if (start_date) {
-      query += ` AND day >= ${paramCount}`;
+      query += ` AND day >= $${paramCount}`;
       params.push(start_date);
       paramCount++;
     }
 
     if (end_date) {
-      query += ` AND day <= ${paramCount}`;
+      query += ` AND day <= $${paramCount}`;
       params.push(end_date);
       paramCount++;
     }
 
-    if (store_id && store_id !== 'all') {
-      query += ` AND store_id = ${paramCount}`;
+    if (store_id && store_id !== "all") {
+      query += ` AND store_id = $${paramCount}`;
       params.push(store_id);
       paramCount++;
     }
-    
+
     query += ` ORDER BY timestamp DESC LIMIT 1000`;
-    
-    console.log('📋 Query:', query.substring(0, 150));
-    
+
+    console.log("📋 Visitors query:", query, params);
+
     const result = await pool.query(query, params);
-    
-    if (result.rows.length > 0) {
-      const visitors = result.rows.map(row => ({
-        id: row.id,
-        date: row.day,
-        store_id: row.store_id,
-        store_name: row.store_name || `Loja ${row.store_id}`,
-        timestamp: row.timestamp,
-        gender: row.gender === 'M' ? 'Masculino' : 'Feminino',
-        age: row.age,
-        day_of_week: row.day_of_week,
-        smile: row.smile
-      }));
-      return res.status(200).json({
-        success: true,
-        data: visitors,
-        count: visitors.length,
-        source: 'database',
-        query: { start_date, end_date, store_id }
-      });
-    }
-    
-    return await getVisitorsFromDisplayForce(res, start_date, end_date, store_id);
-    
+
+    const rows = result.rows || [];
+
+    return res.status(200).json({
+      success: true,
+      data: rows,
+    });
   } catch (error) {
-    console.error('❌ Visitors error:', error);
-    try {
-      return await getVisitorsFromDisplayForce(res, start_date, end_date, store_id);
-    } catch (e2) {
-      return res.status(500).json({ success: false, error: e2.message || String(e2) });
-    }
+    console.error("❌ Visitors error:", error);
+
+    return res.status(200).json({
+      success: true,
+      data: [],
+      isFallback: true,
+    });
   }
 }
 
@@ -246,92 +237,35 @@ async function getVisitorsFromDisplayForce(res, start_date, end_date, store_id) 
 // ===========================================
 // 2. RESUMO DO DASHBOARD
 // ===========================================
-async function getSummary(req, res, start_date, end_date) {
+async function getSummary(req, res, start_date, end_date, store_id) {
+  const source = req.query.source;
+
   try {
-    const { store_id, source } = req.query;
-    const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
-    if (source === 'displayforce') {
-      const s = start_date || new Date().toISOString().slice(0,10);
-      const e = end_date || s;
-      const days = [];
-      let d = new Date(`${s}T00:00:00Z`);
-      const endD = new Date(`${e}T00:00:00Z`);
-      while (d <= endD) { days.push(d.toISOString().slice(0,10)); d = new Date(d.getTime() + 86400000); }
-      const map = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
-      let total = 0, male = 0, female = 0, avgSum = 0, avgCount = 0;
-      const visitsByDay = { Sunday:0, Monday:0, Tuesday:0, Wednesday:0, Thursday:0, Friday:0, Saturday:0 };
-      const byAgeGroup = { '18-25':0, '26-35':0, '36-45':0, '46-60':0, '60+':0 };
-      const byHour = {};
-      const byGenderHour = { male: {}, female: {} };
-      const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
-      for (const day of days) {
-        let offset = 0;
-        const limitReq = 500;
-        let dayTotal = 0;
-        while (true) {
-          const tzSign = tz >= 0 ? "+" : "-";
-          const tzHH = String(Math.abs(tz)).padStart(2, "0");
-          const tzStr = `${tzSign}${tzHH}:00`;
-          const bodyPayload = { start: `${day}T00:00:00${tzStr}`, end: `${day}T23:59:59${tzStr}`, limit: limitReq, offset, tracks: true };
-          if (store_id && store_id !== 'all') bodyPayload.device_id = store_id;
-          const response = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method: 'POST', headers: { 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type': 'application/json' }, body: JSON.stringify(bodyPayload) });
-          if (!response.ok) { const t = await response.text().catch(()=>"" ); throw new Error(`DF stats ${response.status} ${t}`); }
-          const page = await response.json();
-          const arr = Array.isArray(page.payload || page.data) ? (page.payload || page.data) : [];
-          dayTotal += arr.length;
-          for (const v of arr) {
-            const ts = String(v.start || v.tracks?.[0]?.start || new Date().toISOString());
-            const base = new Date(ts); const local = new Date(base.getTime() + tz*3600000);
-            const dstrLocal = `${local.getFullYear()}-${String(local.getMonth()+1).padStart(2,'0')}-${String(local.getDate()).padStart(2,'0')}`;
-            if (dstrLocal !== day) continue;
-            total++;
-            if (v.sex === 1) male++; else female++;
-            const age = Number(v.age || 0); if (age>0) { avgSum += age; avgCount++; }
-            if (age>=18 && age<=25) byAgeGroup['18-25']++; else if (age>=26 && age<=35) byAgeGroup['26-35']++; else if (age>=36 && age<=45) byAgeGroup['36-45']++; else if (age>=46 && age<=60) byAgeGroup['46-60']++; else if (age>60) byAgeGroup['60+']++;
-            const wd = map[local.getDay()];
-            visitsByDay[wd] = (visitsByDay[wd] || 0) + 1;
-            const h = local.getHours();
-            byHour[h] = (byHour[h] || 0) + 1;
-            if (v.sex === 1) byGenderHour.male[h] = (byGenderHour.male[h] || 0) + 1; else byGenderHour.female[h] = (byGenderHour.female[h] || 0) + 1;
-          }
-          const pg = page.pagination; const pageLimit = Number(pg?.limit ?? limitReq);
-          if (pg?.total && dayTotal >= Number(pg.total)) break;
-          if (arr.length < pageLimit) break;
-          offset += pageLimit;
-        }
-      }
-      return res.status(200).json({
-        success: true,
-        totalVisitors: total,
-        totalMale: male,
-        totalFemale: female,
-        averageAge: avgCount ? Math.round(avgSum / avgCount) : 0,
-        visitsByDay,
-        byAgeGroup,
-        byHour,
-        byGenderHour
-      });
+    // Se for explícito usar DisplayForce, mantém como já estava
+    if (source === "displayforce") {
+      return await getSummaryFromDisplayForce(res, start_date, end_date, store_id);
     }
-    // Buscar dados do dashboard diário
+
+    // ---------- DAILY / RESUMO GERAL ----------
     let query = `
       SELECT
-        COALESCE(SUM(total_visitors),0) as total,
-        COALESCE(SUM(male),0) as male,
-        COALESCE(SUM(female),0) as female,
-        COALESCE(SUM(avg_age_sum),0) as avg_age_sum,
-        COALESCE(SUM(avg_age_count),0) as avg_age_count,
-        COALESCE(SUM(age_18_25),0) as age_18_25,
-        COALESCE(SUM(age_26_35),0) as age_26_35,
-        COALESCE(SUM(age_36_45),0) as age_36_45,
-        COALESCE(SUM(age_46_60),0) as age_46_60,
-        COALESCE(SUM(age_60_plus),0) as age_60_plus,
-        COALESCE(SUM(monday),0) as monday,
-        COALESCE(SUM(tuesday),0) as tuesday,
-        COALESCE(SUM(wednesday),0) as wednesday,
-        COALESCE(SUM(thursday),0) as thursday,
-        COALESCE(SUM(friday),0) as friday,
-        COALESCE(SUM(saturday),0) as saturday,
-        COALESCE(SUM(sunday),0) as sunday
+        COALESCE(SUM(total_visitors), 0)  AS total_visitors,
+        COALESCE(SUM(male), 0)            AS total_male,
+        COALESCE(SUM(female), 0)          AS total_female,
+        COALESCE(SUM(avg_age_sum), 0)     AS avg_age_sum,
+        COALESCE(SUM(avg_age_count), 0)   AS avg_age_count,
+        COALESCE(SUM(age_18_25), 0)       AS age_18_25,
+        COALESCE(SUM(age_26_35), 0)       AS age_26_35,
+        COALESCE(SUM(age_36_45), 0)       AS age_36_45,
+        COALESCE(SUM(age_46_60), 0)       AS age_46_60,
+        COALESCE(SUM(age_60_plus), 0)     AS age_60_plus,
+        COALESCE(SUM(sunday), 0)          AS sunday,
+        COALESCE(SUM(monday), 0)          AS monday,
+        COALESCE(SUM(tuesday), 0)         AS tuesday,
+        COALESCE(SUM(wednesday), 0)       AS wednesday,
+        COALESCE(SUM(thursday), 0)        AS thursday,
+        COALESCE(SUM(friday), 0)          AS friday,
+        COALESCE(SUM(saturday), 0)        AS saturday
       FROM dashboard_daily
       WHERE 1=1
     `;
@@ -340,135 +274,142 @@ async function getSummary(req, res, start_date, end_date) {
     let paramCount = 1;
 
     if (start_date) {
-      query += ` AND day >= ${paramCount}`;
+      query += ` AND day >= $${paramCount}`;
       params.push(start_date);
       paramCount++;
     }
-    
+
     if (end_date) {
-      query += ` AND day <= ${paramCount}`;
+      query += ` AND day <= $${paramCount}`;
       params.push(end_date);
       paramCount++;
     }
-    
-    if (store_id && store_id !== 'all') {
-      query += ` AND store_id = ${paramCount}`;
+
+    if (store_id && store_id !== "all") {
+      query += ` AND store_id = $${paramCount}`;
       params.push(store_id);
       paramCount++;
     }
 
-    console.log('📊 Summary query:', query);
+    console.log("📊 Summary query:", query, params);
 
     const result = await pool.query(query, params);
     const row = result.rows[0] || {};
-    const avgAgeValue = Number(row.avg_age_count || 0) > 0 ? Number(row.avg_age_sum || 0) / Number(row.avg_age_count || 0) : 0;
 
-    let total = Number(row.total || 0);
-    let male = Number(row.male || 0);
-    let female = Number(row.female || 0);
-    let avgAge = Math.round(avgAgeValue);
+    const avgCount = Number(row.avg_age_count || 0);
+    const averageAge =
+      avgCount > 0 ? Number(row.avg_age_sum || 0) / avgCount : 0;
 
-    let visitsByDay = {
-      Monday: Number(row.monday || 0),
-      Tuesday: Number(row.tuesday || 0),
-      Wednesday: Number(row.wednesday || 0),
-      Thursday: Number(row.thursday || 0),
-      Friday: Number(row.friday || 0),
-      Saturday: Number(row.saturday || 0),
-      Sunday: Number(row.sunday || 0)
-    };
+    // ---------- HOURLY ----------
+    let hQuery = `
+      SELECT
+        hour,
+        COALESCE(SUM(total), 0)  AS total,
+        COALESCE(SUM(male), 0)   AS male,
+        COALESCE(SUM(female), 0) AS female
+      FROM dashboard_hourly
+      WHERE 1=1
+    `;
 
-    let byAgeGroup = {
-      '18-25': Number(row.age_18_25 || 0),
-      '26-35': Number(row.age_26_35 || 0),
-      '36-45': Number(row.age_36_45 || 0),
-      '46-60': Number(row.age_46_60 || 0),
-      '60+': Number(row.age_60_plus || 0),
-    };
-
-    // Horários agregados
-    let hQuery = `SELECT hour, COALESCE(SUM(total),0) as total, COALESCE(SUM(male),0) as male, COALESCE(SUM(female),0) as female FROM dashboard_hourly WHERE 1=1`;
     const hParams = [];
     let hc = 1;
-    if (start_date) { hQuery += ` AND day >= ${hc}`; hParams.push(start_date); hc++; }
-    if (end_date) { hQuery += ` AND day <= ${hc}`; hParams.push(end_date); hc++; }
-    if (store_id && store_id !== 'all') { hQuery += ` AND store_id = ${hc}`; hParams.push(store_id); hc++; }
+
+    if (start_date) {
+      hQuery += ` AND day >= $${hc}`;
+      hParams.push(start_date);
+      hc++;
+    }
+
+    if (end_date) {
+      hQuery += ` AND day <= $${hc}`;
+      hParams.push(end_date);
+      hc++;
+    }
+
+    if (store_id && store_id !== "all") {
+      hQuery += ` AND store_id = $${hc}`;
+      hParams.push(store_id);
+      hc++;
+    }
+
     hQuery += ` GROUP BY hour ORDER BY hour ASC`;
+
+    console.log("⏰ Hourly query:", hQuery, hParams);
+
     const hRes = await pool.query(hQuery, hParams);
-    let byHour = {}; let byGenderHour = { male: {}, female: {} };
+
+    const byHour = {};
+    const byGenderHour = { male: {}, female: {} };
+
     for (const r of hRes.rows) {
-      const h = Number(r.hour);
-      byHour[h] = Number(r.total || 0);
-      byGenderHour.male[h] = Number(r.male || 0);
-      byGenderHour.female[h] = Number(r.female || 0);
-    }
-    const sumHours = Object.values(byHour).reduce((a, b) => a + Number(b || 0), 0);
-    const sumMale = Object.values(byGenderHour.male).reduce((a, b) => a + Number(b || 0), 0);
-    const sumFemale = Object.values(byGenderHour.female).reduce((a, b) => a + Number(b || 0), 0);
-    total = sumHours;
-    male = sumMale;
-    female = sumFemale;
-
-    if (total === 0) {
-      let vQuery = `SELECT gender, age, day_of_week, EXTRACT(HOUR FROM timestamp AT TIME ZONE 'UTC') AS hour FROM visitors WHERE 1=1`;
-      const vParams = [];
-      let pc = 1;
-      if (start_date) { vQuery += ` AND day >= ${pc}`; vParams.push(start_date); pc++; }
-      if (end_date) { vQuery += ` AND day <= ${pc}`; vParams.push(end_date); pc++; }
-      if (store_id && store_id !== 'all') { vQuery += ` AND store_id = ${pc}`; vParams.push(store_id); pc++; }
-      const vRes = await pool.query(vQuery, vParams);
-      const mapPt = { Dom: 'Sunday', Seg: 'Monday', Ter: 'Tuesday', Qua: 'Wednesday', Qui: 'Thursday', Sex: 'Friday', Sáb: 'Saturday' };
-      let avgSum = 0, avgCount = 0;
-      total = vRes.rows.length;
-      male = 0; female = 0;
-      visitsByDay = { Sunday:0, Monday:0, Tuesday:0, Wednesday:0, Thursday:0, Friday:0, Saturday:0 };
-      byHour = {}; byGenderHour = { male: {}, female: {} };
-      byAgeGroup = { '18-25':0, '26-35':0, '36-45':0, '46-60':0, '60+':0 };
-      for (const r of vRes.rows) {
-        if (String(r.gender) === 'M') male++; else if (String(r.gender) === 'F') female++;
-        const age = Number(r.age || 0); if (age > 0) { avgSum += age; avgCount++; }
-        if (age>=18 && age<=25) byAgeGroup['18-25']++; else if (age>=26 && age<=35) byAgeGroup['26-35']++; else if (age>=36 && age<=45) byAgeGroup['36-45']++; else if (age>=46 && age<=60) byAgeGroup['46-60']++; else if (age>60) byAgeGroup['60+']++;
-        const en = mapPt[String(r.day_of_week || '')]; if (en) { visitsByDay[en] = (visitsByDay[en] || 0) + 1; }
-        const hLocal = ((Number(r.hour || 0) + tz) % 24 + 24) % 24; byHour[hLocal] = (byHour[hLocal] || 0) + 1; if (String(r.gender) === 'M') byGenderHour.male[hLocal] = (byGenderHour.male[hLocal] || 0) + 1; else byGenderHour.female[hLocal] = (byGenderHour.female[hLocal] || 0) + 1;
-      }
-      avgAge = avgCount ? Math.round(avgSum / avgCount) : 0;
+      const hour = String(r.hour);
+      byHour[hour] = Number(r.total || 0);
+      byGenderHour.male[hour] = Number(r.male || 0);
+      byGenderHour.female[hour] = Number(r.female || 0);
     }
 
-    return res.status(200).json({
+    // ---------- MONTA RESPOSTA ----------
+    const response = {
       success: true,
-      totalVisitors: total,
-      totalMale: male,
-      totalFemale: female,
-      averageAge: avgAge,
-      visitsByDay,
-      byAgeGroup,
+      totalVisitors: Number(row.total_visitors || 0),
+      totalMale: Number(row.total_male || 0),
+      totalFemale: Number(row.total_female || 0),
+      averageAge,
+      visitsByDay: {
+        Sunday: Number(row.sunday || 0),
+        Monday: Number(row.monday || 0),
+        Tuesday: Number(row.tuesday || 0),
+        Wednesday: Number(row.wednesday || 0),
+        Thursday: Number(row.thursday || 0),
+        Friday: Number(row.friday || 0),
+        Saturday: Number(row.saturday || 0),
+      },
+      byAgeGroup: {
+        "18-25": Number(row.age_18_25 || 0),
+        "26-35": Number(row.age_26_35 || 0),
+        "36-45": Number(row.age_36_45 || 0),
+        "46-60": Number(row.age_46_60 || 0),
+        "60+": Number(row.age_60_plus || 0),
+      },
       byHour,
       byGenderHour,
-      genderDistribution: {
-        male: total > 0 ? Math.round((male / total) * 1000) / 10 : 0,
-        female: total > 0 ? Math.round((female / total) * 1000) / 10 : 0
-      },
-      query: { start_date, end_date, store_id: store_id || 'all' }
-    });
-    
+      isFallback: false,
+    };
+
+    return res.status(200).json(response);
   } catch (error) {
-    console.error('❌ Summary error:', error);
-    
-    // Fallback
+    console.error("❌ Summary error:", error);
+
+    // fallback antigo, se quiser manter
     return res.status(200).json({
       success: true,
       totalVisitors: 0,
       totalMale: 0,
       totalFemale: 0,
       averageAge: 0,
-      visitsByDay: { Sunday:0, Monday:0, Tuesday:0, Wednesday:0, Thursday:0, Friday:0, Saturday:0 },
-      byAgeGroup: { '18-25':0, '26-35':0, '36-45':0, '46-60':0, '60+':0 },
+      visitsByDay: {
+        Sunday: 0,
+        Monday: 0,
+        Tuesday: 0,
+        Wednesday: 0,
+        Thursday: 0,
+        Friday: 0,
+        Saturday: 0,
+      },
+      byAgeGroup: {
+        "18-25": 0,
+        "26-35": 0,
+        "36-45": 0,
+        "46-60": 0,
+        "60+": 0,
+      },
       byHour: {},
       byGenderHour: { male: {}, female: {} },
-      isFallback: true
+      isFallback: true,
     });
   }
 }
+
 
 // Funções de refresh (serverless)
 async function refreshRange(req, res, start_date, end_date, store_id) {

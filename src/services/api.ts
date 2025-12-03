@@ -16,12 +16,16 @@ const AUTH_QUERY = "";
 
 export const fetchDevices = async (): Promise<Device[]> => {
   try {
-    const response = await fetch(`${API_BASE_URL}/dashboard?endpoint=devices`);
+    const response = await fetch(`${API_BASE_URL}/dashboard?endpoint=devices`, { headers: { Accept: "application/json" } });
     if (!response.ok) {
       const body = await response.text().catch(() => "");
       throw new Error(`Failed to fetch devices [${response.status}] ${response.statusText} ${body}`);
     }
-    const data = await response.json();
+    let data: any;
+    try { data = await response.json(); } catch {
+      const body = await response.text().catch(() => "");
+      throw new SyntaxError(`Devices JSON parse failed: ${body.slice(0,120)}`);
+    }
     const list = (data as any).devices ?? (data as any).data ?? [];
     return Array.isArray(list)
       ? (list as any[]).map((d: any) => ({
@@ -51,12 +55,16 @@ export const fetchVisitors = async (
     params.set("store_id", deviceId && deviceId !== "all" ? deviceId : "all");
 
 
-    const response = await fetch(`${API_BASE_URL}/dashboard?${params.toString()}`);
+    const response = await fetch(`${API_BASE_URL}/dashboard?${params.toString()}`, { headers: { Accept: "application/json" } });
     if (!response.ok) {
       const body = await response.text().catch(() => "");
       throw new Error(`Failed to fetch visitors [${response.status}] ${response.statusText} ${body}`);
     }
-    const json = await response.json();
+    let json: any;
+    try { json = await response.json(); } catch {
+      const body = await response.text().catch(() => "");
+      throw new SyntaxError(`Visitors JSON parse failed: ${body.slice(0,120)}`);
+    }
     const raw = (json as any).data ?? [];
 
     const mapped = (raw as any[]).map((row: any) => {

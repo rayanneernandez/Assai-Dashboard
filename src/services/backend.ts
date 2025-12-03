@@ -24,12 +24,18 @@ export async function fetchVisitorStats(deviceId?: string, start?: string, end?:
     if (end) params.set("end_date", end);
     if (deviceId) params.set("store_id", deviceId);
     try {
-      const rf = new URLSearchParams();
-      rf.set("endpoint", "refresh");
-      if (start) rf.set("start_date", start);
-      if (end) rf.set("end_date", end);
-      rf.set("store_id", deviceId && deviceId !== "all" ? deviceId : "all");
-      fetch(`${base}/api/assai/dashboard?${rf.toString()}`).catch(() => {});
+      const today = new Date().toISOString().slice(0,10);
+      const effStart = start || today;
+      const effEnd = end || effStart;
+      const isToday = effStart === today && effEnd === today;
+      if (isToday) {
+        const rf = new URLSearchParams();
+        rf.set("endpoint", "refresh");
+        rf.set("start_date", effStart);
+        rf.set("end_date", effEnd);
+        rf.set("store_id", deviceId && deviceId !== "all" ? deviceId : "all");
+        fetch(`${base}/api/assai/dashboard?${rf.toString()}`).catch(() => {});
+      }
     } catch {}
     let resp = await fetch(`${base}/api/assai/dashboard?${params.toString()}`, { signal: controller.signal });
     if (!resp.ok) throw new Error(`Backend error [${resp.status}] ${await resp.text()}`);
@@ -84,7 +90,6 @@ export async function fetchVisitorsPage(deviceId?: string, start?: string, end?:
     if (start) params.set("start_date", start);
     if (end) params.set("end_date", end);
     params.set("store_id", deviceId && deviceId !== "all" ? String(deviceId) : "all");
-    params.set("source", "displayforce");
     const resp = await fetch(`${base}/api/assai/dashboard?${params.toString()}`, { signal: controller.signal });
     if (!resp.ok) throw new Error(`Backend error [${resp.status}] ${await resp.text()}`);
     const json = await resp.json();

@@ -402,6 +402,12 @@ async function getSummary(req, res, start_date, end_date) {
       byGenderHour.male[h] = Number(r.male || 0);
       byGenderHour.female[h] = Number(r.female || 0);
     }
+    const sumHours = Object.values(byHour).reduce((a, b) => a + Number(b || 0), 0);
+    const sumMale = Object.values(byGenderHour.male).reduce((a, b) => a + Number(b || 0), 0);
+    const sumFemale = Object.values(byGenderHour.female).reduce((a, b) => a + Number(b || 0), 0);
+    total = sumHours;
+    male = sumMale;
+    female = sumFemale;
 
     if (total === 0) {
       let vQuery = `SELECT gender, age, day_of_week, EXTRACT(HOUR FROM timestamp AT TIME ZONE 'UTC') AS hour FROM visitors WHERE 1=1`;

@@ -1,10 +1,16 @@
 import { Device, Visitor } from "@/types/api";
 
 const RAW_BASE = (import.meta as any).env?.VITE_API_URL;
-const BASE_TRIM = typeof RAW_BASE === "string" ? RAW_BASE.trim().replace(/\/+$/, "") : "";
-const API_BASE_URL = BASE_TRIM
-  ? (/\/api\/assai$/.test(BASE_TRIM) ? BASE_TRIM : `${BASE_TRIM}/api/assai`)
-  : (typeof window !== "undefined" ? `${window.location.origin}/api/assai` : "/api/assai");
+const BASE_TRIM = typeof RAW_BASE === "string" ? RAW_BASE.trim() : "";
+const BASE_NORM = (() => {
+  if (!BASE_TRIM) return "";
+  const noJs = BASE_TRIM.replace(/dashboard\.js$/i, "");
+  const noDash = noJs.replace(/\/dashboard$/i, "");
+  const collapsed = noDash.replace(/\/+$/g, "");
+  const idx = collapsed.indexOf("/api/assai");
+  return idx >= 0 ? collapsed.slice(0, idx + "/api/assai".length) : `${collapsed}/api/assai`;
+})();
+const API_BASE_URL = BASE_NORM || (typeof window !== "undefined" ? `${window.location.origin}/api/assai` : "/api/assai");
 const API_TOKEN = (import.meta as any).env?.VITE_DISPLAYFORCE_API_TOKEN ?? "4AUH-BX6H-G2RJ-G7PB";
 
 const headers = {

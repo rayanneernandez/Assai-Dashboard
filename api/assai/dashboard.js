@@ -344,13 +344,13 @@ async function getSummary(req, res, start_date, end_date) {
       params.push(start_date);
       paramCount++;
     }
-
+    
     if (end_date) {
       query += ` AND day <= ${paramCount}`;
       params.push(end_date);
       paramCount++;
     }
-
+    
     if (store_id && store_id !== 'all') {
       query += ` AND store_id = ${paramCount}`;
       params.push(store_id);

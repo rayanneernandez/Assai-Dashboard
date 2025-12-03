@@ -27,8 +27,11 @@ export async function fetchVisitorStats(deviceId?: string, start?: string, end?:
       const today = new Date().toISOString().slice(0,10);
       const effStart = start || today;
       const effEnd = end || effStart;
-      const isToday = effStart === today && effEnd === today;
-      if (isToday) {
+      const startD = new Date(effStart + "T00:00:00Z");
+      const endD = new Date(effEnd + "T00:00:00Z");
+      const rangeDays = Math.max(1, Math.round((endD.getTime() - startD.getTime())/86400000) + 1);
+      const isTodayOnly = effStart === today && effEnd === today;
+      if (isTodayOnly || (rangeDays <= 7 && Number.isFinite(rangeDays))) {
         const rf = new URLSearchParams();
         rf.set("endpoint", "refresh");
         rf.set("start_date", effStart);
@@ -40,10 +43,16 @@ export async function fetchVisitorStats(deviceId?: string, start?: string, end?:
     let resp = await fetch(`${base}/api/assai/dashboard?${params.toString()}`, { signal: controller.signal });
     if (!resp.ok) throw new Error(`Backend error [${resp.status}] ${await resp.text()}`);
     let json = await resp.json();
+    const today = new Date().toISOString().slice(0,10);
+    const effStart = start || today;
+    const effEnd = end || effStart;
+    const startD = new Date(effStart + "T00:00:00Z");
+    const endD = new Date(effEnd + "T00:00:00Z");
+    const rangeDays = Math.max(1, Math.round((endD.getTime() - startD.getTime())/86400000) + 1);
     const tot = Number((json as any).totalVisitors ?? 0);
     const isFallback = Boolean((json as any).isFallback);
     const byHourEmpty = Object.keys((json as any).byHour ?? {}).length === 0;
-    if (tot === 0 || isFallback || byHourEmpty) {
+    if (rangeDays <= 3 && (tot === 0 || isFallback || byHourEmpty)) {
       params.set("source", "displayforce");
       resp = await fetch(`${base}/api/assai/dashboard?${params.toString()}`, { signal: controller.signal });
       if (resp.ok) json = await resp.json();

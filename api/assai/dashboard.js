@@ -124,13 +124,11 @@ async function getVisitors(req, res, start_date, end_date, store_id) {
       paramCount++;
     }
 
-      if (store_id && store_id !== "all") {
-        query += ` AND store_id = $${paramCount}`;
-        params.push(store_id);
-        paramCount++;
-      } else {
-        query += ` AND store_id = 'all'`;
-      }
+    if (store_id && store_id !== "all") {
+      query += ` AND store_id = ${paramCount}`;
+      params.push(store_id);
+      paramCount++;
+    }
 
 
     query += ` ORDER BY timestamp DESC LIMIT 1000`;
@@ -303,11 +301,43 @@ if (store_id && store_id !== "all") {
     console.log("📊 Summary query:", query, params);
 
     const result = await pool.query(query, params);
-    const row = result.rows[0] || {};
+    let row = result.rows[0] || {};
+
+    if ((Number(row.total_visitors || 0) === 0) && store_id && store_id !== "all") {
+      const vParams = [];
+      let vc = 1;
+      let vq = `
+        SELECT
+          COUNT(*) AS total_visitors,
+          SUM(CASE WHEN gender='M' THEN 1 ELSE 0 END) AS total_male,
+          SUM(CASE WHEN gender='F' THEN 1 ELSE 0 END) AS total_female,
+          SUM(CASE WHEN age > 0 THEN age ELSE 0 END) AS avg_age_sum,
+          SUM(CASE WHEN age > 0 THEN 1 ELSE 0 END) AS avg_age_count,
+          SUM(CASE WHEN age BETWEEN 18 AND 25 THEN 1 ELSE 0 END) AS age_18_25,
+          SUM(CASE WHEN age BETWEEN 26 AND 35 THEN 1 ELSE 0 END) AS age_26_35,
+          SUM(CASE WHEN age BETWEEN 36 AND 45 THEN 1 ELSE 0 END) AS age_36_45,
+          SUM(CASE WHEN age BETWEEN 46 AND 60 THEN 1 ELSE 0 END) AS age_46_60,
+          SUM(CASE WHEN age > 60 THEN 1 ELSE 0 END) AS age_60_plus,
+          SUM(CASE WHEN day_of_week='Dom' THEN 1 ELSE 0 END) AS sunday,
+          SUM(CASE WHEN day_of_week='Seg' THEN 1 ELSE 0 END) AS monday,
+          SUM(CASE WHEN day_of_week='Ter' THEN 1 ELSE 0 END) AS tuesday,
+          SUM(CASE WHEN day_of_week='Qua' THEN 1 ELSE 0 END) AS wednesday,
+          SUM(CASE WHEN day_of_week='Qui' THEN 1 ELSE 0 END) AS thursday,
+          SUM(CASE WHEN day_of_week='Sex' THEN 1 ELSE 0 END) AS friday,
+          SUM(CASE WHEN day_of_week='Sáb' THEN 1 ELSE 0 END) AS saturday
+        FROM visitors
+        WHERE 1=1
+      `;
+      if (start_date) { vq += ` AND day >= ${vc}`; vParams.push(start_date); vc++; }
+      if (end_date) { vq += ` AND day <= ${vc}`; vParams.push(end_date); vc++; }
+      vq += ` AND store_id = ${vc}`; vParams.push(store_id);
+      const vRes = await pool.query(vq, vParams);
+      row = vRes.rows[0] || row;
+    }
 
     const avgCount = Number(row.avg_age_count || 0);
     const averageAge =
-      avgCount > 0 ? Number(row.avg_age_sum || 0) / avgCount : 0;
+      avgCount > 0 ? Math.round(Number(row.avg_age_sum || 0) / avgCount) : 0;
 
     // ---------- HOURLY ----------
     let hQuery = `
@@ -349,11 +379,30 @@ if (store_id && store_id !== "all") {
     console.log("⏰ Hourly query:", hQuery, hParams);
 
     const hRes = await pool.query(hQuery, hParams);
+    let hRows = hRes.rows;
+    if (hRows.length === 0 && store_id && store_id !== "all") {
+      let hvq = `
+        SELECT EXTRACT(HOUR FROM timestamp) AS hour,
+               COUNT(*) AS total,
+               SUM(CASE WHEN gender='M' THEN 1 ELSE 0 END) AS male,
+               SUM(CASE WHEN gender='F' THEN 1 ELSE 0 END) AS female
+        FROM visitors
+        WHERE 1=1
+      `;
+      const hvParams = [];
+      let hvc = 1;
+      if (start_date) { hvq += ` AND day >= ${hvc}`; hvParams.push(start_date); hvc++; }
+      if (end_date) { hvq += ` AND day <= ${hvc}`; hvParams.push(end_date); hvc++; }
+      hvq += ` AND store_id = ${hvc}`; hvParams.push(store_id);
+      hvq += ` GROUP BY hour ORDER BY hour ASC`;
+      const hvRes = await pool.query(hvq, hvParams);
+      hRows = hvRes.rows || [];
+    }
 
     const byHour = {};
     const byGenderHour = { male: {}, female: {} };
 
-    for (const r of hRes.rows) {
+    for (const r of hRows) {
       const hour = String(r.hour);
       byHour[hour] = Number(r.total || 0);
       byGenderHour.male[hour] = Number(r.male || 0);

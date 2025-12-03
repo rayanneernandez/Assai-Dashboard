@@ -125,9 +125,11 @@ async function getVisitors(req, res, start_date, end_date, store_id) {
     }
 
     if (store_id && store_id !== "all") {
-      query += ` AND store_id = $${paramCount}`;
+      query += ` AND store_id = ${paramCount}`;
       params.push(store_id);
       paramCount++;
+    } else {
+      query += ` AND store_id = 'all'`;
     }
 
     query += ` ORDER BY timestamp DESC LIMIT 1000`;
@@ -215,7 +217,7 @@ async function getVisitorsFromDisplayForce(res, start_date, end_date, store_id) 
       store_name: `Loja ${deviceId}`,
       timestamp: ts,
       gender: (v.sex === 1 ? 'Masculino' : 'Feminino'),
-      age: Number(v.age ?? 0),
+      age: Math.round(Number(v.age ?? 0)),
       day_of_week,
       smile,
     };
@@ -298,7 +300,7 @@ async function getSummary(req, res, start_date, end_date, store_id) {
 
     const avgCount = Number(row.avg_age_count || 0);
     const averageAge =
-      avgCount > 0 ? Number(row.avg_age_sum || 0) / avgCount : 0;
+      avgCount > 0 ? Math.round(Number(row.avg_age_sum || 0) / avgCount) : 0;
 
     // ---------- HOURLY ----------
     let hQuery = `
@@ -327,9 +329,11 @@ async function getSummary(req, res, start_date, end_date, store_id) {
     }
 
     if (store_id && store_id !== "all") {
-      hQuery += ` AND store_id = $${hc}`;
+      hQuery += ` AND store_id = ${hc}`;
       hParams.push(store_id);
       hc++;
+    } else {
+      hQuery += ` AND store_id = 'all'`;
     }
 
     hQuery += ` GROUP BY hour ORDER BY hour ASC`;
@@ -445,7 +449,7 @@ async function refreshRange(req, res, start_date, end_date, store_id) {
         if (dstrLocal !== day) continue;
         total++;
         const g = v.sex===1?'M':'F'; if (g==='M') male++; else female++;
-        const age = Number(v.age||0); if (age>0) { avgSum+=age; avgCount++; }
+        const age = Math.round(Number(v.age||0)); if (age>0) { avgSum+=age; avgCount++; }
         if (age>=18&&age<=25) byAge['18-25']++; else if (age>=26&&age<=35) byAge['26-35']++; else if (age>=36&&age<=45) byAge['36-45']++; else if (age>=46&&age<=60) byAge['46-60']++; else if (age>60) byAge['60+']++;
         const map = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
         const wd = map[local.getDay()]; byWeek[wd] = (byWeek[wd]||0)+1;
@@ -466,7 +470,7 @@ async function refreshRange(req, res, start_date, end_date, store_id) {
       const mapPt = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
       for (const v of payload) {
         const ts = String(v.start || v.tracks?.[0]?.start || new Date().toISOString()); const base = new Date(ts); const local = new Date(base.getTime() + tz*3600000); const dstr = `${local.getFullYear()}-${String(local.getMonth()+1).padStart(2,'0')}-${String(local.getDate()).padStart(2,'0')}`; const dayOfWeek = mapPt[local.getDay()]; const deviceId = String(v.tracks?.[0]?.device_id ?? (Array.isArray(v.devices)? v.devices[0] : ''));
-        await pool.query(`INSERT INTO public.visitors (visitor_id, day, timestamp, store_id, store_name, gender, age, day_of_week, smile) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING`, [String(v.visitor_id ?? v.session_id ?? v.id ?? ''), dstr, ts, deviceId, String(v.store_name ?? ''), (v.sex===1?'M':'F'), Number(v.age||0), dayOfWeek, String(v.smile||'').toLowerCase()==='yes']);
+        await pool.query(`INSERT INTO public.visitors (visitor_id, day, timestamp, store_id, store_name, gender, age, day_of_week, smile) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING`, [String(v.visitor_id ?? v.session_id ?? v.id ?? ''), dstr, ts, deviceId, String(v.store_name ?? ''), (v.sex===1?'M':'F'), Math.round(Number(v.age||0)), dayOfWeek, String(v.smile||'').toLowerCase()==='yes']);
       }
     }
     return res.status(200).json({ ok: true, days: days.length, store_id: store_id||'all' });

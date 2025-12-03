@@ -85,7 +85,7 @@ export const fetchVisitors = async (
         timestamp: ts,
         deviceId: String(row.store_id ?? ""),
         dayOfWeek: String(row.day_of_week ?? ""),
-        hour: d.getUTCHours(),
+        hour: d.getHours(),
         smile: Boolean(row.smile),
       } as Visitor;
     });

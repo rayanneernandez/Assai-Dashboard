@@ -286,6 +286,8 @@ async function getSummary(req, res, start_date, end_date) {
             if (age>=18 && age<=25) byAgeGroup['18-25']++; else if (age>=26 && age<=35) byAgeGroup['26-35']++; else if (age>=36 && age<=45) byAgeGroup['36-45']++; else if (age>=46 && age<=60) byAgeGroup['46-60']++; else if (age>60) byAgeGroup['60+']++;
             const ts = String(v.start || v.tracks?.[0]?.start || new Date().toISOString());
             const base = new Date(ts); const local = new Date(base.getTime() + tz*3600000);
+            const dstrLocal = `${local.getFullYear()}-${String(local.getMonth()+1).padStart(2,'0')}-${String(local.getDate()).padStart(2,'0')}`;
+            if (dstrLocal !== day) continue;
             const wd = map[local.getDay()];
             visitsByDay[wd] = (visitsByDay[wd] || 0) + 1;
             const h = local.getHours();
@@ -489,12 +491,19 @@ async function refreshRange(req, res, start_date, end_date, store_id) {
       }
       let total=0,male=0,female=0,avgSum=0,avgCount=0; const byAge={ '18-25':0,'26-35':0,'36-45':0,'46-60':0,'60+':0 }; const byWeek={ Monday:0,Tuesday:0,Wednesday:0,Thursday:0,Friday:0,Saturday:0,Sunday:0 }; const byHour={}; const byGenderHour={ male:{}, female:{} };
       for (const v of payload) {
-        total++; const g = v.sex===1?'M':'F'; if (g==='M') male++; else female++;
+        const ts = String(v.start || v.tracks?.[0]?.start || new Date().toISOString());
+        const base = new Date(ts);
+        const local = new Date(base.getTime() + tz*3600000);
+        const dstrLocal = `${local.getFullYear()}-${String(local.getMonth()+1).padStart(2,'0')}-${String(local.getDate()).padStart(2,'0')}`;
+        if (dstrLocal !== day) continue;
+        total++;
+        const g = v.sex===1?'M':'F'; if (g==='M') male++; else female++;
         const age = Number(v.age||0); if (age>0) { avgSum+=age; avgCount++; }
         if (age>=18&&age<=25) byAge['18-25']++; else if (age>=26&&age<=35) byAge['26-35']++; else if (age>=36&&age<=45) byAge['36-45']++; else if (age>=46&&age<=60) byAge['46-60']++; else if (age>60) byAge['60+']++;
-        const ts = String(v.start || v.tracks?.[0]?.start || new Date().toISOString()); const base = new Date(ts); const local = new Date(base.getTime() + tz*3600000);
-        const map = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday']; const wd = map[local.getDay()]; byWeek[wd] = (byWeek[wd]||0)+1;
-        const h = local.getHours(); byHour[h] = (byHour[h]||0)+1; if (g==='M') byGenderHour.male[h]=(byGenderHour.male[h]||0)+1; else byGenderHour.female[h]=(byGenderHour.female[h]||0)+1;
+        const map = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+        const wd = map[local.getDay()]; byWeek[wd] = (byWeek[wd]||0)+1;
+        const h = local.getHours(); byHour[h] = (byHour[h]||0)+1;
+        if (g==='M') byGenderHour.male[h]=(byGenderHour.male[h]||0)+1; else byGenderHour.female[h]=(byGenderHour.female[h]||0)+1;
       }
       const avgAgeSum = avgSum; const avgAgeCount = avgCount;
       const exists = await pool.query("SELECT 1 FROM public.dashboard_daily WHERE day=$1 AND (store_id IS NOT DISTINCT FROM $2)", [day, store_id||'all']);

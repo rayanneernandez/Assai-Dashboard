@@ -147,27 +147,11 @@ async function getVisitors(req, res, start_date, end_date, store_id) {
     
   } catch (error) {
     console.error('❌ Visitors error:', error);
-    
-    // Fallback com dados simulados
-    const fallbackData = Array.from({ length: 20 }, (_, i) => ({
-      id: `visitor-${i}`,
-      date: '2025-12-02',
-      store_id: 15287,
-      store_name: 'Loja Principal',
-      timestamp: `2025-12-02T${10 + Math.floor(i/5)}:${(i%5)*10}:00`,
-      gender: i % 2 === 0 ? 'Masculino' : 'Feminino',
-      age: 25 + (i % 30),
-      day_of_week: 'Ter',
-      smile: i % 3 === 0
-    }));
-    
-    return res.status(200).json({
-      success: true,
-      data: fallbackData,
-      count: fallbackData.length,
-      isFallback: true,
-      error: error.message
-    });
+    try {
+      return await getVisitorsFromDisplayForce(res, start_date, end_date, store_id);
+    } catch (e2) {
+      return res.status(500).json({ success: false, error: e2.message || String(e2) });
+    }
   }
 }
 
@@ -268,26 +252,40 @@ async function getSummary(req, res, start_date, end_date) {
       const map = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
       let total = 0, male = 0, female = 0, avgSum = 0, avgCount = 0;
       const visitsByDay = { Sunday:0, Monday:0, Tuesday:0, Wednesday:0, Thursday:0, Friday:0, Saturday:0 };
+      const byAgeGroup = { '18-25':0, '26-35':0, '36-45':0, '46-60':0, '60+':0 };
+      const byHour = {};
+      const byGenderHour = { male: {}, female: {} };
+      const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
       for (const day of days) {
         let offset = 0;
         const limitReq = 500;
+        let dayTotal = 0;
         while (true) {
-          const bodyPayload = { start: `${day}T00:00:00Z`, end: `${day}T23:59:59Z`, limit: limitReq, offset, tracks: true };
+          const tzSign = tz >= 0 ? "+" : "-";
+          const tzHH = String(Math.abs(tz)).padStart(2, "0");
+          const tzStr = `${tzSign}${tzHH}:00`;
+          const bodyPayload = { start: `${day}T00:00:00${tzStr}`, end: `${day}T23:59:59${tzStr}`, limit: limitReq, offset, tracks: true };
           if (store_id && store_id !== 'all') bodyPayload.device_id = store_id;
           const response = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method: 'POST', headers: { 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type': 'application/json' }, body: JSON.stringify(bodyPayload) });
           if (!response.ok) { const t = await response.text().catch(()=>"" ); throw new Error(`DF stats ${response.status} ${t}`); }
           const page = await response.json();
           const arr = Array.isArray(page.payload || page.data) ? (page.payload || page.data) : [];
+          dayTotal += arr.length;
           for (const v of arr) {
             total++;
             if (v.sex === 1) male++; else female++;
             const age = Number(v.age || 0); if (age>0) { avgSum += age; avgCount++; }
+            if (age>=18 && age<=25) byAgeGroup['18-25']++; else if (age>=26 && age<=35) byAgeGroup['26-35']++; else if (age>=36 && age<=45) byAgeGroup['36-45']++; else if (age>=46 && age<=60) byAgeGroup['46-60']++; else if (age>60) byAgeGroup['60+']++;
             const ts = String(v.start || v.tracks?.[0]?.start || new Date().toISOString());
-            const wd = map[new Date(ts).getUTCDay()];
+            const base = new Date(ts); const local = new Date(base.getTime() + tz*3600000);
+            const wd = map[local.getUTCDay()];
             visitsByDay[wd] = (visitsByDay[wd] || 0) + 1;
+            const h = local.getUTCHours();
+            byHour[h] = (byHour[h] || 0) + 1;
+            if (v.sex === 1) byGenderHour.male[h] = (byGenderHour.male[h] || 0) + 1; else byGenderHour.female[h] = (byGenderHour.female[h] || 0) + 1;
           }
           const pg = page.pagination; const pageLimit = Number(pg?.limit ?? limitReq);
-          if (pg?.total && total >= Number(pg.total)) break;
+          if (pg?.total && dayTotal >= Number(pg.total)) break;
           if (arr.length < pageLimit) break;
           offset += pageLimit;
         }
@@ -298,7 +296,10 @@ async function getSummary(req, res, start_date, end_date) {
         totalMale: male,
         totalFemale: female,
         averageAge: avgCount ? Math.round(avgSum / avgCount) : 0,
-        visitsByDay
+        visitsByDay,
+        byAgeGroup,
+        byHour,
+        byGenderHour
       });
     }
     // Buscar dados do dashboard diário
@@ -309,6 +310,11 @@ async function getSummary(req, res, start_date, end_date) {
         COALESCE(SUM(female),0) as female,
         COALESCE(SUM(avg_age_sum),0) as avg_age_sum,
         COALESCE(SUM(avg_age_count),0) as avg_age_count,
+        COALESCE(SUM(age_18_25),0) as age_18_25,
+        COALESCE(SUM(age_26_35),0) as age_26_35,
+        COALESCE(SUM(age_36_45),0) as age_36_45,
+        COALESCE(SUM(age_46_60),0) as age_46_60,
+        COALESCE(SUM(age_60_plus),0) as age_60_plus,
         COALESCE(SUM(monday),0) as monday,
         COALESCE(SUM(tuesday),0) as tuesday,
         COALESCE(SUM(wednesday),0) as wednesday,
@@ -362,8 +368,33 @@ async function getSummary(req, res, start_date, end_date) {
       Sunday: Number(row.sunday || 0)
     };
 
+    let byAgeGroup = {
+      '18-25': Number(row.age_18_25 || 0),
+      '26-35': Number(row.age_26_35 || 0),
+      '36-45': Number(row.age_36_45 || 0),
+      '46-60': Number(row.age_46_60 || 0),
+      '60+': Number(row.age_60_plus || 0),
+    };
+
+    // Horários agregados
+    let hQuery = `SELECT hour, COALESCE(SUM(total),0) as total, COALESCE(SUM(male),0) as male, COALESCE(SUM(female),0) as female FROM dashboard_hourly WHERE 1=1`;
+    const hParams = [];
+    let hc = 1;
+    if (start_date) { hQuery += ` AND day >= ${hc}`; hParams.push(start_date); hc++; }
+    if (end_date) { hQuery += ` AND day <= ${hc}`; hParams.push(end_date); hc++; }
+    if (store_id && store_id !== 'all') { hQuery += ` AND store_id = ${hc}`; hParams.push(store_id); hc++; }
+    hQuery += ` GROUP BY hour ORDER BY hour ASC`;
+    const hRes = await pool.query(hQuery, hParams);
+    const byHour = {}; const byGenderHour = { male: {}, female: {} };
+    for (const r of hRes.rows) {
+      const h = Number(r.hour);
+      byHour[h] = Number(r.total || 0);
+      byGenderHour.male[h] = Number(r.male || 0);
+      byGenderHour.female[h] = Number(r.female || 0);
+    }
+
     if (total === 0) {
-      let vQuery = `SELECT gender, age, day_of_week FROM visitors WHERE 1=1`;
+      let vQuery = `SELECT gender, age, day_of_week, EXTRACT(HOUR FROM timestamp AT TIME ZONE 'UTC') AS hour FROM visitors WHERE 1=1`;
       const vParams = [];
       let pc = 1;
       if (start_date) { vQuery += ` AND day >= ${pc}`; vParams.push(start_date); pc++; }
@@ -375,10 +406,14 @@ async function getSummary(req, res, start_date, end_date) {
       total = vRes.rows.length;
       male = 0; female = 0;
       visitsByDay = { Sunday:0, Monday:0, Tuesday:0, Wednesday:0, Thursday:0, Friday:0, Saturday:0 };
+      const byHour = {}; const byGenderHour = { male: {}, female: {} };
+      byAgeGroup = { '18-25':0, '26-35':0, '36-45':0, '46-60':0, '60+':0 };
       for (const r of vRes.rows) {
         if (String(r.gender) === 'M') male++; else if (String(r.gender) === 'F') female++;
         const age = Number(r.age || 0); if (age > 0) { avgSum += age; avgCount++; }
+        if (age>=18 && age<=25) byAgeGroup['18-25']++; else if (age>=26 && age<=35) byAgeGroup['26-35']++; else if (age>=36 && age<=45) byAgeGroup['36-45']++; else if (age>=46 && age<=60) byAgeGroup['46-60']++; else if (age>60) byAgeGroup['60+']++;
         const en = mapPt[String(r.day_of_week || '')]; if (en) { visitsByDay[en] = (visitsByDay[en] || 0) + 1; }
+        const h = Number(r.hour || 0); byHour[h] = (byHour[h] || 0) + 1; if (String(r.gender) === 'M') byGenderHour.male[h] = (byGenderHour.male[h] || 0) + 1; else byGenderHour.female[h] = (byGenderHour.female[h] || 0) + 1;
       }
       avgAge = avgCount ? Math.round(avgSum / avgCount) : 0;
     }
@@ -390,11 +425,13 @@ async function getSummary(req, res, start_date, end_date) {
       totalFemale: female,
       averageAge: avgAge,
       visitsByDay,
+      byAgeGroup,
+      byHour,
+      byGenderHour,
       genderDistribution: {
         male: total > 0 ? Math.round((male / total) * 1000) / 10 : 0,
         female: total > 0 ? Math.round((female / total) * 1000) / 10 : 0
       },
-      peakHours: ["14:00-15:00", "15:00-16:00", "16:00-17:00"],
       query: { start_date, end_date, store_id: store_id || 'all' }
     });
     

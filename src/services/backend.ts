@@ -37,9 +37,9 @@ export async function fetchVisitorStats(deviceId?: string, start?: string, end?:
       women: Number((json as any).totalFemale ?? 0),
       averageAge: Number((json as any).averageAge ?? 0),
       byDayOfWeek,
-      byAgeGroup: {},
-      byHour: {},
-      byGenderHour: { male: {}, female: {} },
+      byAgeGroup: (json as any).byAgeGroup ?? {},
+      byHour: (json as any).byHour ?? {},
+      byGenderHour: (json as any).byGenderHour ?? { male: {}, female: {} },
     };
   } finally {
     clearTimeout(timeout);

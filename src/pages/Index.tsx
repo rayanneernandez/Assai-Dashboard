@@ -124,6 +124,9 @@ const Index = () => {
         women: backendStats.women,
         averageAge: backendStats.averageAge,
         byDayOfWeek: backendStats.byDayOfWeek || computed.byDayOfWeek,
+        byAgeGroup: backendStats.byAgeGroup || computed.byAgeGroup,
+        byHour: backendStats.byHour || computed.byHour,
+        byGenderHour: backendStats.byGenderHour || computed.byGenderHour,
       }
     : computed;
 

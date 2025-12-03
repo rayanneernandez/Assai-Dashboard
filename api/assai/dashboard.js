@@ -42,11 +42,14 @@ export default async function handler(req, res) {
       case 'refresh':
         return await refreshRange(req, res, start_date, end_date, store_id);
       
+      case 'optimize':
+        return await ensureIndexes(req, res);
+      
       case 'test':
         return res.status(200).json({
           success: true,
           message: 'API Assaí está funcionando!',
-          endpoints: ['visitors', 'summary', 'stores', 'devices', 'refresh', 'test'],
+          endpoints: ['visitors', 'summary', 'stores', 'devices', 'refresh', 'optimize', 'test'],
           timestamp: new Date().toISOString()
         });
       
@@ -208,7 +211,7 @@ async function getVisitorsFromDisplayForce(res, start_date, end_date, store_id) 
     const ts = String(v.start ?? v.tracks?.[0]?.start ?? new Date().toISOString());
     const base = new Date(ts);
     const local = new Date(base.getTime() + tz * 3600000);
-    const di = local.getUTCDay();
+    const di = local.getDay();
     const day_of_week = DAYS[di];
     const attrs = Array.isArray(v.additional_atributes) ? v.additional_atributes : [];
     const last = attrs.length ? attrs[attrs.length - 1] : {};
@@ -246,6 +249,7 @@ async function getVisitorsFromDisplayForce(res, start_date, end_date, store_id) 
 async function getSummary(req, res, start_date, end_date) {
   try {
     const { store_id, source } = req.query;
+    const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
     if (source === 'displayforce') {
       const s = start_date || new Date().toISOString().slice(0,10);
       const e = end_date || s;
@@ -282,9 +286,9 @@ async function getSummary(req, res, start_date, end_date) {
             if (age>=18 && age<=25) byAgeGroup['18-25']++; else if (age>=26 && age<=35) byAgeGroup['26-35']++; else if (age>=36 && age<=45) byAgeGroup['36-45']++; else if (age>=46 && age<=60) byAgeGroup['46-60']++; else if (age>60) byAgeGroup['60+']++;
             const ts = String(v.start || v.tracks?.[0]?.start || new Date().toISOString());
             const base = new Date(ts); const local = new Date(base.getTime() + tz*3600000);
-            const wd = map[local.getUTCDay()];
+            const wd = map[local.getDay()];
             visitsByDay[wd] = (visitsByDay[wd] || 0) + 1;
-            const h = local.getUTCHours();
+            const h = local.getHours();
             byHour[h] = (byHour[h] || 0) + 1;
             if (v.sex === 1) byGenderHour.male[h] = (byGenderHour.male[h] || 0) + 1; else byGenderHour.female[h] = (byGenderHour.female[h] || 0) + 1;
           }
@@ -417,7 +421,7 @@ async function getSummary(req, res, start_date, end_date) {
         const age = Number(r.age || 0); if (age > 0) { avgSum += age; avgCount++; }
         if (age>=18 && age<=25) byAgeGroup['18-25']++; else if (age>=26 && age<=35) byAgeGroup['26-35']++; else if (age>=36 && age<=45) byAgeGroup['36-45']++; else if (age>=46 && age<=60) byAgeGroup['46-60']++; else if (age>60) byAgeGroup['60+']++;
         const en = mapPt[String(r.day_of_week || '')]; if (en) { visitsByDay[en] = (visitsByDay[en] || 0) + 1; }
-        const h = Number(r.hour || 0); byHour[h] = (byHour[h] || 0) + 1; if (String(r.gender) === 'M') byGenderHour.male[h] = (byGenderHour.male[h] || 0) + 1; else byGenderHour.female[h] = (byGenderHour.female[h] || 0) + 1;
+        const hLocal = ((Number(r.hour || 0) + tz) % 24 + 24) % 24; byHour[hLocal] = (byHour[hLocal] || 0) + 1; if (String(r.gender) === 'M') byGenderHour.male[hLocal] = (byGenderHour.male[hLocal] || 0) + 1; else byGenderHour.female[hLocal] = (byGenderHour.female[hLocal] || 0) + 1;
       }
       avgAge = avgCount ? Math.round(avgSum / avgCount) : 0;
     }
@@ -489,8 +493,8 @@ async function refreshRange(req, res, start_date, end_date, store_id) {
         const age = Number(v.age||0); if (age>0) { avgSum+=age; avgCount++; }
         if (age>=18&&age<=25) byAge['18-25']++; else if (age>=26&&age<=35) byAge['26-35']++; else if (age>=36&&age<=45) byAge['36-45']++; else if (age>=46&&age<=60) byAge['46-60']++; else if (age>60) byAge['60+']++;
         const ts = String(v.start || v.tracks?.[0]?.start || new Date().toISOString()); const base = new Date(ts); const local = new Date(base.getTime() + tz*3600000);
-        const map = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday']; const wd = map[local.getUTCDay()]; byWeek[wd] = (byWeek[wd]||0)+1;
-        const h = local.getUTCHours(); byHour[h] = (byHour[h]||0)+1; if (g==='M') byGenderHour.male[h]=(byGenderHour.male[h]||0)+1; else byGenderHour.female[h]=(byGenderHour.female[h]||0)+1;
+        const map = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday']; const wd = map[local.getDay()]; byWeek[wd] = (byWeek[wd]||0)+1;
+        const h = local.getHours(); byHour[h] = (byHour[h]||0)+1; if (g==='M') byGenderHour.male[h]=(byGenderHour.male[h]||0)+1; else byGenderHour.female[h]=(byGenderHour.female[h]||0)+1;
       }
       const avgAgeSum = avgSum; const avgAgeCount = avgCount;
       const exists = await pool.query("SELECT 1 FROM public.dashboard_daily WHERE day=$1 AND (store_id IS NOT DISTINCT FROM $2)", [day, store_id||'all']);
@@ -505,13 +509,26 @@ async function refreshRange(req, res, start_date, end_date, store_id) {
       }
       const mapPt = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
       for (const v of payload) {
-        const ts = String(v.start || v.tracks?.[0]?.start || new Date().toISOString()); const dstr = ts.slice(0,10); const d = new Date(ts); const dayOfWeek = mapPt[d.getUTCDay()]; const deviceId = String(v.tracks?.[0]?.device_id ?? (Array.isArray(v.devices)? v.devices[0] : ''));
+        const ts = String(v.start || v.tracks?.[0]?.start || new Date().toISOString()); const base = new Date(ts); const local = new Date(base.getTime() + tz*3600000); const dstr = local.toISOString().slice(0,10); const dayOfWeek = mapPt[local.getDay()]; const deviceId = String(v.tracks?.[0]?.device_id ?? (Array.isArray(v.devices)? v.devices[0] : ''));
         await pool.query(`INSERT INTO public.visitors (visitor_id, day, timestamp, store_id, store_name, gender, age, day_of_week, smile) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING`, [String(v.visitor_id ?? v.session_id ?? v.id ?? ''), dstr, ts, deviceId, String(v.store_name ?? ''), (v.sex===1?'M':'F'), Number(v.age||0), dayOfWeek, String(v.smile||'').toLowerCase()==='yes']);
       }
     }
     return res.status(200).json({ ok: true, days: days.length, store_id: store_id||'all' });
   } catch (e) {
     console.error('❌ Refresh error:', e.message);
+    return res.status(500).json({ error: e.message });
+  }
+}
+
+async function ensureIndexes(req, res) {
+  try {
+    await pool.query("CREATE INDEX IF NOT EXISTS visitors_day_idx ON public.visitors(day)");
+    await pool.query("CREATE INDEX IF NOT EXISTS visitors_store_day_idx ON public.visitors(store_id, day)");
+    await pool.query("CREATE INDEX IF NOT EXISTS visitors_ts_idx ON public.visitors(timestamp)");
+    await pool.query("CREATE INDEX IF NOT EXISTS dashboard_daily_day_store_idx ON public.dashboard_daily(day, store_id)");
+    await pool.query("CREATE INDEX IF NOT EXISTS dashboard_hourly_day_store_hour_idx ON public.dashboard_hourly(day, store_id, hour)");
+    return res.status(200).json({ ok: true });
+  } catch (e) {
     return res.status(500).json({ error: e.message });
   }
 }

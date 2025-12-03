@@ -280,14 +280,14 @@ async function getSummary(req, res, start_date, end_date) {
           const arr = Array.isArray(page.payload || page.data) ? (page.payload || page.data) : [];
           dayTotal += arr.length;
           for (const v of arr) {
-            total++;
-            if (v.sex === 1) male++; else female++;
-            const age = Number(v.age || 0); if (age>0) { avgSum += age; avgCount++; }
-            if (age>=18 && age<=25) byAgeGroup['18-25']++; else if (age>=26 && age<=35) byAgeGroup['26-35']++; else if (age>=36 && age<=45) byAgeGroup['36-45']++; else if (age>=46 && age<=60) byAgeGroup['46-60']++; else if (age>60) byAgeGroup['60+']++;
             const ts = String(v.start || v.tracks?.[0]?.start || new Date().toISOString());
             const base = new Date(ts); const local = new Date(base.getTime() + tz*3600000);
             const dstrLocal = `${local.getFullYear()}-${String(local.getMonth()+1).padStart(2,'0')}-${String(local.getDate()).padStart(2,'0')}`;
             if (dstrLocal !== day) continue;
+            total++;
+            if (v.sex === 1) male++; else female++;
+            const age = Number(v.age || 0); if (age>0) { avgSum += age; avgCount++; }
+            if (age>=18 && age<=25) byAgeGroup['18-25']++; else if (age>=26 && age<=35) byAgeGroup['26-35']++; else if (age>=36 && age<=45) byAgeGroup['36-45']++; else if (age>=46 && age<=60) byAgeGroup['46-60']++; else if (age>60) byAgeGroup['60+']++;
             const wd = map[local.getDay()];
             visitsByDay[wd] = (visitsByDay[wd] || 0) + 1;
             const h = local.getHours();

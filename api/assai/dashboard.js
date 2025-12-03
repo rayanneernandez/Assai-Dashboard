@@ -30,8 +30,9 @@ export default async function handler(req, res) {
       case 'visitors':
         return await getVisitors(req, res, start_date, end_date, store_id);
       
-      case 'summary':
-        return await getSummary(req, res, start_date, end_date);
+    case 'summary':
+      return await getSummary(req, res, start_date, end_date, store_id);
+
       
       case 'stores':
         return await getStores(req, res);
@@ -125,7 +126,7 @@ async function getVisitors(req, res, start_date, end_date, store_id) {
     }
 
     if (store_id && store_id !== "all") {
-      query += ` AND store_id = ${paramCount}`;
+      query += ` AND store_id = $${paramCount}`;
       params.push(store_id);
       paramCount++;
     }
@@ -328,9 +329,10 @@ if (store_id && store_id !== "all") {
         FROM visitors
         WHERE 1=1
       `;
-      if (start_date) { vq += ` AND day >= ${vc}`; vParams.push(start_date); vc++; }
-      if (end_date) { vq += ` AND day <= ${vc}`; vParams.push(end_date); vc++; }
-      vq += ` AND store_id = ${vc}`; vParams.push(store_id);
+      if (start_date) { vq += ` AND day >= $${vc}`; vParams.push(start_date); vc++; }
+      if (end_date) { vq += ` AND day <= $${vc}`; vParams.push(end_date); vc++; }
+      vq += ` AND store_id = $${vc}`; vParams.push(store_id);
+
       const vRes = await pool.query(vq, vParams);
       row = vRes.rows[0] || row;
     }
@@ -391,9 +393,9 @@ if (store_id && store_id !== "all") {
       `;
       const hvParams = [];
       let hvc = 1;
-      if (start_date) { hvq += ` AND day >= ${hvc}`; hvParams.push(start_date); hvc++; }
-      if (end_date) { hvq += ` AND day <= ${hvc}`; hvParams.push(end_date); hvc++; }
-      hvq += ` AND store_id = ${hvc}`; hvParams.push(store_id);
+      if (start_date) { hvq += ` AND day >= $${hvc}`; hvParams.push(start_date); hvc++; }
+      if (end_date) { hvq += ` AND day <= $${hvc}`; hvParams.push(end_date); hvc++; }
+      hvq += ` AND store_id = $${hvc}`; hvParams.push(store_id);
       hvq += ` GROUP BY hour ORDER BY hour ASC`;
       const hvRes = await pool.query(hvq, hvParams);
       hRows = hvRes.rows || [];

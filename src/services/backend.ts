@@ -71,7 +71,7 @@ export async function fetchVisitorStats(deviceId?: string, start?: string, end?:
       total: Number((json as any).totalVisitors ?? 0),
       men: Number((json as any).totalMale ?? 0),
       women: Number((json as any).totalFemale ?? 0),
-      averageAge: Number((json as any).averageAge ?? 0),
+      averageAge: Math.round(Number((json as any).averageAge ?? 0)),
       byDayOfWeek,
       byAgeGroup: (json as any).byAgeGroup ?? {},
       byHour: (json as any).byHour ?? {},

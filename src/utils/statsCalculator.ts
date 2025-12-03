@@ -54,14 +54,14 @@ export const calculateStats = (visitors: Visitor[]): VisitorStats => {
     // Day of week distribution
     if (visitor.timestamp) {
       const date = new Date(visitor.timestamp);
-      const dayIndex = date.getUTCDay();
+      const dayIndex = date.getDay();
       const dayName = DAYS_ORDER[dayIndex === 0 ? 6 : dayIndex - 1];
       stats.byDayOfWeek[dayName] = (stats.byDayOfWeek[dayName] || 0) + 1;
     }
 
     // Hourly distribution
     if (visitor.timestamp) {
-      const hour = new Date(visitor.timestamp).getUTCHours();
+      const hour = new Date(visitor.timestamp).getHours();
       stats.byHour[hour] = (stats.byHour[hour] || 0) + 1;
       
       if (visitor.gender === "M") {

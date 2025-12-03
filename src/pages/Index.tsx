@@ -72,7 +72,7 @@ const Index = () => {
   const [selectedDevice, setSelectedDevice] = useState("all");
   const [startDate, setStartDate] = useState(today);
   const [endDate, setEndDate] = useState(today);
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [appliedFilters, setAppliedFilters] = useState({
     device: "all",
     start: today,

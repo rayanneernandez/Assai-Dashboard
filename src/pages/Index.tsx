@@ -67,7 +67,8 @@ const HourTooltip = ({ label, payload, active }: any) => {
 };
 
 const Index = () => {
-  const today = new Date().toISOString().split("T")[0];
+  const makeLocalDateStr = () => { const d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().split("T")[0]; };
+  const today = makeLocalDateStr();
   const [selectedDevice, setSelectedDevice] = useState("all");
   const [startDate, setStartDate] = useState(today);
   const [endDate, setEndDate] = useState(today);

@@ -389,7 +389,7 @@ async function getSummary(req, res, start_date, end_date) {
     if (store_id && store_id !== 'all') { hQuery += ` AND store_id = ${hc}`; hParams.push(store_id); hc++; }
     hQuery += ` GROUP BY hour ORDER BY hour ASC`;
     const hRes = await pool.query(hQuery, hParams);
-    const byHour = {}; const byGenderHour = { male: {}, female: {} };
+    let byHour = {}; let byGenderHour = { male: {}, female: {} };
     for (const r of hRes.rows) {
       const h = Number(r.hour);
       byHour[h] = Number(r.total || 0);
@@ -410,7 +410,7 @@ async function getSummary(req, res, start_date, end_date) {
       total = vRes.rows.length;
       male = 0; female = 0;
       visitsByDay = { Sunday:0, Monday:0, Tuesday:0, Wednesday:0, Thursday:0, Friday:0, Saturday:0 };
-      const byHour = {}; const byGenderHour = { male: {}, female: {} };
+      byHour = {}; byGenderHour = { male: {}, female: {} };
       byAgeGroup = { '18-25':0, '26-35':0, '36-45':0, '46-60':0, '60+':0 };
       for (const r of vRes.rows) {
         if (String(r.gender) === 'M') male++; else if (String(r.gender) === 'F') female++;
@@ -445,16 +445,14 @@ async function getSummary(req, res, start_date, end_date) {
     // Fallback
     return res.status(200).json({
       success: true,
-      totalVisitors: 7466,
-      totalMale: 5054,
-      totalFemale: 2412,
-      averageAge: 31,
-      visitsByDay: {
-        "Monday": 1200, "Tuesday": 1350, "Wednesday": 1100,
-        "Thursday": 1450, "Friday": 1600, "Saturday": 2000, "Sunday": 800
-      },
-      genderDistribution: { male: 67.7, female: 32.3 },
-      peakHours: ["14:00-15:00", "15:00-16:00", "16:00-17:00"],
+      totalVisitors: 0,
+      totalMale: 0,
+      totalFemale: 0,
+      averageAge: 0,
+      visitsByDay: { Sunday:0, Monday:0, Tuesday:0, Wednesday:0, Thursday:0, Friday:0, Saturday:0 },
+      byAgeGroup: { '18-25':0, '26-35':0, '36-45':0, '46-60':0, '60+':0 },
+      byHour: {},
+      byGenderHour: { male: {}, female: {} },
       isFallback: true
     });
   }

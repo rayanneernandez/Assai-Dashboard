@@ -42,7 +42,12 @@ export async function fetchVisitorStats(deviceId?: string, start?: string, end?:
     } catch {}
     let resp = await fetch(`${base}/api/assai/dashboard?${params.toString()}`, { signal: controller.signal });
     if (!resp.ok) throw new Error(`Backend error [${resp.status}] ${await resp.text()}`);
-    let json = await resp.json();
+    let json: any;
+    try {
+      json = await resp.json();
+    } catch {
+      json = {};
+    }
     const today = new Date().toISOString().slice(0,10);
     const effStart = start || today;
     const effEnd = end || effStart;
@@ -52,10 +57,11 @@ export async function fetchVisitorStats(deviceId?: string, start?: string, end?:
     const tot = Number((json as any).totalVisitors ?? 0);
     const isFallback = Boolean((json as any).isFallback);
     const byHourEmpty = Object.keys((json as any).byHour ?? {}).length === 0;
-    if (rangeDays <= 3 && (tot === 0 || isFallback || byHourEmpty)) {
+    if (rangeDays <= 3 && (tot === 0 || isFallback || byHourEmpty || Object.keys(json).length === 0)) {
       params.set("source", "displayforce");
       resp = await fetch(`${base}/api/assai/dashboard?${params.toString()}`, { signal: controller.signal });
-      if (resp.ok) json = await resp.json();
+      if (!resp.ok) throw new Error(`Backend error [${resp.status}] ${await resp.text()}`);
+      json = await resp.json();
     }
     const visitsByDay = (json as any).visitsByDay ?? {};
     const toPt: Record<string, string> = { Sunday: "Dom", Monday: "Seg", Tuesday: "Ter", Wednesday: "Qua", Thursday: "Qui", Friday: "Sex", Saturday: "Sáb" };
@@ -78,7 +84,7 @@ export async function fetchVisitorStats(deviceId?: string, start?: string, end?:
 
 export async function fetchVisitorsPage(deviceId?: string, start?: string, end?: string, page = 1, pageSize = 40): Promise<VisitorsPage> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 20000);
+  const timeout = setTimeout(() => controller.abort(), 40000);
   try {
     if (BACKEND_URL) {
       try {
@@ -99,9 +105,16 @@ export async function fetchVisitorsPage(deviceId?: string, start?: string, end?:
     if (start) params.set("start_date", start);
     if (end) params.set("end_date", end);
     params.set("store_id", deviceId && deviceId !== "all" ? String(deviceId) : "all");
-    const resp = await fetch(`${base}/api/assai/dashboard?${params.toString()}`, { signal: controller.signal });
+    let resp = await fetch(`${base}/api/assai/dashboard?${params.toString()}`, { signal: controller.signal });
     if (!resp.ok) throw new Error(`Backend error [${resp.status}] ${await resp.text()}`);
-    const json = await resp.json();
+    let json: any;
+    try { json = await resp.json(); } catch { json = {}; }
+    if (!Array.isArray((json as any).data)) {
+      params.set("source", "displayforce");
+      resp = await fetch(`${base}/api/assai/dashboard?${params.toString()}`, { signal: controller.signal });
+      if (!resp.ok) throw new Error(`Backend error [${resp.status}] ${await resp.text()}`);
+      json = await resp.json();
+    }
     const rows: any[] = Array.isArray((json as any).data) ? (json as any).data : [];
     const total = rows.length;
     const startIdx = Math.max(0, (page - 1) * pageSize);

@@ -40,6 +40,7 @@ export const ChatAssistant = ({ visitors, devices, stats }: ChatAssistantProps) 
   const generateAnswer = async (q: string) => {
     const text = q.toLowerCase();
     const dateMatch = text.match(/(\d{2})[\/\-](\d{2})[\/\-](\d{4})|(\d{4})-(\d{2})-(\d{2})/);
+    const shortMatch = !dateMatch ? text.match(/(^|\s)(\d{1,2})[\/\-](\d{1,2})(?!\d)/) : null;
     let day: string | null = null;
     if (text.includes("hoje")) {
       day = new Date().toISOString().split("T")[0];
@@ -53,6 +54,12 @@ export const ChatAssistant = ({ visitors, devices, stats }: ChatAssistantProps) 
         const yyyy = dateMatch[4], mm = dateMatch[5], dd = dateMatch[6];
         day = `${yyyy}-${mm}-${dd}`;
       }
+    } else if (shortMatch) {
+      const now = new Date();
+      const yyyy = String(now.getFullYear());
+      const dd = String(shortMatch[2]).padStart(2, "0");
+      const mm = String(shortMatch[3]).padStart(2, "0");
+      day = `${yyyy}-${mm}-${dd}`;
     }
     if (day) {
       try {
@@ -107,7 +114,7 @@ export const ChatAssistant = ({ visitors, devices, stats }: ChatAssistantProps) 
     setMessages((prev) => [...prev, assistantMessage]);
   };
 
-  const handleKeyPress = (e: React.KeyboardEvent) => {
+  const handleKeyPress = (e: any) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSend();

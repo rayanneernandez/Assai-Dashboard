@@ -246,6 +246,8 @@ async function getSummary(req, res, start_date, end_date, store_id) {
       return await getSummaryFromDisplayForce(res, start_date, end_date, store_id);
     }
 
+    const isSpecificStore = store_id && store_id !== "all";
+
     // ---------- DAILY / RESUMO GERAL ----------
     let query = `
       SELECT
@@ -285,13 +287,14 @@ async function getSummary(req, res, start_date, end_date, store_id) {
       paramCount++;
     }
 
-    // 🔴 AJUSTE IMPORTANTE:
-    // Se veio store_id (e não é "all"), filtra só aquela loja.
-    // Caso contrário, NÃO filtra por loja => soma todas as lojas.
-    if (store_id && store_id !== "all") {
+    if (isSpecificStore) {
+      // Loja específica → pega só aquela loja
       query += ` AND store_id = $${paramCount}`;
       params.push(store_id);
       paramCount++;
+    } else {
+      // Todas as lojas → usa SOMENTE a linha agregada
+      query += ` AND store_id = 'all'`;
     }
 
     console.log("📊 Summary query:", query, params);
@@ -299,8 +302,9 @@ async function getSummary(req, res, start_date, end_date, store_id) {
     const result = await pool.query(query, params);
     let row = result.rows[0] || {};
 
-    // fallback para loja específica se ainda assim não tiver dados em dashboard_daily
-    if ((Number(row.total_visitors || 0) === 0) && store_id && store_id !== "all") {
+    // fallback: se for loja específica e ainda não tiver nada em dashboard_daily,
+    // calcula a partir da tabela visitors
+    if ((Number(row.total_visitors || 0) === 0) && isSpecificStore) {
       const vParams = [];
       let vc = 1;
       let vq = `
@@ -363,11 +367,12 @@ async function getSummary(req, res, start_date, end_date, store_id) {
       hc++;
     }
 
-    // Mesma ideia: se veio loja, filtra; senão soma todas
-    if (store_id && store_id !== "all") {
+    if (isSpecificStore) {
       hQuery += ` AND store_id = $${hc}`;
       hParams.push(store_id);
       hc++;
+    } else {
+      hQuery += ` AND store_id = 'all'`;
     }
 
     hQuery += ` GROUP BY hour ORDER BY hour ASC`;
@@ -378,7 +383,7 @@ async function getSummary(req, res, start_date, end_date, store_id) {
     let hRows = hRes.rows;
 
     // fallback horário por loja, se necessário
-    if (hRows.length === 0 && store_id && store_id !== "all") {
+    if (hRows.length === 0 && isSpecificStore) {
       let hvq = `
         SELECT EXTRACT(HOUR FROM timestamp) AS hour,
                COUNT(*) AS total,
@@ -439,7 +444,6 @@ async function getSummary(req, res, start_date, end_date, store_id) {
   } catch (error) {
     console.error("❌ Summary error:", error);
 
-    // fallback antigo
     return res.status(200).json({
       success: true,
       totalVisitors: 0,

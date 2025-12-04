@@ -345,7 +345,74 @@ async function getSummary(req, res, start_date, end_date, store_id) {
     console.log('📊 Summary (ALL STORES) query:', query, params);
 
     const result = await pool.query(query, params);
-    const row = result.rows[0] || {};
+    let row = {};
+    // Primeiro, tenta somar as linhas por loja (store_id <> 'all')
+    let altQ = `
+      SELECT
+        COALESCE(SUM(total_visitors), 0)  AS total_visitors,
+        COALESCE(SUM(male), 0)            AS total_male,
+        COALESCE(SUM(female), 0)          AS total_female,
+        COALESCE(SUM(avg_age_sum), 0)     AS avg_age_sum,
+        COALESCE(SUM(avg_age_count), 0)   AS avg_age_count,
+        COALESCE(SUM(age_18_25), 0)       AS age_18_25,
+        COALESCE(SUM(age_26_35), 0)       AS age_26_35,
+        COALESCE(SUM(age_36_45), 0)       AS age_36_45,
+        COALESCE(SUM(age_46_60), 0)       AS age_46_60,
+        COALESCE(SUM(age_60_plus), 0)     AS age_60_plus,
+        COALESCE(SUM(sunday), 0)          AS sunday,
+        COALESCE(SUM(monday), 0)          AS monday,
+        COALESCE(SUM(tuesday), 0)         AS tuesday,
+        COALESCE(SUM(wednesday), 0)       AS wednesday,
+        COALESCE(SUM(thursday), 0)        AS thursday,
+        COALESCE(SUM(friday), 0)          AS friday,
+        COALESCE(SUM(saturday), 0)        AS saturday
+      FROM dashboard_daily
+      WHERE 1=1
+    `;
+    const altParams = [];
+    let apc = 1;
+    if (start_date) { altQ += ` AND day >= ${apc}`; altParams.push(start_date); apc++; }
+    if (end_date) { altQ += ` AND day <= ${apc}`; altParams.push(end_date); apc++; }
+    altQ += ` AND store_id <> 'all'`;
+    const altRes = await pool.query(altQ, altParams);
+    let altRow = altRes.rows[0] || {};
+    if (Number(altRow.total_visitors || 0) > 0) {
+      row = altRow;
+    } else {
+      // Em seguida, tenta a linha consolidada 'all'
+      row = result.rows[0] || {};
+      // Se ainda estiver vazio, calcula direto de visitors
+      if ((!store_id || store_id === "all") && Number(row.total_visitors || 0) === 0) {
+        const vParams = [];
+        let vc = 1;
+        let vq = `
+          SELECT
+            COUNT(*) AS total_visitors,
+            SUM(CASE WHEN gender='M' THEN 1 ELSE 0 END) AS total_male,
+            SUM(CASE WHEN gender='F' THEN 1 ELSE 0 END) AS total_female,
+            SUM(CASE WHEN age > 0 THEN age ELSE 0 END) AS avg_age_sum,
+            SUM(CASE WHEN age > 0 THEN 1 ELSE 0 END) AS avg_age_count,
+            SUM(CASE WHEN age BETWEEN 18 AND 25 THEN 1 ELSE 0 END) AS age_18_25,
+            SUM(CASE WHEN age BETWEEN 26 AND 35 THEN 1 ELSE 0 END) AS age_26_35,
+            SUM(CASE WHEN age BETWEEN 36 AND 45 THEN 1 ELSE 0 END) AS age_36_45,
+            SUM(CASE WHEN age BETWEEN 46 AND 60 THEN 1 ELSE 0 END) AS age_46_60,
+            SUM(CASE WHEN age > 60 THEN 1 ELSE 0 END) AS age_60_plus,
+            SUM(CASE WHEN day_of_week='Dom' THEN 1 ELSE 0 END) AS sunday,
+            SUM(CASE WHEN day_of_week='Seg' THEN 1 ELSE 0 END) AS monday,
+            SUM(CASE WHEN day_of_week='Ter' THEN 1 ELSE 0 END) AS tuesday,
+            SUM(CASE WHEN day_of_week='Qua' THEN 1 ELSE 0 END) AS wednesday,
+            SUM(CASE WHEN day_of_week='Qui' THEN 1 ELSE 0 END) AS thursday,
+            SUM(CASE WHEN day_of_week='Sex' THEN 1 ELSE 0 END) AS friday,
+            SUM(CASE WHEN day_of_week='Sáb' THEN 1 ELSE 0 END) AS saturday
+          FROM visitors
+          WHERE 1=1
+        `;
+        if (start_date) { vq += ` AND day >= ${vc}`; vParams.push(start_date); vc++; }
+        if (end_date) { vq += ` AND day <= ${vc}`; vParams.push(end_date); vc++; }
+        const vRes = await pool.query(vq, vParams);
+        row = vRes.rows[0] || row;
+      }
+    }
 
     const avgCount = Number(row.avg_age_count || 0);
     const averageAge =
@@ -384,8 +451,45 @@ async function getSummary(req, res, start_date, end_date, store_id) {
 
     console.log('⏰ Hourly (ALL STORES) query:', hQuery, hParams);
 
-    const hRes = await pool.query(hQuery, hParams);
-    const hRows = hRes.rows || [];
+    // Primeiro, soma por loja (store_id <> 'all') para o agregado de horas
+    let altH = `
+      SELECT hour,
+             COALESCE(SUM(total), 0)  AS total,
+             COALESCE(SUM(male), 0)   AS male,
+             COALESCE(SUM(female), 0) AS female
+      FROM dashboard_hourly
+      WHERE 1=1
+    `;
+    const aHp = [];
+    let ahc = 1;
+    if (start_date) { altH += ` AND day >= ${ahc}`; aHp.push(start_date); ahc++; }
+    if (end_date) { altH += ` AND day <= ${ahc}`; aHp.push(end_date); ahc++; }
+    altH += ` AND store_id <> 'all' GROUP BY hour ORDER BY hour ASC`;
+    const altHR = await pool.query(altH, aHp);
+    let hRows = altHR.rows || [];
+
+    if ((!store_id || store_id === "all") && hRows.length === 0) {
+      const hRes = await pool.query(hQuery, hParams);
+      hRows = hRes.rows || [];
+    }
+
+    if (hRows.length === 0) {
+      let hvq = `
+        SELECT EXTRACT(HOUR FROM timestamp) AS hour,
+               COUNT(*) AS total,
+               SUM(CASE WHEN gender='M' THEN 1 ELSE 0 END) AS male,
+               SUM(CASE WHEN gender='F' THEN 1 ELSE 0 END) AS female
+        FROM visitors
+        WHERE 1=1
+      `;
+      const hvParams = [];
+      let hvc = 1;
+      if (start_date) { hvq += ` AND day >= ${hvc}`; hvParams.push(start_date); hvc++; }
+      if (end_date) { hvq += ` AND day <= ${hvc}`; hvParams.push(end_date); hvc++; }
+      hvq += ` GROUP BY hour ORDER BY hour ASC`;
+      const hvRes = await pool.query(hvq, hvParams);
+      hRows = hvRes.rows || [];
+    }
 
     const byHour = {};
     const byGenderHour = { male: {}, female: {} };

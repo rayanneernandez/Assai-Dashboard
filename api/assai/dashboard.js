@@ -30,9 +30,8 @@ export default async function handler(req, res) {
       case 'visitors':
         return await getVisitors(req, res, start_date, end_date, store_id);
       
-    case 'summary':
-      return await getSummary(req, res, start_date, end_date, store_id);
-
+      case 'summary':
+        return await getSummary(req, res, start_date, end_date, store_id);
       
       case 'stores':
         return await getStores(req, res);
@@ -130,7 +129,6 @@ async function getVisitors(req, res, start_date, end_date, store_id) {
       params.push(store_id);
       paramCount++;
     }
-
 
     query += ` ORDER BY timestamp DESC LIMIT 1000`;
 
@@ -287,23 +285,21 @@ async function getSummary(req, res, start_date, end_date, store_id) {
       paramCount++;
     }
 
-if (store_id && store_id !== "all") {
-  // Filtra uma loja específica
-  query += ` AND store_id = $${paramCount}`;
-  params.push(store_id);
-  paramCount++;
-} else {
-  // Quando não enviar store_id OU enviar "all",
-  // usa apenas a linha agregada (store_id = 'all')
-  query += ` AND store_id = 'all'`;
-}
-
+    // 🔴 AJUSTE IMPORTANTE:
+    // Se veio store_id (e não é "all"), filtra só aquela loja.
+    // Caso contrário, NÃO filtra por loja => soma todas as lojas.
+    if (store_id && store_id !== "all") {
+      query += ` AND store_id = $${paramCount}`;
+      params.push(store_id);
+      paramCount++;
+    }
 
     console.log("📊 Summary query:", query, params);
 
     const result = await pool.query(query, params);
     let row = result.rows[0] || {};
 
+    // fallback para loja específica se ainda assim não tiver dados em dashboard_daily
     if ((Number(row.total_visitors || 0) === 0) && store_id && store_id !== "all") {
       const vParams = [];
       let vc = 1;
@@ -367,14 +363,12 @@ if (store_id && store_id !== "all") {
       hc++;
     }
 
+    // Mesma ideia: se veio loja, filtra; senão soma todas
     if (store_id && store_id !== "all") {
       hQuery += ` AND store_id = $${hc}`;
       hParams.push(store_id);
       hc++;
-    } else {
-      hQuery += ` AND store_id = 'all'`;
     }
-
 
     hQuery += ` GROUP BY hour ORDER BY hour ASC`;
 
@@ -382,6 +376,8 @@ if (store_id && store_id !== "all") {
 
     const hRes = await pool.query(hQuery, hParams);
     let hRows = hRes.rows;
+
+    // fallback horário por loja, se necessário
     if (hRows.length === 0 && store_id && store_id !== "all") {
       let hvq = `
         SELECT EXTRACT(HOUR FROM timestamp) AS hour,
@@ -443,7 +439,7 @@ if (store_id && store_id !== "all") {
   } catch (error) {
     console.error("❌ Summary error:", error);
 
-    // fallback antigo, se quiser manter
+    // fallback antigo
     return res.status(200).json({
       success: true,
       totalVisitors: 0,
@@ -473,6 +469,9 @@ if (store_id && store_id !== "all") {
   }
 }
 
+// ===========================================
+// (getSummaryFromDisplayForce permanece igual se existir)
+// ===========================================
 
 // Funções de refresh (serverless)
 async function refreshRange(req, res, start_date, end_date, store_id) {

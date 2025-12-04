@@ -293,7 +293,9 @@ if (store_id && store_id !== "all") {
   params.push(store_id);
   paramCount++;
 } else {
-  query += ` AND store_id <> 'all'`;
+  // Quando não enviar store_id OU enviar "all",
+  // usa apenas a linha agregada (store_id = 'all')
+  query += ` AND store_id = 'all'`;
 }
 
 
@@ -302,7 +304,7 @@ if (store_id && store_id !== "all") {
     const result = await pool.query(query, params);
     let row = result.rows[0] || {};
 
-    if (Number(row.total_visitors || 0) === 0) {
+    if ((Number(row.total_visitors || 0) === 0) && store_id && store_id !== "all") {
       const vParams = [];
       let vc = 1;
       let vq = `
@@ -327,9 +329,9 @@ if (store_id && store_id !== "all") {
         FROM visitors
         WHERE 1=1
       `;
-      if (start_date) { vq += ` AND day >= ${vc}`; vParams.push(start_date); vc++; }
-      if (end_date) { vq += ` AND day <= ${vc}`; vParams.push(end_date); vc++; }
-      if (store_id && store_id !== "all") { vq += ` AND store_id = ${vc}`; vParams.push(store_id); }
+      if (start_date) { vq += ` AND day >= $${vc}`; vParams.push(start_date); vc++; }
+      if (end_date) { vq += ` AND day <= $${vc}`; vParams.push(end_date); vc++; }
+      vq += ` AND store_id = $${vc}`; vParams.push(store_id);
 
       const vRes = await pool.query(vq, vParams);
       row = vRes.rows[0] || row;
@@ -370,7 +372,7 @@ if (store_id && store_id !== "all") {
       hParams.push(store_id);
       hc++;
     } else {
-      hQuery += ` AND store_id <> 'all'`;
+      hQuery += ` AND store_id = 'all'`;
     }
 
 
@@ -380,7 +382,7 @@ if (store_id && store_id !== "all") {
 
     const hRes = await pool.query(hQuery, hParams);
     let hRows = hRes.rows;
-    if (hRows.length === 0) {
+    if (hRows.length === 0 && store_id && store_id !== "all") {
       let hvq = `
         SELECT EXTRACT(HOUR FROM timestamp) AS hour,
                COUNT(*) AS total,
@@ -391,9 +393,9 @@ if (store_id && store_id !== "all") {
       `;
       const hvParams = [];
       let hvc = 1;
-      if (start_date) { hvq += ` AND day >= ${hvc}`; hvParams.push(start_date); hvc++; }
-      if (end_date) { hvq += ` AND day <= ${hvc}`; hvParams.push(end_date); hvc++; }
-      if (store_id && store_id !== "all") { hvq += ` AND store_id = ${hvc}`; hvParams.push(store_id); }
+      if (start_date) { hvq += ` AND day >= $${hvc}`; hvParams.push(start_date); hvc++; }
+      if (end_date) { hvq += ` AND day <= $${hvc}`; hvParams.push(end_date); hvc++; }
+      hvq += ` AND store_id = $${hvc}`; hvParams.push(store_id);
       hvq += ` GROUP BY hour ORDER BY hour ASC`;
       const hvRes = await pool.query(hvq, hvParams);
       hRows = hvRes.rows || [];

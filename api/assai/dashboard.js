@@ -393,12 +393,61 @@ if (store_id && store_id !== "all") {
       `;
       const hvParams = [];
       let hvc = 1;
-      if (start_date) { hvq += ` AND day >= $${hvc}`; hvParams.push(start_date); hvc++; }
-      if (end_date) { hvq += ` AND day <= $${hvc}`; hvParams.push(end_date); hvc++; }
-      hvq += ` AND store_id = $${hvc}`; hvParams.push(store_id);
+      if (start_date) { hvq += ` AND day >= ${hvc}`; hvParams.push(start_date); hvc++; }
+      if (end_date) { hvq += ` AND day <= ${hvc}`; hvParams.push(end_date); hvc++; }
+      hvq += ` AND store_id = ${hvc}`; hvParams.push(store_id);
       hvq += ` GROUP BY hour ORDER BY hour ASC`;
       const hvRes = await pool.query(hvq, hvParams);
       hRows = hvRes.rows || [];
+    }
+    if (hRows.length < 24 && start_date && end_date && start_date === end_date) {
+      try {
+        const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
+        const sign = tz >= 0 ? "+" : "-";
+        const hh = String(Math.abs(tz)).padStart(2, "0");
+        const tzStr = `${sign}${hh}:00`;
+        const startISO = `${start_date}T00:00:00${tzStr}`;
+        const endISO = `${end_date}T23:59:59${tzStr}`;
+        const LIMIT_REQ = 500;
+        let offset = 0;
+        const all = [];
+        while (true) {
+          const bodyPayload = { start: startISO, end: endISO, limit: LIMIT_REQ, offset, tracks: true };
+          if (store_id && store_id !== "all") bodyPayload.device_id = store_id;
+          const response = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, {
+            method: 'POST',
+            headers: { 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type': 'application/json' },
+            body: JSON.stringify(bodyPayload)
+          });
+          if (!response.ok) break;
+          const page = await response.json();
+          const payload = page.payload || page.data || [];
+          const arr = Array.isArray(payload) ? payload : [];
+          all.push(...arr);
+          const pg = page.pagination;
+          const pageLimit = Number(pg?.limit ?? LIMIT_REQ);
+          if (pg?.total && all.length >= Number(pg.total)) break;
+          if (arr.length < pageLimit) break;
+          offset += pageLimit;
+        }
+        const hours = {};
+        for (const v of all) {
+          const ts = String(v.start ?? v.tracks?.[0]?.start ?? new Date().toISOString());
+          const base = new Date(ts);
+          const local = new Date(base.getTime() + tz * 3600000);
+          const h = local.getHours();
+          const g = v.sex === 1 ? 'M' : 'F';
+          hours[h] = hours[h] || { total: 0, male: 0, female: 0 };
+          hours[h].total++;
+          if (g === 'M') hours[h].male++; else hours[h].female++;
+        }
+        const rebuilt = [];
+        for (let h = 0; h < 24; h++) {
+          const row = hours[h] || { total: 0, male: 0, female: 0 };
+          rebuilt.push({ hour: h, total: row.total, male: row.male, female: row.female });
+        }
+        hRows = rebuilt;
+      } catch {}
     }
 
     const byHour = {};

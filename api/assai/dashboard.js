@@ -400,7 +400,7 @@ if (store_id && store_id !== "all") {
       const hvRes = await pool.query(hvq, hvParams);
       hRows = hvRes.rows || [];
     }
-    if (hRows.length < 24 && start_date && end_date && start_date === end_date) {
+    if (start_date && end_date && start_date === end_date) {
       try {
         const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
         const sign = tz >= 0 ? "+" : "-";
@@ -434,7 +434,16 @@ if (store_id && store_id !== "all") {
         for (const v of all) {
           const ts = String(v.start ?? v.tracks?.[0]?.start ?? new Date().toISOString());
           const base = new Date(ts);
-          const local = new Date(base.getTime() + tz * 3600000);
+          const offsetMatch = ts.match(/([+-])(\d{2}):(\d{2})$/);
+          let local;
+          if (offsetMatch) {
+            const signCh = offsetMatch[1] === '+' ? 1 : -1;
+            const curOffsetHours = signCh * Number(offsetMatch[2]) + signCh * Number(offsetMatch[3]) / 60;
+            const diff = tz - curOffsetHours;
+            local = new Date(base.getTime() + diff * 3600000);
+          } else {
+            local = new Date(base.getTime() + tz * 3600000);
+          }
           const dstrLocal = `${local.getFullYear()}-${String(local.getMonth()+1).padStart(2,'0')}-${String(local.getDate()).padStart(2,'0')}`;
           if (start_date && dstrLocal !== start_date) continue;
           const h = local.getHours();

@@ -212,25 +212,25 @@ const Index = () => {
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-6">
                 <StatCard
                   title="Total de Visitantes"
-                  value={isBackendLoading && stats.total === 0 ? "—" : stats.total}
+                  value={backendStats ? backendStats.total : "—"}
                   icon={Users}
                   colorClass="bg-stat-visitors"
                 />
                 <StatCard
                   title="Total de Homens"
-                  value={isBackendLoading && stats.men === 0 ? "—" : stats.men}
+                  value={backendStats ? backendStats.men : "—"}
                   icon={IconMale}
                   colorClass="bg-stat-men"
                 />
                 <StatCard
                   title="Total de Mulheres"
-                  value={isBackendLoading && stats.women === 0 ? "—" : stats.women}
+                  value={backendStats ? backendStats.women : "—"}
                   icon={IconFemale}
                   colorClass="bg-stat-women"
                 />
                 <StatCard
                   title="Média de Idade"
-                  value={isBackendLoading && stats.averageAge === 0 ? "—" : `${stats.averageAge} anos`}
+                  value={backendStats ? `${backendStats.averageAge} anos` : "—"}
                   icon={CalendarIcon}
                   colorClass="bg-stat-age"
                 />

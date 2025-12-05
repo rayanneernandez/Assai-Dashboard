@@ -445,10 +445,45 @@ if (store_id && store_id !== "all") {
         }
         const rebuilt = [];
         for (let h = 0; h < 24; h++) {
-          const row = hours[h] || { total: 0, male: 0, female: 0 };
-          rebuilt.push({ hour: h, total: row.total, male: row.male, female: row.female });
+          const hr = hours[h] || { total: 0, male: 0, female: 0 };
+          rebuilt.push({ hour: h, total: hr.total, male: hr.male, female: hr.female });
         }
         hRows = rebuilt;
+        let total=0,male=0,female=0,avgSum=0,avgCount=0;
+        const byAge={ '18-25':0,'26-35':0,'36-45':0,'46-60':0,'60+':0 };
+        const byWeek={ Sunday:0,Monday:0,Tuesday:0,Wednesday:0,Thursday:0,Friday:0,Saturday:0 };
+        for (const v of all) {
+          const ts = String(v.start ?? v.tracks?.[0]?.start ?? new Date().toISOString());
+          const d = new Date(ts);
+          const dstr = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+          if (start_date && dstr !== start_date) continue;
+          total++;
+          const g = v.sex===1?'M':'F'; if (g==='M') male++; else female++;
+          const age = Number(v.age||0); if (age>0){ avgSum+=age; avgCount++; }
+          if (age>=18&&age<=25) byAge['18-25']++; else if (age>=26&&age<=35) byAge['26-35']++; else if (age>=36&&age<=45) byAge['36-45']++; else if (age>=46&&age<=60) byAge['46-60']++; else if (age>60) byAge['60+']++;
+          const wd = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][d.getDay()];
+          byWeek[wd] = (byWeek[wd]||0)+1;
+        }
+        row = {
+          ...(row||{}),
+          total_visitors: total,
+          male,
+          female,
+          avg_age_sum: avgSum,
+          avg_age_count: avgCount,
+          age_18_25: byAge['18-25'],
+          age_26_35: byAge['26-35'],
+          age_36_45: byAge['36-45'],
+          age_46_60: byAge['46-60'],
+          age_60_plus: byAge['60+'],
+          sunday: byWeek.Sunday,
+          monday: byWeek.Monday,
+          tuesday: byWeek.Tuesday,
+          wednesday: byWeek.Wednesday,
+          thursday: byWeek.Thursday,
+          friday: byWeek.Friday,
+          saturday: byWeek.Saturday,
+        };
       } catch {}
     }
 

@@ -435,6 +435,8 @@ if (store_id && store_id !== "all") {
           const ts = String(v.start ?? v.tracks?.[0]?.start ?? new Date().toISOString());
           const base = new Date(ts);
           const local = new Date(base.getTime() + tz * 3600000);
+          const dstrLocal = `${local.getFullYear()}-${String(local.getMonth()+1).padStart(2,'0')}-${String(local.getDate()).padStart(2,'0')}`;
+          if (start_date && dstrLocal !== start_date) continue;
           const h = local.getHours();
           const g = v.sex === 1 ? 'M' : 'F';
           hours[h] = hours[h] || { total: 0, male: 0, female: 0 };

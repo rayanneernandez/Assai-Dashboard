@@ -43,6 +43,12 @@ export default async function handler(req, res) {
       case 'refresh':
         return await refreshRange(req, res, start_date, end_date, store_id);
       
+      case 'refresh_all':
+        return await refreshAll(req, res, start_date, end_date);
+      
+      case 'auto_refresh':
+        return await autoRefresh(req, res);
+      
       case 'optimize':
         return await ensureIndexes(req, res);
       
@@ -64,7 +70,9 @@ export default async function handler(req, res) {
             'summary - Resumo do dashboard',
             'stores - Lista de lojas',
             'devices - Dispositivos da DisplayForce',
-            'refresh - Preenche banco a partir da DisplayForce',
+            'refresh - Preenche banco a partir da DisplayForce (uma loja ou todas)',
+            'refresh_all - Atualiza todas as lojas para o período selecionado',
+            'auto_refresh - Atualiza automaticamente o dia anterior para todas as lojas',
             'test - Teste da API'
           ]
         });
@@ -400,7 +408,7 @@ if (store_id && store_id !== "all") {
       const hvRes = await pool.query(hvq, hvParams);
       hRows = hvRes.rows || [];
     }
-    if (start_date && end_date && start_date === end_date) {
+    if (source === "displayforce" && start_date && end_date && start_date === end_date) {
       try {
         const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
         const sign = tz >= 0 ? "+" : "-";
@@ -748,5 +756,96 @@ async function getDevices(req, res) {
       isFallback: true,
       error: error.message
     });
+  }
+}
+
+// ===========================================
+// 5. REFRESH TODAS AS LOJAS
+// ===========================================
+async function refreshAll(req, res, start_date, end_date) {
+  try {
+    const s = start_date || new Date().toISOString().slice(0,10);
+    const e = end_date || s;
+    const days = [];
+    let d = new Date(`${s}T00:00:00Z`);
+    const endD = new Date(`${e}T00:00:00Z`);
+    while (d <= endD) { days.push(d.toISOString().slice(0,10)); d = new Date(d.getTime() + 86400000); }
+    let ids = [];
+    try {
+      let r = await fetch(`${DISPLAYFORCE_BASE}/device/list`, { method: 'POST', headers: { 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type': 'application/json', 'Accept': 'application/json' }, body: JSON.stringify({}) });
+      if (!r.ok && r.status === 405) {
+        r = await fetch(`${DISPLAYFORCE_BASE}/device/list`, { method: 'GET', headers: { 'X-API-Token': DISPLAYFORCE_TOKEN, 'Accept': 'application/json' } });
+      }
+      const dj = await r.json();
+      const arr = dj.devices || dj.data || [];
+      ids = Array.isArray(arr) ? arr.map((d) => String(d.id ?? d.device_id ?? '')).filter(Boolean) : [];
+    } catch {}
+    async function updateDayStore(day, storeId) {
+      const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || '-3', 10);
+      const sign = tz >= 0 ? '+' : '-'; const hh = String(Math.abs(tz)).padStart(2, '0'); const tzStr = `${sign}${hh}:00`;
+      let offset = 0; const limit = 500; const payload = [];
+      while (true) {
+        const body = { start: `${day}T00:00:00${tzStr}`, end: `${day}T23:59:59${tzStr}`, limit, offset, tracks: true };
+        if (storeId && storeId !== 'all') body.device_id = storeId;
+        const resp = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method: 'POST', headers: { 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        if (!resp.ok) break;
+        const json = await resp.json(); const arr = Array.isArray(json.payload || json.data) ? (json.payload || json.data) : [];
+        payload.push(...arr);
+        const pg = json.pagination; const pageLimit = Number(pg?.limit ?? limit);
+        if (pg?.total && payload.length >= Number(pg.total)) break;
+        if (arr.length < pageLimit) break;
+        offset += pageLimit;
+      }
+      let total=0,male=0,female=0,avgSum=0,avgCount=0; const byAge={ '18-25':0,'26-35':0,'36-45':0,'46-60':0,'60+':0 }; const byWeek={ Sunday:0,Monday:0,Tuesday:0,Wednesday:0,Thursday:0,Friday:0,Saturday:0 }; const byHour={}; const byGenderHour={ male:{}, female:{} };
+      const mapPt = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+      for (const v of payload) {
+        const ts = String(v.start || v.tracks?.[0]?.start || new Date().toISOString());
+        const dd = new Date(ts);
+        const dstrLocal = `${dd.getFullYear()}-${String(dd.getMonth()+1).padStart(2,'0')}-${String(dd.getDate()).padStart(2,'0')}`;
+        if (dstrLocal !== day) continue;
+        total++;
+        const g = v.sex===1?'M':'F'; if (g==='M') male++; else female++;
+        const age = Number(v.age||0); if (age>0){ avgSum+=age; avgCount++; }
+        if (age>=18&&age<=25) byAge['18-25']++; else if (age>=26&&age<=35) byAge['26-35']++; else if (age>=36&&age<=45) byAge['36-45']++; else if (age>=46&&age<=60) byAge['46-60']++; else if (age>60) byAge['60+']++;
+        const wd = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][dd.getDay()]; byWeek[wd] = (byWeek[wd]||0)+1;
+        const h = dd.getHours(); byHour[h] = (byHour[h]||0)+1; if (g==='M') byGenderHour.male[h]=(byGenderHour.male[h]||0)+1; else byGenderHour.female[h]=(byGenderHour.female[h]||0)+1;
+        const deviceId = String(v.tracks?.[0]?.device_id ?? (Array.isArray(v.devices)? v.devices[0] : ''));
+        await pool.query(`INSERT INTO public.visitors (visitor_id, day, timestamp, store_id, store_name, gender, age, day_of_week, smile) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING`, [String(v.visitor_id ?? v.session_id ?? v.id ?? ''), dstrLocal, ts, deviceId, String(v.store_name ?? ''), g, Number(v.age||0), mapPt[dd.getDay()], String(v.smile||'').toLowerCase()==='yes']);
+      }
+      const avgAgeSum = avgSum; const avgAgeCount = avgCount;
+      const exists = await pool.query("SELECT 1 FROM public.dashboard_daily WHERE day=$1 AND (store_id IS NOT DISTINCT FROM $2)", [day, storeId||'all']);
+      if (exists.rows.length) {
+        await pool.query(`UPDATE public.dashboard_daily SET total_visitors=$3, male=$4, female=$5, avg_age_sum=$6, avg_age_count=$7, age_18_25=$8, age_26_35=$9, age_36_45=$10, age_46_60=$11, age_60_plus=$12, monday=$13, tuesday=$14, wednesday=$15, thursday=$16, friday=$17, saturday=$18, sunday=$19, updated_at=NOW() WHERE day=$1 AND (store_id IS NOT DISTINCT FROM $2)`, [day, storeId||'all', total, male, female, avgAgeSum, avgAgeCount, byAge['18-25'], byAge['26-35'], byAge['36-45'], byAge['46-60'], byAge['60+'], byWeek.Monday, byWeek.Tuesday, byWeek.Wednesday, byWeek.Thursday, byWeek.Friday, byWeek.Saturday, byWeek.Sunday]);
+      } else {
+        await pool.query(`INSERT INTO public.dashboard_daily (day, store_id, total_visitors, male, female, avg_age_sum, avg_age_count, age_18_25, age_26_35, age_36_45, age_46_60, age_60_plus, monday, tuesday, wednesday, thursday, friday, saturday, sunday) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`, [day, storeId||'all', total, male, female, avgAgeSum, avgAgeCount, byAge['18-25'], byAge['26-35'], byAge['36-45'], byAge['46-60'], byAge['60+'], byWeek.Monday, byWeek.Tuesday, byWeek.Wednesday, byWeek.Thursday, byWeek.Friday, byWeek.Saturday, byWeek.Sunday]);
+      }
+      for (let h=0; h<24; h++) {
+        const tot = Number(byHour[h]||0); const m = Number(byGenderHour.male[h]||0); const f = Number(byGenderHour.female[h]||0);
+        await pool.query(`INSERT INTO public.dashboard_hourly (day, store_id, hour, total, male, female) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (day, store_id, hour) DO UPDATE SET total=$4, male=$5, female=$6`, [day, storeId||'all', h, tot, m, f]);
+      }
+    }
+    for (const day of days) {
+      await updateDayStore(day, 'all');
+      for (const id of ids) {
+        await updateDayStore(day, id);
+      }
+    }
+    return res.status(200).json({ ok: true, days: days.length, stores: ids.length + 1 });
+  } catch (e) {
+    console.error('❌ Refresh all error:', e.message);
+    return res.status(500).json({ error: e.message });
+  }
+}
+
+// ===========================================
+// 6. AUTO REFRESH (ontem)
+// ===========================================
+async function autoRefresh(req, res) {
+  try {
+    const d = new Date(); d.setDate(d.getDate() - 1);
+    const y = d.toISOString().slice(0,10);
+    return await refreshAll(req, res, y, y);
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
   }
 }

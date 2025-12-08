@@ -57,12 +57,6 @@ export async function fetchVisitorStats(deviceId?: string, start?: string, end?:
     const tot = Number((json as any).totalVisitors ?? 0);
     const isFallback = Boolean((json as any).isFallback);
     const byHourEmpty = Object.keys((json as any).byHour ?? {}).length === 0;
-    if (effStart === today && effEnd === today && (tot === 0 || isFallback || Object.keys(json).length === 0)) {
-      params.set("source", "displayforce");
-      resp = await fetch(`${base}/api/assai/dashboard?${params.toString()}`, { signal: controller.signal });
-      if (!resp.ok) throw new Error(`Backend error [${resp.status}] ${await resp.text()}`);
-      json = await resp.json();
-    }
     const visitsByDay = (json as any).visitsByDay ?? {};
     const toPt: Record<string, string> = { Sunday: "Dom", Monday: "Seg", Tuesday: "Ter", Wednesday: "Qua", Thursday: "Qui", Friday: "Sex", Saturday: "Sáb" };
     const byDayOfWeek: Record<string, number> = {};

@@ -292,24 +292,10 @@ const Index = () => {
                   </ResponsiveContainer>
                 </Card>
 
-                <Card className="p-6">
-                  <h3 className="text-lg font-semibold text-primary mb-4">Gênero & Idade</h3>
-                  <ResponsiveContainer width="100%" height={300}>
-                    <BarChart data={ageGenderPercentData}>
-                      <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="faixa" tickFormatter={(v) => String(v)} />
-                      <YAxis domain={[0,100]} tickFormatter={(v) => `${v}%`} label={{ value: "Número %", angle: -90, position: "insideLeft" }} />
-                      <Tooltip formatter={(value: any, name: any) => [`${value}%`, name]} />
-                      <Legend />
-                      <Bar dataKey="feminino" name="Feminino" fill="#E74C3C" />
-                      <Bar dataKey="masculino" name="Masculino" fill="#0047BB" />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </Card>
               </div>
 
               {/* Charts Row 2 */}
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
                 <Card className="p-6">
                   <h3 className="text-lg font-semibold text-primary mb-4">
                     Distribuição por Faixa Etária
@@ -321,6 +307,21 @@ const Index = () => {
                       <YAxis label={{ value: "Visitantes", angle: -90, position: "insideLeft" }} />
                       <Tooltip labelFormatter={(label) => String(label)} />
                       <Bar dataKey="visitantes" fill="#0047BB" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </Card>
+
+                <Card className="p-6">
+                  <h3 className="text-lg font-semibold text-primary mb-4">Gênero & Idade</h3>
+                  <ResponsiveContainer width="100%" height={300}>
+                    <BarChart data={ageGenderPercentData}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="faixa" />
+                      <YAxis domain={[0,100]} tickFormatter={(v) => `${v}%`} label={{ value: "Número %", angle: -90, position: "insideLeft" }} />
+                      <Tooltip formatter={(value: any, name: any) => [`${value}%`, name]} />
+                      <Legend />
+                      <Bar dataKey="feminino" name="Feminino" fill="#E74C3C" />
+                      <Bar dataKey="masculino" name="Masculino" fill="#0047BB" />
                     </BarChart>
                   </ResponsiveContainer>
                 </Card>
@@ -346,26 +347,29 @@ const Index = () => {
                 </Card>
               </div>
 
-              {/* Gender by Hour Chart */}
-              <Card className="p-6">
-                <h3 className="text-lg font-semibold text-primary mb-4">Gênero</h3>
-                <ResponsiveContainer width="100%" height={300}>
-                  <LineChart data={genderHourlyData}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="hora" ticks={Array.from({ length: 24 }, (_, i) => i)} tickFormatter={(v) => `${v}h`} label={{ value: "Horário (h)", position: "insideBottom", offset: -5 }} />
-                    <YAxis label={{ value: "Número de Visitantes", angle: -90, position: "insideLeft" }} />
-                    <Tooltip content={<HourTooltip />} />
-                    <Legend />
-                    <Line type="monotone" dataKey="masculino" stroke="#0047BB" strokeWidth={2} name="Masculino" />
-                    <Line type="monotone" dataKey="feminino" stroke="#E74C3C" strokeWidth={2} name="Feminino" />
-                  </LineChart>
-                </ResponsiveContainer>
-                {stats.total === 0 && (
-                  <p className="text-center text-muted-foreground mt-4">
-                    Nenhum dado disponível para o período selecionado
-                  </p>
-                )}
-              </Card>
+              <div className="grid grid-cols-1 lg:grid-cols-1 gap-6 mb-6">
+                <Card className="p-6">
+                  <h3 className="text-lg font-semibold text-primary mb-4">Gênero</h3>
+                  <ResponsiveContainer width="100%" height={300}>
+                    <LineChart data={genderHourlyData}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="hora" ticks={Array.from({ length: 24 }, (_, i) => i)} tickFormatter={(v) => `${v}h`} label={{ value: "Horário (h)", position: "insideBottom", offset: -5 }} />
+                      <YAxis label={{ value: "Número de Visitantes", angle: -90, position: "insideLeft" }} />
+                      <Tooltip content={<HourTooltip />} />
+                      <Legend />
+                      <Line type="monotone" dataKey="masculino" stroke="#0047BB" strokeWidth={2} name="Masculino" />
+                      <Line type="monotone" dataKey="feminino" stroke="#E74C3C" strokeWidth={2} name="Feminino" />
+                    </LineChart>
+                  </ResponsiveContainer>
+                  {stats.total === 0 && (
+                    <p className="text-center text-muted-foreground mt-4">
+                      Nenhum dado disponível para o período selecionado
+                    </p>
+                  )}
+                </Card>
+
+
+              </div>
 
 
         </main>

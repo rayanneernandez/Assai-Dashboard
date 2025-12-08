@@ -178,14 +178,7 @@ async function getVisitorsFromDisplayForce(res, start_date, end_date, store_id) 
       start: startISO,
       end: endISO,
       limit: LIMIT_REQ,
-      offset,
-      tracks: true,
-      face_quality: true,
-      glasses: true,
-      facial_hair: true,
-      hair_color: true,
-      hair_type: true,
-      headwear: true,
+      offset
     };
     if (store_id && store_id !== 'all') bodyPayload.devices = [store_id];
     let response = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, {
@@ -662,7 +655,7 @@ async function refreshRange(req, res, start_date, end_date, store_id) {
     for (const day of days) {
       let offset = 0; const limit = 500; const payload = [];
       while (true) {
-        const body = { start: `${day}T00:00:00${tzStr}`, end: `${day}T23:59:59${tzStr}`, limit, offset, tracks: true };
+        const body = { start: `${day}T00:00:00${tzStr}`, end: `${day}T23:59:59${tzStr}`, limit, offset };
         if (store_id && store_id !== 'all') body.devices = [store_id];
         let resp = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method: 'POST', headers: { 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
         if (!resp.ok) {
@@ -882,7 +875,7 @@ async function refreshAll(req, res, start_date, end_date) {
       const sign = tz >= 0 ? '+' : '-'; const hh = String(Math.abs(tz)).padStart(2, '0'); const tzStr = `${sign}${hh}:00`;
       let offset = 0; const limit = 500; const payload = [];
       while (true) {
-        const body = { start: `${day}T00:00:00${tzStr}`, end: `${day}T23:59:59${tzStr}`, limit, offset, tracks: true };
+        const body = { start: `${day}T00:00:00${tzStr}`, end: `${day}T23:59:59${tzStr}`, limit, offset };
         if (storeId && storeId !== 'all') body.devices = [storeId];
         let resp = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method: 'POST', headers: { 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
         if (!resp.ok) {

@@ -199,11 +199,15 @@ async function handleDashboardData(res, storeId = 'all', date = null) {
       
       const w = dashboardData.weekly_visits || { dom:0, seg:0, ter:0, qua:0, qui:0, sex:0, sab:0 };
       const gd = dashboardData.gender_distribution || { male: 0, female: 0 };
+      const tv = Number(dashboardData.total_visitors || 0);
+      const toCount = (x) => { const n = Number(x||0); if (n <= 1) return Math.round(tv*n); if (n <= 100) return Math.round(tv*n/100); return Math.round(n); };
+      const maleCnt = toCount(gd.male);
+      const femaleCnt = Math.max(0, tv - maleCnt);
       return res.status(200).json({
         success: true,
-        totalVisitors: Number(dashboardData.total_visitors || 0),
-        totalMale: Number(gd.male || 0),
-        totalFemale: Number(gd.female || 0),
+        totalVisitors: tv,
+        totalMale: maleCnt,
+        totalFemale: femaleCnt,
         averageAge: 0,
         visitsByDay: { Sunday: Number(w.dom||0), Monday: Number(w.seg||0), Tuesday: Number(w.ter||0), Wednesday: Number(w.qua||0), Thursday: Number(w.qui||0), Friday: Number(w.sex||0), Saturday: Number(w.sab||0) },
         byAgeGroup: { '18-25': 0, '26-35': 0, '36-45': 0, '46-60': 0, '60+': 0 },
@@ -250,11 +254,15 @@ async function handleDashboardData(res, storeId = 'all', date = null) {
       
       const w = dashboardData.weekly_visits || { dom:0, seg:0, ter:0, qua:0, qui:0, sex:0, sab:0 };
       const gd = dashboardData.gender_distribution || { male: 0, female: 0 };
+      const tv = Number(dashboardData.total_visitors || 0);
+      const toCount = (x) => { const n = Number(x||0); if (n <= 1) return Math.round(tv*n); if (n <= 100) return Math.round(tv*n/100); return Math.round(n); };
+      const maleCnt = toCount(gd.male);
+      const femaleCnt = Math.max(0, tv - maleCnt);
       return res.status(200).json({
         success: true,
-        totalVisitors: Number(dashboardData.total_visitors || 0),
-        totalMale: Number(gd.male || 0),
-        totalFemale: Number(gd.female || 0),
+        totalVisitors: tv,
+        totalMale: maleCnt,
+        totalFemale: femaleCnt,
         averageAge: 0,
         visitsByDay: { Sunday: Number(w.dom||0), Monday: Number(w.seg||0), Tuesday: Number(w.ter||0), Wednesday: Number(w.qua||0), Thursday: Number(w.qui||0), Friday: Number(w.sex||0), Saturday: Number(w.sab||0) },
         byAgeGroup: { '18-25': 0, '26-35': 0, '36-45': 0, '46-60': 0, '60+': 0 },

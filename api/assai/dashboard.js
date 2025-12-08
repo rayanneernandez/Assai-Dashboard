@@ -187,7 +187,7 @@ async function getVisitorsFromDisplayForce(res, start_date, end_date, store_id) 
       hair_type: true,
       headwear: true,
     };
-    if (store_id && store_id !== 'all') bodyPayload.device_id = store_id;
+    if (store_id && store_id !== 'all') bodyPayload.devices = [store_id];
     const response = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, {
       method: 'POST',
       headers: { 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type': 'application/json' },
@@ -629,7 +629,7 @@ async function refreshRange(req, res, start_date, end_date, store_id) {
       let offset = 0; const limit = 500; const payload = [];
       while (true) {
         const body = { start: `${day}T00:00:00${tzStr}`, end: `${day}T23:59:59${tzStr}`, limit, offset, tracks: true };
-        if (store_id && store_id !== 'all') body.device_id = store_id;
+        if (store_id && store_id !== 'all') body.devices = [store_id];
         const resp = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method: 'POST', headers: { 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
         if (!resp.ok) { const t = await resp.text().catch(()=>""); throw new Error(`DF ${resp.status} ${t}`); }
         const json = await resp.json(); const arr = Array.isArray(json.payload || json.data) ? (json.payload || json.data) : [];
@@ -832,7 +832,7 @@ async function refreshAll(req, res, start_date, end_date) {
       let offset = 0; const limit = 500; const payload = [];
       while (true) {
         const body = { start: `${day}T00:00:00${tzStr}`, end: `${day}T23:59:59${tzStr}`, limit, offset, tracks: true };
-        if (storeId && storeId !== 'all') body.device_id = storeId;
+        if (storeId && storeId !== 'all') body.devices = [storeId];
         const resp = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method: 'POST', headers: { 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
         if (!resp.ok) break;
         const json = await resp.json(); const arr = Array.isArray(json.payload || json.data) ? (json.payload || json.data) : [];
@@ -871,12 +871,24 @@ async function refreshAll(req, res, start_date, end_date) {
       }
     }
     for (const day of days) {
-      await updateDayStore(day, 'all');
       for (const id of ids) {
         await updateDayStore(day, id);
       }
+      const sumDaily = await pool.query(`SELECT COALESCE(SUM(total_visitors),0) AS total_visitors, COALESCE(SUM(male),0) AS male, COALESCE(SUM(female),0) AS female, COALESCE(SUM(avg_age_sum),0) AS avg_age_sum, COALESCE(SUM(avg_age_count),0) AS avg_age_count, COALESCE(SUM(age_18_25),0) AS age_18_25, COALESCE(SUM(age_26_35),0) AS age_26_35, COALESCE(SUM(age_36_45),0) AS age_36_45, COALESCE(SUM(age_46_60),0) AS age_46_60, COALESCE(SUM(age_60_plus),0) AS age_60_plus, COALESCE(SUM(monday),0) AS monday, COALESCE(SUM(tuesday),0) AS tuesday, COALESCE(SUM(wednesday),0) AS wednesday, COALESCE(SUM(thursday),0) AS thursday, COALESCE(SUM(friday),0) AS friday, COALESCE(SUM(saturday),0) AS saturday, COALESCE(SUM(sunday),0) AS sunday FROM public.dashboard_daily WHERE day=$1 AND store_id <> 'all'`, [day]);
+      const r = sumDaily.rows[0] || {};
+      const existsAll = await pool.query("SELECT 1 FROM public.dashboard_daily WHERE day=$1 AND store_id='all'", [day]);
+      if (existsAll.rows.length) {
+        await pool.query(`UPDATE public.dashboard_daily SET total_visitors=$2, male=$3, female=$4, avg_age_sum=$5, avg_age_count=$6, age_18_25=$7, age_26_35=$8, age_36_45=$9, age_46_60=$10, age_60_plus=$11, monday=$12, tuesday=$13, wednesday=$14, thursday=$15, friday=$16, saturday=$17, sunday=$18, updated_at=NOW() WHERE day=$1 AND store_id='all'`, [day, r.total_visitors||0, r.male||0, r.female||0, r.avg_age_sum||0, r.avg_age_count||0, r.age_18_25||0, r.age_26_35||0, r.age_36_45||0, r.age_46_60||0, r.age_60_plus||0, r.monday||0, r.tuesday||0, r.wednesday||0, r.thursday||0, r.friday||0, r.saturday||0, r.sunday||0]);
+      } else {
+        await pool.query(`INSERT INTO public.dashboard_daily (day, store_id, total_visitors, male, female, avg_age_sum, avg_age_count, age_18_25, age_26_35, age_36_45, age_46_60, age_60_plus, monday, tuesday, wednesday, thursday, friday, saturday, sunday) VALUES ($1,'all',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`, [day, r.total_visitors||0, r.male||0, r.female||0, r.avg_age_sum||0, r.avg_age_count||0, r.age_18_25||0, r.age_26_35||0, r.age_36_45||0, r.age_46_60||0, r.age_60_plus||0, r.monday||0, r.tuesday||0, r.wednesday||0, r.thursday||0, r.friday||0, r.saturday||0, r.sunday||0]);
+      }
+      const hoursAll = await pool.query(`SELECT hour, COALESCE(SUM(total),0) AS total, COALESCE(SUM(male),0) AS male, COALESCE(SUM(female),0) AS female FROM public.dashboard_hourly WHERE day=$1 AND store_id <> 'all' GROUP BY hour ORDER BY hour`, [day]);
+      for (let h=0; h<24; h++) {
+        const rowH = hoursAll.rows.find((x)=> Number(x.hour)===h) || { total:0, male:0, female:0 };
+        await pool.query(`INSERT INTO public.dashboard_hourly (day, store_id, hour, total, male, female) VALUES ($1,'all',$2,$3,$4,$5) ON CONFLICT (day, store_id, hour) DO UPDATE SET total=$3, male=$4, female=$5`, [day, h, Number(rowH.total)||0, Number(rowH.male)||0, Number(rowH.female)||0]);
+      }
     }
-    return res.status(200).json({ ok: true, days: days.length, stores: ids.length + 1 });
+    return res.status(200).json({ ok: true, days: days.length, stores: ids.length });
   } catch (e) {
     console.error('❌ Refresh all error:', e.message);
     return res.status(500).json({ error: e.message });

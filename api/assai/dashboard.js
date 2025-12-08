@@ -27,6 +27,8 @@ export default async function handler(req, res) {
     console.log(`📡 API Endpoint: ${endpoint}`);
     
     switch (endpoint) {
+      case 'devices':
+        return await getDevices(res);
       case 'stores':
         return await getStores(res);
         
@@ -36,7 +38,7 @@ export default async function handler(req, res) {
         const effStart = start_date || date || getTodayDate();
         const effEnd = end_date || effStart;
         if (effStart !== effEnd) {
-          return res.status(400).json({ success: false, error: 'Apenas consultas de um dia são suportadas para summary', start_date: effStart, end_date: effEnd, storeId: store });
+          return await getDashboardDataRange(res, store, effStart, effEnd);
         }
         return await getDashboardData(res, store, effStart);
         
@@ -186,6 +188,32 @@ async function getStores(res) {
   }
 }
 
+async function getDevices(res) {
+  try {
+    const apiData = await fetchFromDisplayForce('/device/list');
+    const list = Array.isArray(apiData?.data) ? apiData.data : [];
+    const devices = list.map((device) => ({
+      id: device.id ? device.id.toString() : '',
+      name: String(device.name || 'Dispositivo'),
+      location: getDeviceLocation(device),
+      status: getDeviceStatus(device)
+    }));
+    return res.status(200).json({
+      success: true,
+      devices,
+      count: devices.length,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    return res.status(200).json({
+      success: true,
+      devices: [],
+      count: 0,
+      timestamp: new Date().toISOString()
+    });
+  }
+}
+
 // =========== DASHBOARD DATA ===========
 async function getDashboardData(res, storeId = 'all', date = getTodayDate()) {
   try {
@@ -222,6 +250,51 @@ async function getDashboardData(res, storeId = 'all', date = getTodayDate()) {
     return res.status(200).json(resp);
   } catch (e) {
     return res.status(200).json({ success: true, date, storeId, totalVisitors: 0, totalMale: 0, totalFemale: 0, averageAge: 0, visitsByDay: { Sunday:0, Monday:0, Tuesday:0, Wednesday:0, Thursday:0, Friday:0, Saturday:0 }, byAgeGroup: { '18-25':0,'26-35':0,'36-45':0,'46-60':0,'60+':0 }, byAgeGender: { '<20':{male:0,female:0}, '20-29':{male:0,female:0}, '30-45':{male:0,female:0}, '>45':{male:0,female:0} }, byHour: {}, byGenderHour: { male: {}, female: {} }, isFallback: true, error: e.message, timestamp: new Date().toISOString() });
+  }
+}
+
+// =========== DASHBOARD DATA (RANGE) ==========
+async function getDashboardDataRange(res, storeId = 'all', startDate = getTodayDate(), endDate = startDate) {
+  try {
+    const sid = storeId || 'all';
+    const r = await pool.query('SELECT * FROM public.dashboard_daily WHERE day BETWEEN $1 AND $2 AND store_id=$3', [startDate, endDate, sid]);
+    const rows = r.rows || [];
+    if (!rows.length) {
+      return res.status(200).json({ success: true, startDate, endDate, storeId: sid, totalVisitors: 0, totalMale: 0, totalFemale: 0, averageAge: 0, visitsByDay: { Sunday:0, Monday:0, Tuesday:0, Wednesday:0, Thursday:0, Friday:0, Saturday:0 }, byAgeGroup: { '18-25':0,'26-35':0,'36-45':0,'46-60':0,'60+':0 }, byAgeGender: { '<20':{male:0,female:0}, '20-29':{male:0,female:0}, '30-45':{male:0,female:0}, '>45':{male:0,female:0} }, byHour: {}, byGenderHour: { male: {}, female: {} }, isFallback: false, timestamp: new Date().toISOString() });
+    }
+    let total = 0, male = 0, female = 0, avgSum = 0, avgCount = 0;
+    let byAge = { '18-25':0,'26-35':0,'36-45':0,'46-60':0,'60+':0 };
+    const wk = { Sunday:0, Monday:0, Tuesday:0, Wednesday:0, Thursday:0, Friday:0, Saturday:0 };
+    for (const row of rows) {
+      total += Number(row.total_visitors||0);
+      male += Number(row.male||0);
+      female += Number(row.female||0);
+      avgSum += Number(row.avg_age_sum||0);
+      avgCount += Number(row.avg_age_count||0);
+      byAge['18-25'] += Number(row.age_18_25||0);
+      byAge['26-35'] += Number(row.age_26_35||0);
+      byAge['36-45'] += Number(row.age_36_45||0);
+      byAge['46-60'] += Number(row.age_46_60||0);
+      byAge['60+'] += Number(row.age_60_plus||0);
+      wk.Sunday += Number(row.sunday||0);
+      wk.Monday += Number(row.monday||0);
+      wk.Tuesday += Number(row.tuesday||0);
+      wk.Wednesday += Number(row.wednesday||0);
+      wk.Thursday += Number(row.thursday||0);
+      wk.Friday += Number(row.friday||0);
+      wk.Saturday += Number(row.saturday||0);
+    }
+    const hrs = await pool.query('SELECT hour, SUM(total) as total, SUM(male) as male, SUM(female) as female FROM public.dashboard_hourly WHERE day BETWEEN $1 AND $2 AND store_id=$3 GROUP BY hour', [startDate, endDate, sid]);
+    const byHour = {}; const byGenderHour = { male:{}, female:{} };
+    for (const h of hrs.rows || []) { byHour[h.hour] = Number(h.total||0); byGenderHour.male[h.hour] = Number(h.male||0); byGenderHour.female[h.hour] = Number(h.female||0); }
+    const ageBins = { '<20':{male:0,female:0}, '20-29':{male:0,female:0}, '30-45':{male:0,female:0}, '>45':{male:0,female:0} };
+    try {
+      const vq = sid==='all' ? await pool.query('SELECT gender, age FROM public.visitors WHERE day BETWEEN $1 AND $2', [startDate, endDate]) : await pool.query('SELECT gender, age FROM public.visitors WHERE day BETWEEN $1 AND $2 AND store_id=$3', [startDate, endDate, sid]);
+      for (const v of vq.rows || []) { const g = (String(v.gender).toUpperCase()==='M'?'male':'female'); const age = Number(v.age||0); if (age>0){ if (age<20) ageBins['<20'][g]++; else if (age<=29) ageBins['20-29'][g]++; else if (age<=45) ageBins['30-45'][g]++; else ageBins['>45'][g]++; } }
+    } catch {}
+    return res.status(200).json({ success: true, startDate, endDate, storeId: sid, totalVisitors: total, totalMale: male, totalFemale: female, averageAge: avgCount>0 ? Math.round(avgSum/avgCount) : 0, visitsByDay: wk, byAgeGroup: byAge, byAgeGender: ageBins, byHour, byGenderHour, isFallback: false, timestamp: new Date().toISOString() });
+  } catch (e) {
+    return res.status(200).json({ success: true, startDate, endDate, storeId, totalVisitors: 0, totalMale: 0, totalFemale: 0, averageAge: 0, visitsByDay: { Sunday:0, Monday:0, Tuesday:0, Wednesday:0, Thursday:0, Friday:0, Saturday:0 }, byAgeGroup: { '18-25':0,'26-35':0,'36-45':0,'46-60':0,'60+':0 }, byAgeGender: { '<20':{male:0,female:0}, '20-29':{male:0,female:0}, '30-45':{male:0,female:0}, '>45':{male:0,female:0} }, byHour: {}, byGenderHour: { male: {}, female: {} }, isFallback: false, error: e.message, timestamp: new Date().toISOString() });
   }
 }
 

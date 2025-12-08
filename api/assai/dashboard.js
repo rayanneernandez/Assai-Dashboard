@@ -4,7 +4,7 @@ import { Pool } from 'pg';
 // Configurar conexão com PostgreSQL (Render)
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
+  ssl: { rejectUnauthorized: false },
 });
 
 // Token da DisplayForce
@@ -708,6 +708,7 @@ async function refreshRange(req, res, start_date, end_date, store_id) {
         if (g==='M') byGenderHour.male[h]=(byGenderHour.male[h]||0)+1; else byGenderHour.female[h]=(byGenderHour.female[h]||0)+1;
       }
       const avgAgeSum = avgSum; const avgAgeCount = avgCount;
+      if (total > 0) {
       const exists = await pool.query("SELECT 1 FROM public.dashboard_daily WHERE day=$1 AND (store_id IS NOT DISTINCT FROM $2)", [day, store_id||'all']);
       if (exists.rows.length) {
         await pool.query(`UPDATE public.dashboard_daily SET total_visitors=$3, male=$4, female=$5, avg_age_sum=$6, avg_age_count=$7, age_18_25=$8, age_26_35=$9, age_36_45=$10, age_46_60=$11, age_60_plus=$12, monday=$13, tuesday=$14, wednesday=$15, thursday=$16, friday=$17, saturday=$18, sunday=$19, updated_at=NOW() WHERE day=$1 AND (store_id IS NOT DISTINCT FROM $2)`, [day, store_id||'all', total, male, female, avgAgeSum, avgAgeCount, byAge['18-25'], byAge['26-35'], byAge['36-45'], byAge['46-60'], byAge['60+'], byWeek.Monday, byWeek.Tuesday, byWeek.Wednesday, byWeek.Thursday, byWeek.Friday, byWeek.Saturday, byWeek.Sunday]);
@@ -718,13 +719,13 @@ async function refreshRange(req, res, start_date, end_date, store_id) {
         const tot = Number(byHour[h]||0); const m = Number(byGenderHour.male[h]||0); const f = Number(byGenderHour.female[h]||0);
         await pool.query(`INSERT INTO public.dashboard_hourly (day, store_id, hour, total, male, female) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (day, store_id, hour) DO UPDATE SET total=$4, male=$5, female=$6`, [day, store_id||'all', h, tot, m, f]);
       }
+      }
       const mapPt = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
       for (const v of payload) {
         const ts = String(v.start || v.tracks?.[0]?.start || new Date().toISOString()); const base = new Date(ts); const local = new Date(base.getTime() + tz*3600000); const dstr = `${local.getFullYear()}-${String(local.getMonth()+1).padStart(2,'0')}-${String(local.getDate()).padStart(2,'0')}`; const dayOfWeek = mapPt[local.getDay()]; const deviceId = String(v.tracks?.[0]?.device_id ?? (Array.isArray(v.devices)? v.devices[0] : '')); const storeName = nameMap[deviceId] || String(v.store_name ?? '');
         await pool.query(`INSERT INTO public.visitors (visitor_id, day, timestamp, store_id, store_name, gender, age, day_of_week, smile) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING`, [String(v.visitor_id ?? v.session_id ?? v.id ?? ''), dstr, ts, deviceId, storeName, (v.sex===1?'M':'F'), Number(v.age||0), dayOfWeek, String(v.smile||'').toLowerCase()==='yes']);
       }
-    }
-    return res.status(200).json({ ok: true, days: days.length, store_id: store_id||'all' });
+      return res.status(200).json({ ok: true, days: days.length, store_id: store_id||'all' });
   } catch (e) {
     console.error('❌ Refresh error:', e.message);
     return res.status(500).json({ error: e.message });
@@ -933,6 +934,7 @@ async function refreshAll(req, res, start_date, end_date) {
         await pool.query(`INSERT INTO public.visitors (visitor_id, day, timestamp, store_id, store_name, gender, age, day_of_week, smile) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING`, [String(v.visitor_id ?? v.session_id ?? v.id ?? ''), dstrLocal, ts, deviceId, storeName, g, Number(v.age||0), mapPt[local.getDay()], String(v.smile||'').toLowerCase()==='yes']);
       }
       const avgAgeSum = avgSum; const avgAgeCount = avgCount;
+      if (total > 0) {
       const exists = await pool.query("SELECT 1 FROM public.dashboard_daily WHERE day=$1 AND (store_id IS NOT DISTINCT FROM $2)", [day, storeId||'all']);
       if (exists.rows.length) {
         await pool.query(`UPDATE public.dashboard_daily SET total_visitors=$3, male=$4, female=$5, avg_age_sum=$6, avg_age_count=$7, age_18_25=$8, age_26_35=$9, age_36_45=$10, age_46_60=$11, age_60_plus=$12, monday=$13, tuesday=$14, wednesday=$15, thursday=$16, friday=$17, saturday=$18, sunday=$19, updated_at=NOW() WHERE day=$1 AND (store_id IS NOT DISTINCT FROM $2)`, [day, storeId||'all', total, male, female, avgAgeSum, avgAgeCount, byAge['18-25'], byAge['26-35'], byAge['36-45'], byAge['46-60'], byAge['60+'], byWeek.Monday, byWeek.Tuesday, byWeek.Wednesday, byWeek.Thursday, byWeek.Friday, byWeek.Saturday, byWeek.Sunday]);
@@ -943,6 +945,7 @@ async function refreshAll(req, res, start_date, end_date) {
         const tot = Number(byHour[h]||0); const m = Number(byGenderHour.male[h]||0); const f = Number(byGenderHour.female[h]||0);
         await pool.query(`INSERT INTO public.dashboard_hourly (day, store_id, hour, total, male, female) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (day, store_id, hour) DO UPDATE SET total=$4, male=$5, female=$6`, [day, storeId||'all', h, tot, m, f]);
       }
+      
     }
     for (const day of days) {
       for (const id of ids) {
@@ -974,7 +977,8 @@ async function refreshAll(req, res, start_date, end_date) {
 // ===========================================
 async function autoRefresh(req, res) {
   try {
-    const d = new Date(); d.setDate(d.getDate() - 1);
+    const d = new Date();
+    d.setDate(d.getDate() - 1);
     const y = d.toISOString().slice(0,10);
     let ids = [];
     try {
@@ -982,20 +986,29 @@ async function autoRefresh(req, res) {
       if (!r.ok && r.status === 405) {
         r = await fetch(`${DISPLAYFORCE_BASE}/device/list`, { method: 'GET', headers: { 'X-API-Token': DISPLAYFORCE_TOKEN, 'Accept': 'application/json' } });
       }
-      const dj = await r.json(); const arr = dj.devices || dj.data || [];
+      const dj = await r.json();
+      const arr = dj.devices || dj.data || [];
       ids = Array.isArray(arr) ? arr.map((d) => String(d.id ?? d.device_id ?? '')).filter(Boolean) : [];
     } catch {}
     const proto = String(req.headers['x-forwarded-proto'] || 'https');
     const host = String(req.headers['host'] || '');
     const base = host ? `${proto}://${host}` : '';
     const calls = [];
-    const paramsAll = new URLSearchParams(); paramsAll.set('endpoint','refresh'); paramsAll.set('start_date', y); paramsAll.set('end_date', y); paramsAll.set('store_id','all');
+    const paramsAll = new URLSearchParams();
+    paramsAll.set('endpoint','refresh');
+    paramsAll.set('start_date', y);
+    paramsAll.set('end_date', y);
+    paramsAll.set('store_id','all');
     if (base) calls.push(fetch(`${base}/api/assai/dashboard?${paramsAll.toString()}`).catch(()=>{}));
     for (const id of ids) {
-      const q = new URLSearchParams(); q.set('endpoint','refresh'); q.set('start_date', y); q.set('end_date', y); q.set('store_id', id);
+      const q = new URLSearchParams();
+      q.set('endpoint','refresh');
+      q.set('start_date', y);
+      q.set('end_date', y);
+      q.set('store_id', id);
       if (base) calls.push(fetch(`${base}/api/assai/dashboard?${q.toString()}`).catch(()=>{}));
     }
-    res.status(202).json({ ok: true, date: y, triggered: calls.length });
+    return res.status(202).json({ ok: true, date: y, triggered: calls.length });
   } catch (e) {
     return res.status(500).json({ error: e.message });
   }

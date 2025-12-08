@@ -179,6 +179,23 @@ async function getDashboardData(res, storeId = 'all', date = '2025-12-08') {
     };
     
     // Dados para o frontend
+    // Compute byAgeGender bins for Gender & Age chart
+    const age18_25 = Math.floor(totalVisitors * 0.25);
+    const age26_35 = Math.floor(totalVisitors * 0.30);
+    const age36_45 = Math.floor(totalVisitors * 0.25);
+    const maleShare = totalVisitors > 0 ? maleCount / totalVisitors : 0.682;
+    const femaleShare = 1 - maleShare;
+    const under20Total = Math.floor(age18_25 * 0.25);
+    const twentyTo29Total = Math.floor(age18_25 * 0.75 + age26_35 * 0.40);
+    const thirtyTo45Total = Math.floor(age26_35 * 0.60 + age36_45 * 1.00);
+    let over45Total = totalVisitors - (under20Total + twentyTo29Total + thirtyTo45Total);
+    if (over45Total < 0) over45Total = 0;
+    const byAgeGender = {
+      '<20': { male: Math.floor(under20Total * maleShare), female: Math.floor(under20Total * femaleShare) },
+      '20-29': { male: Math.floor(twentyTo29Total * maleShare), female: Math.floor(twentyTo29Total * femaleShare) },
+      '30-45': { male: Math.floor(thirtyTo45Total * maleShare), female: Math.floor(thirtyTo45Total * femaleShare) },
+      '>45': { male: Math.floor(over45Total * maleShare), female: Math.floor(over45Total * femaleShare) }
+    };
     const response = {
       success: true,
       totalVisitors: totalVisitors,
@@ -201,6 +218,7 @@ async function getDashboardData(res, storeId = 'all', date = '2025-12-08') {
         '46-60': Math.floor(totalVisitors * 0.15),
         '60+': Math.floor(totalVisitors * 0.05)
       },
+      byAgeGender: byAgeGender,
       byHour: generateHourlyData(totalVisitors),
       byGenderHour: {
         male: generateHourlyData(maleCount),
@@ -558,6 +576,24 @@ function getFallbackDashboardData(storeId = 'all', date = '2025-12-08') {
   const maleCount = Math.floor(totalVisitors * 0.682);
   const femaleCount = Math.floor(totalVisitors * 0.318);
   
+  // Compute byAgeGender bins for Gender & Age chart
+  const age18_25 = Math.floor(totalVisitors * 0.25);
+  const age26_35 = Math.floor(totalVisitors * 0.30);
+  const age36_45 = Math.floor(totalVisitors * 0.25);
+  const maleShare = totalVisitors > 0 ? maleCount / totalVisitors : 0.682;
+  const femaleShare = 1 - maleShare;
+  const under20Total = Math.floor(age18_25 * 0.25);
+  const twentyTo29Total = Math.floor(age18_25 * 0.75 + age26_35 * 0.40);
+  const thirtyTo45Total = Math.floor(age26_35 * 0.60 + age36_45 * 1.00);
+  let over45Total = totalVisitors - (under20Total + twentyTo29Total + thirtyTo45Total);
+  if (over45Total < 0) over45Total = 0;
+  const byAgeGender = {
+    '<20': { male: Math.floor(under20Total * maleShare), female: Math.floor(under20Total * femaleShare) },
+    '20-29': { male: Math.floor(twentyTo29Total * maleShare), female: Math.floor(twentyTo29Total * femaleShare) },
+    '30-45': { male: Math.floor(thirtyTo45Total * maleShare), female: Math.floor(thirtyTo45Total * femaleShare) },
+    '>45': { male: Math.floor(over45Total * maleShare), female: Math.floor(over45Total * femaleShare) }
+  };
+  
   return {
     success: true,
     totalVisitors: totalVisitors,
@@ -580,6 +616,7 @@ function getFallbackDashboardData(storeId = 'all', date = '2025-12-08') {
       '46-60': Math.floor(totalVisitors * 0.15),
       '60+': Math.floor(totalVisitors * 0.05)
     },
+    byAgeGender: byAgeGender,
     byHour: generateHourlyData(totalVisitors),
     byGenderHour: {
       male: generateHourlyData(maleCount),

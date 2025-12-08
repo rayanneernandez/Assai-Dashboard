@@ -337,12 +337,42 @@ if (store_id && store_id !== "all") {
         FROM visitors
         WHERE 1=1
       `;
-      if (start_date) { vq += ` AND day >= $${vc}`; vParams.push(start_date); vc++; }
-      if (end_date) { vq += ` AND day <= $${vc}`; vParams.push(end_date); vc++; }
-      vq += ` AND store_id = $${vc}`; vParams.push(store_id);
+      if (start_date) { vq += ` AND day >= ${vc}`; vParams.push(start_date); vc++; }
+      if (end_date) { vq += ` AND day <= ${vc}`; vParams.push(end_date); vc++; }
+      vq += ` AND store_id = ${vc}`; vParams.push(store_id);
 
       const vRes = await pool.query(vq, vParams);
       row = vRes.rows[0] || row;
+    } else if ((Number(row.total_visitors || 0) === 0) && (!store_id || store_id === 'all')) {
+      const aParams = [];
+      let ac = 1;
+      let aq = `
+        SELECT
+          COALESCE(SUM(total_visitors), 0)  AS total_visitors,
+          COALESCE(SUM(male), 0)            AS total_male,
+          COALESCE(SUM(female), 0)          AS total_female,
+          COALESCE(SUM(avg_age_sum), 0)     AS avg_age_sum,
+          COALESCE(SUM(avg_age_count), 0)   AS avg_age_count,
+          COALESCE(SUM(age_18_25), 0)       AS age_18_25,
+          COALESCE(SUM(age_26_35), 0)       AS age_26_35,
+          COALESCE(SUM(age_36_45), 0)       AS age_36_45,
+          COALESCE(SUM(age_46_60), 0)       AS age_46_60,
+          COALESCE(SUM(age_60_plus), 0)     AS age_60_plus,
+          COALESCE(SUM(sunday), 0)          AS sunday,
+          COALESCE(SUM(monday), 0)          AS monday,
+          COALESCE(SUM(tuesday), 0)         AS tuesday,
+          COALESCE(SUM(wednesday), 0)       AS wednesday,
+          COALESCE(SUM(thursday), 0)        AS thursday,
+          COALESCE(SUM(friday), 0)          AS friday,
+          COALESCE(SUM(saturday), 0)        AS saturday
+        FROM dashboard_daily
+        WHERE 1=1
+      `;
+      if (start_date) { aq += ` AND day >= ${ac}`; aParams.push(start_date); ac++; }
+      if (end_date) { aq += ` AND day <= ${ac}`; aParams.push(end_date); ac++; }
+      aq += ` AND store_id <> 'all'`;
+      const aRes = await pool.query(aq, aParams);
+      row = aRes.rows[0] || row;
     }
 
     const avgCount = Number(row.avg_age_count || 0);
@@ -407,6 +437,22 @@ if (store_id && store_id !== "all") {
       hvq += ` GROUP BY hour ORDER BY hour ASC`;
       const hvRes = await pool.query(hvq, hvParams);
       hRows = hvRes.rows || [];
+    } else if (hRows.length === 0 && (!store_id || store_id === 'all')) {
+      let hAllQ = `
+        SELECT hour,
+               COALESCE(SUM(total), 0)  AS total,
+               COALESCE(SUM(male), 0)   AS male,
+               COALESCE(SUM(female), 0) AS female
+        FROM dashboard_hourly
+        WHERE 1=1
+      `;
+      const hAllParams = [];
+      let hc2 = 1;
+      if (start_date) { hAllQ += ` AND day >= ${hc2}`; hAllParams.push(start_date); hc2++; }
+      if (end_date) { hAllQ += ` AND day <= ${hc2}`; hAllParams.push(end_date); hc2++; }
+      hAllQ += ` AND store_id <> 'all' GROUP BY hour ORDER BY hour ASC`;
+      const hAllRes = await pool.query(hAllQ, hAllParams);
+      hRows = hAllRes.rows || [];
     }
     if (source === "displayforce" && start_date && end_date && start_date === end_date) {
       try {
@@ -844,7 +890,26 @@ async function autoRefresh(req, res) {
   try {
     const d = new Date(); d.setDate(d.getDate() - 1);
     const y = d.toISOString().slice(0,10);
-    return await refreshAll(req, res, y, y);
+    let ids = [];
+    try {
+      let r = await fetch(`${DISPLAYFORCE_BASE}/device/list`, { method: 'POST', headers: { 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type': 'application/json', 'Accept': 'application/json' }, body: JSON.stringify({}) });
+      if (!r.ok && r.status === 405) {
+        r = await fetch(`${DISPLAYFORCE_BASE}/device/list`, { method: 'GET', headers: { 'X-API-Token': DISPLAYFORCE_TOKEN, 'Accept': 'application/json' } });
+      }
+      const dj = await r.json(); const arr = dj.devices || dj.data || [];
+      ids = Array.isArray(arr) ? arr.map((d) => String(d.id ?? d.device_id ?? '')).filter(Boolean) : [];
+    } catch {}
+    const proto = String(req.headers['x-forwarded-proto'] || 'https');
+    const host = String(req.headers['host'] || '');
+    const base = host ? `${proto}://${host}` : '';
+    const calls = [];
+    const paramsAll = new URLSearchParams(); paramsAll.set('endpoint','refresh'); paramsAll.set('start_date', y); paramsAll.set('end_date', y); paramsAll.set('store_id','all');
+    if (base) calls.push(fetch(`${base}/api/assai/dashboard?${paramsAll.toString()}`).catch(()=>{}));
+    for (const id of ids) {
+      const q = new URLSearchParams(); q.set('endpoint','refresh'); q.set('start_date', y); q.set('end_date', y); q.set('store_id', id);
+      if (base) calls.push(fetch(`${base}/api/assai/dashboard?${q.toString()}`).catch(()=>{}));
+    }
+    res.status(202).json({ ok: true, date: y, triggered: calls.length });
   } catch (e) {
     return res.status(500).json({ error: e.message });
   }

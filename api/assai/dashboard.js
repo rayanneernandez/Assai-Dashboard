@@ -188,14 +188,31 @@ async function getVisitorsFromDisplayForce(res, start_date, end_date, store_id) 
       headwear: true,
     };
     if (store_id && store_id !== 'all') bodyPayload.devices = [store_id];
-    const response = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, {
+    let response = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, {
       method: 'POST',
       headers: { 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type': 'application/json' },
       body: JSON.stringify(bodyPayload)
     });
     if (!response.ok) {
-      const body = await response.text().catch(() => '');
-      throw new Error(`DisplayForce stats: ${response.status} ${response.statusText} ${body}`);
+      const form = new URLSearchParams();
+      form.set('start', startISO); form.set('end', endISO);
+      form.set('limit', String(LIMIT_REQ)); form.set('offset', String(offset));
+      if (store_id && store_id !== 'all') form.set('devices', String(store_id));
+      let alt = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method: 'POST', headers: { 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' }, body: form.toString() });
+      if (!alt.ok) {
+        const qp = new URLSearchParams(form);
+        response = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list?${qp.toString()}`, { method: 'GET', headers: { 'X-API-Token': DISPLAYFORCE_TOKEN, 'Accept': 'application/json' } });
+        if (!response.ok && store_id && store_id !== 'all') {
+          const qp2 = new URLSearchParams(qp); qp2.delete('devices'); qp2.set('device_id', String(store_id));
+          response = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list?${qp2.toString()}`, { method: 'GET', headers: { 'X-API-Token': DISPLAYFORCE_TOKEN, 'Accept': 'application/json' } });
+        }
+        if (!response.ok) {
+          const body = await response.text().catch(() => '');
+          throw new Error(`DisplayForce stats: ${response.status} ${response.statusText} ${body}`);
+        }
+      } else {
+        response = alt;
+      }
     }
     const page = await response.json();
     const payload = page.payload || page.data || [];
@@ -647,8 +664,25 @@ async function refreshRange(req, res, start_date, end_date, store_id) {
       while (true) {
         const body = { start: `${day}T00:00:00${tzStr}`, end: `${day}T23:59:59${tzStr}`, limit, offset, tracks: true };
         if (store_id && store_id !== 'all') body.devices = [store_id];
-        const resp = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method: 'POST', headers: { 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-        if (!resp.ok) { const t = await resp.text().catch(()=>""); throw new Error(`DF ${resp.status} ${t}`); }
+        let resp = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method: 'POST', headers: { 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        if (!resp.ok) {
+          const form = new URLSearchParams();
+          form.set('start', body.start); form.set('end', body.end);
+          form.set('limit', String(limit)); form.set('offset', String(offset));
+          if (store_id && store_id !== 'all') form.set('devices', String(store_id));
+          let alt = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method: 'POST', headers: { 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' }, body: form.toString() });
+          if (!alt.ok) {
+            const qp = new URLSearchParams(form);
+            resp = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list?${qp.toString()}`, { method: 'GET', headers: { 'X-API-Token': DISPLAYFORCE_TOKEN, 'Accept': 'application/json' } });
+            if (!resp.ok && store_id && store_id !== 'all') {
+              const qp2 = new URLSearchParams(qp); qp2.delete('devices'); qp2.set('device_id', String(store_id));
+              resp = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list?${qp2.toString()}`, { method: 'GET', headers: { 'X-API-Token': DISPLAYFORCE_TOKEN, 'Accept': 'application/json' } });
+            }
+            if (!resp.ok) { const t = await resp.text().catch(()=>""); throw new Error(`DF ${resp.status} ${t}`); }
+          } else {
+            resp = alt;
+          }
+        }
         const json = await resp.json(); const arr = Array.isArray(json.payload || json.data) ? (json.payload || json.data) : [];
         payload.push(...arr);
         const pg = json.pagination; const pageLimit = Number(pg?.limit ?? limit);
@@ -850,8 +884,25 @@ async function refreshAll(req, res, start_date, end_date) {
       while (true) {
         const body = { start: `${day}T00:00:00${tzStr}`, end: `${day}T23:59:59${tzStr}`, limit, offset, tracks: true };
         if (storeId && storeId !== 'all') body.devices = [storeId];
-        const resp = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method: 'POST', headers: { 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-        if (!resp.ok) break;
+        let resp = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method: 'POST', headers: { 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        if (!resp.ok) {
+          const form = new URLSearchParams();
+          form.set('start', body.start); form.set('end', body.end);
+          form.set('limit', String(limit)); form.set('offset', String(offset));
+          if (storeId && storeId !== 'all') form.set('devices', String(storeId));
+          let alt = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method: 'POST', headers: { 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' }, body: form.toString() });
+          if (!alt.ok) {
+            const qp = new URLSearchParams(form);
+            resp = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list?${qp.toString()}`, { method: 'GET', headers: { 'X-API-Token': DISPLAYFORCE_TOKEN, 'Accept': 'application/json' } });
+            if (!resp.ok && storeId && storeId !== 'all') {
+              const qp2 = new URLSearchParams(qp); qp2.delete('devices'); qp2.set('device_id', String(storeId));
+              resp = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list?${qp2.toString()}`, { method: 'GET', headers: { 'X-API-Token': DISPLAYFORCE_TOKEN, 'Accept': 'application/json' } });
+            }
+            if (!resp.ok) break;
+          } else {
+            resp = alt;
+          }
+        }
         const json = await resp.json(); const arr = Array.isArray(json.payload || json.data) ? (json.payload || json.data) : [];
         payload.push(...arr);
         const pg = json.pagination; const pageLimit = Number(pg?.limit ?? limit);

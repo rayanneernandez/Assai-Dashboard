@@ -189,7 +189,7 @@ const Index = () => {
   }));
 
   const ageGenderPercentData = (() => {
-    const ag = (backendStats as any)?.byAgeGender;
+    const ag = backendStats?.byAgeGender;
     if (!ag) return [] as Array<{ faixa: string; masculino: number; feminino: number }>;
     const keys = ['<20','20-29','30-45','>45'];
     return keys.map((k) => {
@@ -249,7 +249,7 @@ const Index = () => {
               </div>
 
               {/* Charts Row 1 */}
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
                 <Card className="p-6">
                   <h3 className="text-lg font-semibold text-primary mb-4">
                     Visitas por Dia da Semana
@@ -289,6 +289,21 @@ const Index = () => {
                       </Pie>
                       <Legend />
                     </PieChart>
+                  </ResponsiveContainer>
+                </Card>
+
+                <Card className="p-6">
+                  <h3 className="text-lg font-semibold text-primary mb-4">Gênero & Idade</h3>
+                  <ResponsiveContainer width="100%" height={300}>
+                    <BarChart data={ageGenderPercentData}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="faixa" tickFormatter={(v) => String(v)} />
+                      <YAxis domain={[0,100]} tickFormatter={(v) => `${v}%`} label={{ value: "Número %", angle: -90, position: "insideLeft" }} />
+                      <Tooltip formatter={(value: any, name: any) => [`${value}%`, name]} />
+                      <Legend />
+                      <Bar dataKey="feminino" name="Feminino" fill="#E74C3C" />
+                      <Bar dataKey="masculino" name="Masculino" fill="#0047BB" />
+                    </BarChart>
                   </ResponsiveContainer>
                 </Card>
               </div>
@@ -352,21 +367,7 @@ const Index = () => {
                 )}
               </Card>
 
-              {/* Gender × Age Chart */}
-              <Card className="p-6 mt-6">
-                <h3 className="text-lg font-semibold text-primary mb-4">Gênero & Idade</h3>
-                <ResponsiveContainer width="100%" height={300}>
-                  <BarChart data={ageGenderPercentData}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="faixa" tickFormatter={(v) => String(v)} />
-                    <YAxis domain={[0,100]} tickFormatter={(v) => `${v}%`} label={{ value: "Número %", angle: -90, position: "insideLeft" }} />
-                    <Tooltip formatter={(value: any, name: any) => [`${value}%`, name]} />
-                    <Legend />
-                    <Bar dataKey="feminino" name="Feminino" fill="#E74C3C" />
-                    <Bar dataKey="masculino" name="Masculino" fill="#0047BB" />
-                  </BarChart>
-                </ResponsiveContainer>
-              </Card>
+
         </main>
       </div>
       

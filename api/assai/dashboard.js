@@ -30,7 +30,9 @@ export default async function handler(req, res) {
       case 'dashboard-data':
       case 'summary':
         const store = store_id || storeId || 'all';
-        const queryDate = date || '2025-12-08';
+        const effStart = start_date || date || getTodayDate();
+        const effEnd = end_date || effStart;
+        const queryDate = effStart === effEnd ? effStart : getTodayDate();
         return await getDashboardData(res, store, queryDate);
         
       case 'visitors':
@@ -131,7 +133,7 @@ async function getStores(res) {
 }
 
 // =========== DASHBOARD DATA ===========
-async function getDashboardData(res, storeId = 'all', date = '2025-12-08') {
+async function getDashboardData(res, storeId = 'all', date = getTodayDate()) {
   console.log(`📊 Dashboard: ${storeId}, ${date}`);
   
   try {
@@ -270,15 +272,15 @@ async function getDashboardData(res, storeId = 'all', date = '2025-12-08') {
       totalMale: maleCount,
       totalFemale: femaleCount,
       averageAge: 38,
-      visitsByDay: {
-        Sunday: weeklyVisits.dom,
-        Monday: weeklyVisits.seg,
-        Tuesday: weeklyVisits.ter,
-        Wednesday: weeklyVisits.qua,
-        Thursday: weeklyVisits.qui,
-        Friday: weeklyVisits.sex,
-        Saturday: weeklyVisits.sab
-      },
+      visitsByDay: ((d) => ({
+        Sunday: d === 0 ? totalVisitors : 0,
+        Monday: d === 1 ? totalVisitors : 0,
+        Tuesday: d === 2 ? totalVisitors : 0,
+        Wednesday: d === 3 ? totalVisitors : 0,
+        Thursday: d === 4 ? totalVisitors : 0,
+        Friday: d === 5 ? totalVisitors : 0,
+        Saturday: d === 6 ? totalVisitors : 0
+      }))(new Date(date).getDay()),
       byAgeGroup: {
         '18-25': Math.floor(totalVisitors * 0.25),
         '26-35': Math.floor(totalVisitors * 0.30),
@@ -369,6 +371,16 @@ async function refreshData(res) {
 }
 
 // =========== FUNÇÕES AUXILIARES ===========
+function getTodayDate() {
+  try {
+    const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || '-3', 10);
+    const now = new Date();
+    now.setHours(now.getHours() + tz);
+    return now.toISOString().split('T')[0];
+  } catch {
+    return new Date().toISOString().split('T')[0];
+  }
+}
 
 // Buscar visitantes do dia na DisplayForce
 async function fetchDayVisitorsFromDisplayForce(day, storeId) {
@@ -659,7 +671,7 @@ function getFallbackStores() {
   ];
 }
 
-function getFallbackDashboardData(storeId = 'all', date = '2025-12-08') {
+function getFallbackDashboardData(storeId = 'all', date = getTodayDate()) {
   const storeData = {
     'all': { visitors: 3995 },
     '14818': { visitors: 0 },
@@ -705,15 +717,15 @@ function getFallbackDashboardData(storeId = 'all', date = '2025-12-08') {
     totalMale: maleCount,
     totalFemale: femaleCount,
     averageAge: 38,
-    visitsByDay: {
-      Sunday: Math.floor(totalVisitors * 0.18),
-      Monday: Math.floor(totalVisitors * 0.125),
-      Tuesday: Math.floor(totalVisitors * 0.132),
-      Wednesday: Math.floor(totalVisitors * 0.140),
-      Thursday: Math.floor(totalVisitors * 0.138),
-      Friday: Math.floor(totalVisitors * 0.155),
-      Saturday: Math.floor(totalVisitors * 0.210)
-    },
+    visitsByDay: ((d) => ({
+      Sunday: d === 0 ? totalVisitors : 0,
+      Monday: d === 1 ? totalVisitors : 0,
+      Tuesday: d === 2 ? totalVisitors : 0,
+      Wednesday: d === 3 ? totalVisitors : 0,
+      Thursday: d === 4 ? totalVisitors : 0,
+      Friday: d === 5 ? totalVisitors : 0,
+      Saturday: d === 6 ? totalVisitors : 0
+    }))(new Date(date).getDay()),
     byAgeGroup: {
       '18-25': Math.floor(totalVisitors * 0.25),
       '26-35': Math.floor(totalVisitors * 0.30),

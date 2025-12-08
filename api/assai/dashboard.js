@@ -861,6 +861,7 @@ async function refreshAll(req, res, start_date, end_date) {
     const endD = new Date(`${e}T00:00:00Z`);
     while (d <= endD) { days.push(d.toISOString().slice(0,10)); d = new Date(d.getTime() + 86400000); }
     let ids = [];
+    let nameMap = {};
     try {
       let r = await fetch(`${DISPLAYFORCE_BASE}/device/list`, { method: 'POST', headers: { 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type': 'application/json', 'Accept': 'application/json' }, body: JSON.stringify({}) });
       if (!r.ok && r.status === 405) {
@@ -868,7 +869,9 @@ async function refreshAll(req, res, start_date, end_date) {
       }
       const dj = await r.json();
       const arr = dj.devices || dj.data || [];
-      ids = Array.isArray(arr) ? arr.map((d) => String(d.id ?? d.device_id ?? '')).filter(Boolean) : [];
+      const names = {};
+      ids = Array.isArray(arr) ? arr.map((d) => { const id = String(d.id ?? d.device_id ?? ''); if (id) names[id] = String(d.name ?? ''); return id; }).filter(Boolean) : [];
+      nameMap = names;
     } catch {}
     async function updateDayStore(day, storeId) {
       const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || '-3', 10);
@@ -907,17 +910,19 @@ async function refreshAll(req, res, start_date, end_date) {
       const mapPt = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
       for (const v of payload) {
         const ts = String(v.start || v.tracks?.[0]?.start || new Date().toISOString());
-        const dd = new Date(ts);
-        const dstrLocal = `${dd.getFullYear()}-${String(dd.getMonth()+1).padStart(2,'0')}-${String(dd.getDate()).padStart(2,'0')}`;
+        const base = new Date(ts);
+        const local = new Date(base.getTime() + tz*3600000);
+        const dstrLocal = `${local.getFullYear()}-${String(local.getMonth()+1).padStart(2,'0')}-${String(local.getDate()).padStart(2,'0')}`;
         if (dstrLocal !== day) continue;
         total++;
         const g = v.sex===1?'M':'F'; if (g==='M') male++; else female++;
         const age = Number(v.age||0); if (age>0){ avgSum+=age; avgCount++; }
         if (age>=18&&age<=25) byAge['18-25']++; else if (age>=26&&age<=35) byAge['26-35']++; else if (age>=36&&age<=45) byAge['36-45']++; else if (age>=46&&age<=60) byAge['46-60']++; else if (age>60) byAge['60+']++;
-        const wd = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][dd.getDay()]; byWeek[wd] = (byWeek[wd]||0)+1;
-        const h = dd.getHours(); byHour[h] = (byHour[h]||0)+1; if (g==='M') byGenderHour.male[h]=(byGenderHour.male[h]||0)+1; else byGenderHour.female[h]=(byGenderHour.female[h]||0)+1;
+        const wdEN = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][local.getDay()]; byWeek[wdEN] = (byWeek[wdEN]||0)+1;
+        const h = local.getHours(); byHour[h] = (byHour[h]||0)+1; if (g==='M') byGenderHour.male[h]=(byGenderHour.male[h]||0)+1; else byGenderHour.female[h]=(byGenderHour.female[h]||0)+1;
         const deviceId = String(v.tracks?.[0]?.device_id ?? (Array.isArray(v.devices)? v.devices[0] : ''));
-        await pool.query(`INSERT INTO public.visitors (visitor_id, day, timestamp, store_id, store_name, gender, age, day_of_week, smile) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING`, [String(v.visitor_id ?? v.session_id ?? v.id ?? ''), dstrLocal, ts, deviceId, String(v.store_name ?? ''), g, Number(v.age||0), mapPt[dd.getDay()], String(v.smile||'').toLowerCase()==='yes']);
+        const storeName = nameMap[deviceId] || String(v.store_name ?? '');
+        await pool.query(`INSERT INTO public.visitors (visitor_id, day, timestamp, store_id, store_name, gender, age, day_of_week, smile) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING`, [String(v.visitor_id ?? v.session_id ?? v.id ?? ''), dstrLocal, ts, deviceId, storeName, g, Number(v.age||0), mapPt[local.getDay()], String(v.smile||'').toLowerCase()==='yes']);
       }
       const avgAgeSum = avgSum; const avgAgeCount = avgCount;
       const exists = await pool.query("SELECT 1 FROM public.dashboard_daily WHERE day=$1 AND (store_id IS NOT DISTINCT FROM $2)", [day, storeId||'all']);

@@ -249,7 +249,7 @@ const Index = () => {
               </div>
 
               {/* Charts Row 1 */}
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
                 <Card className="p-6">
                   <h3 className="text-lg font-semibold text-primary mb-4">
                     Visitas por Dia da Semana
@@ -295,7 +295,7 @@ const Index = () => {
               </div>
 
               {/* Charts Row 2 */}
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
                 <Card className="p-6">
                   <h3 className="text-lg font-semibold text-primary mb-4">
                     Distribuição por Faixa Etária
@@ -326,6 +326,9 @@ const Index = () => {
                   </ResponsiveContainer>
                 </Card>
 
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
                 <Card className="p-6">
                   <h3 className="text-lg font-semibold text-primary mb-4">
                     Fluxo de Visitantes por Horário
@@ -336,18 +339,11 @@ const Index = () => {
                       <XAxis dataKey="hora" ticks={Array.from({ length: 24 }, (_, i) => i)} tickFormatter={(v) => `${v}h`} label={{ value: "Horário (h)", position: "insideBottom", offset: -5 }} />
                       <YAxis label={{ value: "Número de Visitantes", angle: -90, position: "insideLeft" }} />
                       <Tooltip content={<HourTooltip />} />
-                      <Line
-                        type="monotone"
-                        dataKey="visitantes"
-                        stroke="#0047BB"
-                        strokeWidth={2}
-                      />
+                      <Line type="monotone" dataKey="visitantes" stroke="#0047BB" strokeWidth={2} />
                     </LineChart>
                   </ResponsiveContainer>
                 </Card>
-              </div>
 
-              <div className="grid grid-cols-1 lg:grid-cols-1 gap-6 mb-6">
                 <Card className="p-6">
                   <h3 className="text-lg font-semibold text-primary mb-4">Gênero</h3>
                   <ResponsiveContainer width="100%" height={300}>
@@ -367,8 +363,6 @@ const Index = () => {
                     </p>
                   )}
                 </Card>
-
-
               </div>
 
 

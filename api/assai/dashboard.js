@@ -158,8 +158,8 @@ async function getDashboardData(res, storeId = 'all', date = '2025-12-08') {
     }
     
     // Dados do dashboard
-    const maleCount = Math.floor(totalVisitors * 0.682);
-    const femaleCount = Math.floor(totalVisitors * 0.318);
+    let maleCount = Math.floor(totalVisitors * 0.682);
+    let femaleCount = Math.floor(totalVisitors * 0.318);
     
     // Dados semanais proporcionais
     const weeklyBase = {
@@ -180,22 +180,90 @@ async function getDashboardData(res, storeId = 'all', date = '2025-12-08') {
     
     // Dados para o frontend
     // Compute byAgeGender bins for Gender & Age chart
-    const age18_25 = Math.floor(totalVisitors * 0.25);
-    const age26_35 = Math.floor(totalVisitors * 0.30);
-    const age36_45 = Math.floor(totalVisitors * 0.25);
-    const maleShare = totalVisitors > 0 ? maleCount / totalVisitors : 0.682;
-    const femaleShare = 1 - maleShare;
-    const under20Total = Math.floor(age18_25 * 0.25);
-    const twentyTo29Total = Math.floor(age18_25 * 0.75 + age26_35 * 0.40);
-    const thirtyTo45Total = Math.floor(age26_35 * 0.60 + age36_45 * 1.00);
-    let over45Total = totalVisitors - (under20Total + twentyTo29Total + thirtyTo45Total);
-    if (over45Total < 0) over45Total = 0;
-    const byAgeGender = {
-      '<20': { male: Math.floor(under20Total * maleShare), female: Math.floor(under20Total * femaleShare) },
-      '20-29': { male: Math.floor(twentyTo29Total * maleShare), female: Math.floor(twentyTo29Total * femaleShare) },
-      '30-45': { male: Math.floor(thirtyTo45Total * maleShare), female: Math.floor(thirtyTo45Total * femaleShare) },
-      '>45': { male: Math.floor(over45Total * maleShare), female: Math.floor(over45Total * femaleShare) }
+    let byAgeGender = {
+      '<20': { male: 0, female: 0 },
+      '20-29': { male: 0, female: 0 },
+      '30-45': { male: 0, female: 0 },
+      '>45': { male: 0, female: 0 }
     };
+
+    // If no visitors from store data, try to fetch per-day visitors from DisplayForce to fill bins
+    if (totalVisitors <= 0) {
+      try {
+        const apiVisitors = await fetchDayVisitorsFromDisplayForce(date, storeId);
+        if (apiVisitors.length > 0) {
+          let male = 0, female = 0;
+          for (const v of apiVisitors) {
+            const g = (v.sex === 1 || String(v.sex).toLowerCase().startsWith('m')) ? 'male' : 'female';
+            const age = Number(v.age || 0);
+            if (g === 'male') male++; else female++;
+            if (age > 0) {
+              if (age < 20) byAgeGender['<20'][g]++;
+              else if (age <= 29) byAgeGender['20-29'][g]++;
+              else if (age <= 45) byAgeGender['30-45'][g]++;
+              else byAgeGender['>45'][g]++;
+            }
+          }
+          totalVisitors = apiVisitors.length;
+          maleCount = male;
+          femaleCount = female;
+        } else {
+          // Fallback to proportional bins if API returned nothing
+          const age18_25 = Math.floor(totalVisitors * 0.25);
+          const age26_35 = Math.floor(totalVisitors * 0.30);
+          const age36_45 = Math.floor(totalVisitors * 0.25);
+          const maleShare = totalVisitors > 0 ? maleCount / totalVisitors : 0.682;
+          const femaleShare = 1 - maleShare;
+          const under20Total = Math.floor(age18_25 * 0.25);
+          const twentyTo29Total = Math.floor(age18_25 * 0.75 + age26_35 * 0.40);
+          const thirtyTo45Total = Math.floor(age26_35 * 0.60 + age36_45 * 1.00);
+          let over45Total = totalVisitors - (under20Total + twentyTo29Total + thirtyTo45Total);
+          if (over45Total < 0) over45Total = 0;
+          byAgeGender = {
+            '<20': { male: Math.floor(under20Total * maleShare), female: Math.floor(under20Total * femaleShare) },
+            '20-29': { male: Math.floor(twentyTo29Total * maleShare), female: Math.floor(twentyTo29Total * femaleShare) },
+            '30-45': { male: Math.floor(thirtyTo45Total * maleShare), female: Math.floor(thirtyTo45Total * femaleShare) },
+            '>45': { male: Math.floor(over45Total * maleShare), female: Math.floor(over45Total * femaleShare) }
+          };
+        }
+      } catch (e) {
+        console.error('Erro ao buscar visitantes do dia na DisplayForce:', e);
+        const age18_25 = Math.floor(totalVisitors * 0.25);
+        const age26_35 = Math.floor(totalVisitors * 0.30);
+        const age36_45 = Math.floor(totalVisitors * 0.25);
+        const maleShare = totalVisitors > 0 ? maleCount / totalVisitors : 0.682;
+        const femaleShare = 1 - maleShare;
+        const under20Total = Math.floor(age18_25 * 0.25);
+        const twentyTo29Total = Math.floor(age18_25 * 0.75 + age26_35 * 0.40);
+        const thirtyTo45Total = Math.floor(age26_35 * 0.60 + age36_45 * 1.00);
+        let over45Total = totalVisitors - (under20Total + twentyTo29Total + thirtyTo45Total);
+        if (over45Total < 0) over45Total = 0;
+        byAgeGender = {
+          '<20': { male: Math.floor(under20Total * maleShare), female: Math.floor(under20Total * femaleShare) },
+          '20-29': { male: Math.floor(twentyTo29Total * maleShare), female: Math.floor(twentyTo29Total * femaleShare) },
+          '30-45': { male: Math.floor(thirtyTo45Total * maleShare), female: Math.floor(thirtyTo45Total * femaleShare) },
+          '>45': { male: Math.floor(over45Total * maleShare), female: Math.floor(over45Total * femaleShare) }
+        };
+      }
+    } else {
+      // Use proportional bins when we have totalVisitors
+      const age18_25 = Math.floor(totalVisitors * 0.25);
+      const age26_35 = Math.floor(totalVisitors * 0.30);
+      const age36_45 = Math.floor(totalVisitors * 0.25);
+      const maleShare = totalVisitors > 0 ? maleCount / totalVisitors : 0.682;
+      const femaleShare = 1 - maleShare;
+      const under20Total = Math.floor(age18_25 * 0.25);
+      const twentyTo29Total = Math.floor(age18_25 * 0.75 + age26_35 * 0.40);
+      const thirtyTo45Total = Math.floor(age26_35 * 0.60 + age36_45 * 1.00);
+      let over45Total = totalVisitors - (under20Total + twentyTo29Total + thirtyTo45Total);
+      if (over45Total < 0) over45Total = 0;
+      byAgeGender = {
+        '<20': { male: Math.floor(under20Total * maleShare), female: Math.floor(under20Total * femaleShare) },
+        '20-29': { male: Math.floor(twentyTo29Total * maleShare), female: Math.floor(twentyTo29Total * femaleShare) },
+        '30-45': { male: Math.floor(thirtyTo45Total * maleShare), female: Math.floor(thirtyTo45Total * femaleShare) },
+        '>45': { male: Math.floor(over45Total * maleShare), female: Math.floor(over45Total * femaleShare) }
+      };
+    }
     const response = {
       success: true,
       totalVisitors: totalVisitors,
@@ -301,6 +369,43 @@ async function refreshData(res) {
 }
 
 // =========== FUNÇÕES AUXILIARES ===========
+
+// Buscar visitantes do dia na DisplayForce
+async function fetchDayVisitorsFromDisplayForce(day, storeId) {
+  try {
+    const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || '-3', 10);
+    const sign = tz >= 0 ? '+' : '-';
+    const hh = String(Math.abs(tz)).padStart(2, '0');
+    const tzStr = `${sign}${hh}:00`;
+    const startISO = `${day}T00:00:00${tzStr}`;
+    const endISO = `${day}T23:59:59${tzStr}`;
+    const params = new URLSearchParams({
+      start: startISO,
+      end: endISO,
+      limit: '500',
+      offset: '0',
+      tracks: 'true'
+    });
+    if (storeId && storeId !== 'all') {
+      params.set('device_id', String(storeId));
+    }
+    const response = await fetch(`${API_URL}/audience/list?${params.toString()}`, {
+      headers: {
+        'X-API-Token': API_TOKEN,
+        'Accept': 'application/json'
+      },
+      timeout: 10000
+    });
+    if (response.ok) {
+      const json = await response.json();
+      const arr = Array.isArray(json.payload || json.data) ? (json.payload || json.data) : [];
+      return arr;
+    }
+  } catch (err) {
+    console.error('❌ Erro visitantes DisplayForce:', err.message);
+  }
+  return [];
+}
 
 // Conectar com API DisplayForce
 async function fetchFromDisplayForce(endpoint) {

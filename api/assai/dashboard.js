@@ -4,44 +4,32 @@ import { Pool } from 'pg';
 // Configurar conexão com PostgreSQL (Render)
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-  max: 20,
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 2000,
+  ssl: { rejectUnauthorized: false }
 });
 
 // Token da DisplayForce
 const DISPLAYFORCE_TOKEN = process.env.DISPLAYFORCE_API_TOKEN || '4AUH-BX6H-G2RJ-G7PB';
 const DISPLAYFORCE_BASE = process.env.DISPLAYFORCE_API_URL || 'https://api.displayforce.ai/public/v1';
 
+// Cache para nomes de dispositivos
+let deviceCache = {};
+let cacheTimestamp = 0;
+const CACHE_DURATION = 3600000; // 1 hora
+
 export default async function handler(req, res) {
   // Configurar CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
   
-  console.log(`📊 API Request: ${req.method} ${req.url}`);
-  
   const { endpoint, start_date, end_date, store_id, source } = req.query;
   
   try {
-    // Testar conexão com o banco de dados primeiro
-    try {
-      await pool.query('SELECT NOW()');
-      console.log('✅ Conexão com banco de dados OK');
-    } catch (dbError) {
-      console.error('❌ Erro de conexão com o banco:', dbError.message);
-      return res.status(500).json({
-        success: false,
-        error: 'Database connection error',
-        message: dbError.message,
-        timestamp: new Date().toISOString()
-      });
-    }
+    console.log(`📊 API: ${endpoint} - ${start_date} to ${end_date} - store: ${store_id}`);
     
     switch (endpoint) {
       case 'visitors':
@@ -59,32 +47,17 @@ export default async function handler(req, res) {
       case 'refresh':
         return await refreshRange(req, res, start_date, end_date, store_id);
       
-      case 'refresh_all':
-        return await refreshAll(req, res, start_date, end_date);
-      
-      case 'auto_refresh':
-        return await autoRefresh(req, res);
-      
-      case 'optimize':
-        return await ensureIndexes(req, res);
+      case 'sync':
+        return await syncFromDisplayForce(req, res, start_date, end_date, store_id);
       
       case 'test':
-        return await testAPI(req, res);
-      
-      case 'health':
-        return await healthCheck(req, res);
+        return await testConnection(req, res);
       
       default:
         return res.status(200).json({
           success: true,
           message: 'API Assaí Dashboard',
-          endpoints: [
-            'visitors', 'summary', 'stores', 'devices', 
-            'refresh', 'refresh_all', 'auto_refresh', 
-            'optimize', 'test', 'health'
-          ],
-          usage: '/api/assai/dashboard?endpoint=summary&start_date=2025-12-01&end_date=2025-12-08&store_id=all',
-          timestamp: new Date().toISOString()
+          endpoints: ['visitors', 'summary', 'stores', 'devices', 'refresh', 'sync', 'test']
         });
     }
     
@@ -93,563 +66,362 @@ export default async function handler(req, res) {
     return res.status(500).json({
       success: false,
       error: 'Internal server error',
-      message: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined,
-      timestamp: new Date().toISOString()
-    });
-  }
-}
-
-// ===========================================
-// TESTE DE API E HEALTH CHECK
-// ===========================================
-async function testAPI(req, res) {
-  try {
-    // Testar conexão com banco
-    const dbTest = await pool.query('SELECT NOW() as time, version() as version');
-    
-    // Verificar tabelas existentes
-    const tablesQuery = await pool.query(`
-      SELECT table_name 
-      FROM information_schema.tables 
-      WHERE table_schema = 'public'
-      ORDER BY table_name
-    `);
-    
-    const tableCounts = {};
-    for (const table of tablesQuery.rows) {
-      try {
-        const countResult = await pool.query(`SELECT COUNT(*) as count FROM ${table.table_name}`);
-        tableCounts[table.table_name] = parseInt(countResult.rows[0]?.count || 0);
-      } catch (e) {
-        tableCounts[table.table_name] = 'error';
-      }
-    }
-    
-    return res.status(200).json({
-      success: true,
-      message: 'API Test Complete',
-      database: {
-        connected: true,
-        time: dbTest.rows[0]?.time,
-        version: dbTest.rows[0]?.version?.split(' ')[1] || 'unknown'
-      },
-      tables: tableCounts,
-      environment: {
-        node_env: process.env.NODE_ENV,
-        timezone: process.env.TIMEZONE_OFFSET_HOURS || '-3'
-      },
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('Test API error:', error);
-    return res.status(500).json({
-      success: false,
-      error: 'Test failed',
       message: error.message
     });
   }
 }
 
-async function healthCheck(req, res) {
-  try {
-    await pool.query('SELECT 1');
-    return res.status(200).json({
-      status: 'healthy',
-      timestamp: new Date().toISOString(),
-      database: 'connected'
-    });
-  } catch (error) {
-    return res.status(503).json({
-      status: 'unhealthy',
-      timestamp: new Date().toISOString(),
-      database: 'disconnected',
-      error: error.message
-    });
-  }
-}
-
 // ===========================================
-// 1. VISITANTES
+// 1. VISITANTES - SEMPRE DA DISPLAYFORCE
 // ===========================================
 async function getVisitors(req, res, start_date, end_date, store_id) {
   try {
-    console.log(`📋 Visitors request: start=${start_date}, end=${end_date}, store=${store_id}`);
+    console.log(`📋 Buscando visitantes da DisplayForce...`);
     
-    // Se pedirem explicitamente displayforce
-    if (req.query.source === "displayforce") {
-      console.log('🔄 Fetching from DisplayForce API');
-      return await getVisitorsFromDisplayForce(res, start_date, end_date, store_id);
+    // Se source não for displayforce, verificar se temos no banco
+    if (source !== 'displayforce') {
+      const dbVisitors = await getVisitorsFromDB(start_date, end_date, store_id);
+      if (dbVisitors.length > 0) {
+        return res.status(200).json({
+          success: true,
+          data: dbVisitors,
+          count: dbVisitors.length,
+          source: 'database'
+        });
+      }
     }
-
-    // Construir query para visitors
-    let query = `
-      SELECT 
-        visitor_id AS id,
-        day,
-        store_id,
-        store_name,
-        timestamp,
-        gender,
-        age,
-        day_of_week,
-        smile
-      FROM visitors
-      WHERE 1=1
-    `;
-
-    const params = [];
-    let paramCount = 1;
-
-    if (start_date) {
-      query += ` AND day >= $${paramCount}`;
-      params.push(start_date);
-      paramCount++;
-    }
-
-    if (end_date) {
-      query += ` AND day <= $${paramCount}`;
-      params.push(end_date);
-      paramCount++;
-    }
-
-    if (store_id && store_id !== "all") {
-      query += ` AND store_id = $${paramCount}`;
-      params.push(store_id);
-      paramCount++;
-    }
-
-    query += ` ORDER BY timestamp DESC LIMIT 500`;
-
-    console.log("📋 Executing visitors query");
-    const result = await pool.query(query, params);
-    const rows = result.rows || [];
-
-    console.log(`✅ Found ${rows.length} visitors`);
+    
+    // Buscar da DisplayForce
+    const visitors = await fetchVisitorsFromDisplayForce(start_date, end_date, store_id);
+    
+    // Salvar no banco para cache
+    await saveVisitorsToDB(visitors);
     
     return res.status(200).json({
       success: true,
-      data: rows,
-      count: rows.length,
-      query: { start_date, end_date, store_id }
+      data: visitors,
+      count: visitors.length,
+      source: 'displayforce'
     });
     
   } catch (error) {
     console.error("❌ Visitors error:", error.message);
+    
+    // Fallback para banco de dados
+    try {
+      const dbVisitors = await getVisitorsFromDB(start_date, end_date, store_id);
+      return res.status(200).json({
+        success: true,
+        data: dbVisitors,
+        count: dbVisitors.length,
+        source: 'database_fallback',
+        error: error.message
+      });
+    } catch (dbError) {
+      return res.status(200).json({
+        success: false,
+        data: [],
+        error: `DisplayForce: ${error.message}, Database: ${dbError.message}`
+      });
+    }
+  }
+}
+
+// Buscar visitantes da DisplayForce
+async function fetchVisitorsFromDisplayForce(start_date, end_date, store_id) {
+  const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
+  const sign = tz >= 0 ? "+" : "-";
+  const hh = String(Math.abs(tz)).padStart(2, "0");
+  const tzStr = `${sign}${hh}:00`;
+  
+  const startISO = start_date ? `${start_date}T00:00:00${tzStr}` : 
+    `${new Date().toISOString().split('T')[0]}T00:00:00${tzStr}`;
+  const endISO = end_date ? `${end_date}T23:59:59${tzStr}` : 
+    `${new Date().toISOString().split('T')[0]}T23:59:59${tzStr}`;
+  
+  let allVisitors = [];
+  let offset = 0;
+  const limit = 500;
+  
+  console.log(`🔄 Fetching from DisplayForce: ${startISO} to ${endISO}`);
+  
+  while (true) {
+    const body = {
+      start: startISO,
+      end: endISO,
+      limit: limit,
+      offset: offset
+    };
+    
+    if (store_id && store_id !== 'all') {
+      body.devices = [store_id];
+    }
+    
+    const response = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, {
+      method: 'POST',
+      headers: {
+        'X-API-Token': DISPLAYFORCE_TOKEN,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(body)
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`DisplayForce API error: ${response.status} - ${errorText}`);
+    }
+    
+    const data = await response.json();
+    const visitors = data.payload || data.data || [];
+    
+    allVisitors = allVisitors.concat(visitors);
+    
+    // Verificar se há mais páginas
+    const pagination = data.pagination;
+    if (!pagination || visitors.length < limit) {
+      break;
+    }
+    
+    offset += limit;
+  }
+  
+  console.log(`✅ Fetched ${allVisitors.length} visitors from DisplayForce`);
+  
+  // Converter para formato padrão
+  return allVisitors.map(visitor => ({
+    id: visitor.visitor_id || visitor.session_id || `visitor_${Date.now()}_${Math.random()}`,
+    day: new Date(visitor.start || visitor.tracks?.[0]?.start || new Date()).toISOString().split('T')[0],
+    store_id: visitor.tracks?.[0]?.device_id || visitor.devices?.[0] || store_id || 'unknown',
+    store_name: `Loja ${visitor.tracks?.[0]?.device_id || visitor.devices?.[0] || store_id || 'unknown'}`,
+    timestamp: visitor.start || visitor.tracks?.[0]?.start || new Date().toISOString(),
+    gender: visitor.sex === 1 ? 'M' : 'F',
+    age: parseInt(visitor.age || 0),
+    day_of_week: getDayOfWeekPT(new Date(visitor.start || visitor.tracks?.[0]?.start || new Date())),
+    smile: String(visitor.smile || '').toLowerCase() === 'yes'
+  }));
+}
+
+// ===========================================
+// 2. RESUMO DO DASHBOARD - DADOS REAIS
+// ===========================================
+async function getSummary(req, res, start_date, end_date, store_id) {
+  try {
+    console.log(`📊 Buscando resumo da DisplayForce...`);
+    
+    const startDate = start_date || new Date().toISOString().split('T')[0];
+    const endDate = end_date || startDate;
+    
+    // Buscar visitantes da DisplayForce
+    const visitors = await fetchVisitorsFromDisplayForce(startDate, endDate, store_id);
+    
+    // Processar estatísticas
+    const stats = processVisitorStats(visitors, store_id);
+    
+    // Buscar nomes dos dispositivos
+    const deviceNames = await getDeviceNames();
+    
     return res.status(200).json({
       success: true,
-      data: [],
+      ...stats,
+      storeName: store_id === 'all' ? 'Todas as Lojas' : 
+                 deviceNames[store_id] || `Loja ${store_id}`,
+      source: 'displayforce',
+      query: { start_date: startDate, end_date: endDate, store_id }
+    });
+    
+  } catch (error) {
+    console.error("❌ Summary error:", error.message);
+    
+    // Tentar buscar do banco
+    try {
+      const dbSummary = await getSummaryFromDB(start_date, end_date, store_id);
+      return res.status(200).json({
+        ...dbSummary,
+        source: 'database_fallback',
+        error: error.message
+      });
+    } catch (dbError) {
+      return res.status(200).json({
+        success: false,
+        error: `DisplayForce: ${error.message}, Database: ${dbError.message}`
+      });
+    }
+  }
+}
+
+// Processar estatísticas dos visitantes
+function processVisitorStats(visitors, store_id) {
+  let totalVisitors = 0;
+  let totalMale = 0;
+  let totalFemale = 0;
+  let avgAgeSum = 0;
+  let avgAgeCount = 0;
+  
+  const byAgeGroup = {
+    "18-25": 0,
+    "26-35": 0,
+    "36-45": 0,
+    "46-60": 0,
+    "60+": 0
+  };
+  
+  const visitsByDay = {
+    Monday: 0, Tuesday: 0, Wednesday: 0, Thursday: 0,
+    Friday: 0, Saturday: 0, Sunday: 0
+  };
+  
+  const byHour = {};
+  const byGenderHour = { male: {}, female: {} };
+  
+  // Inicializar horas
+  for (let h = 0; h < 24; h++) {
+    byHour[h] = 0;
+    byGenderHour.male[h] = 0;
+    byGenderHour.female[h] = 0;
+  }
+  
+  // Processar cada visitante
+  visitors.forEach(visitor => {
+    // Filtrar por loja se necessário
+    if (store_id && store_id !== 'all' && visitor.store_id !== store_id) {
+      return;
+    }
+    
+    totalVisitors++;
+    
+    // Gênero
+    if (visitor.gender === 'M') {
+      totalMale++;
+    } else {
+      totalFemale++;
+    }
+    
+    // Idade
+    if (visitor.age > 0) {
+      avgAgeSum += visitor.age;
+      avgAgeCount++;
+      
+      if (visitor.age >= 18 && visitor.age <= 25) {
+        byAgeGroup["18-25"]++;
+      } else if (visitor.age >= 26 && visitor.age <= 35) {
+        byAgeGroup["26-35"]++;
+      } else if (visitor.age >= 36 && visitor.age <= 45) {
+        byAgeGroup["36-45"]++;
+      } else if (visitor.age >= 46 && visitor.age <= 60) {
+        byAgeGroup["46-60"]++;
+      } else if (visitor.age > 60) {
+        byAgeGroup["60+"]++;
+      }
+    }
+    
+    // Dia da semana
+    const date = new Date(visitor.timestamp);
+    const dayOfWeek = date.getDay();
+    const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    visitsByDay[days[dayOfWeek]]++;
+    
+    // Hora
+    const hour = date.getHours();
+    byHour[hour]++;
+    if (visitor.gender === 'M') {
+      byGenderHour.male[hour]++;
+    } else {
+      byGenderHour.female[hour]++;
+    }
+  });
+  
+  // Calcular média de idade
+  const averageAge = avgAgeCount > 0 ? Math.round(avgAgeSum / avgAgeCount) : 0;
+  
+  // Calcular distribuição idade/gênero
+  const byAgeGender = calculateAgeGenderDistribution(visitors, byAgeGroup, totalMale, totalFemale);
+  
+  return {
+    success: true,
+    totalVisitors,
+    totalMale,
+    totalFemale,
+    averageAge,
+    visitsByDay,
+    byAgeGroup,
+    byHour,
+    byGenderHour,
+    byAgeGender
+  };
+}
+
+// ===========================================
+// 3. LOJAS - DISPOSITIVOS DA DISPLAYFORCE
+// ===========================================
+async function getStores(req, res) {
+  try {
+    console.log('🏪 Buscando lojas da DisplayForce...');
+    
+    // Buscar dispositivos da DisplayForce
+    const devices = await fetchDevicesFromDisplayForce();
+    
+    // Buscar estatísticas de visitantes
+    const visitors = await fetchVisitorsFromDisplayForce(
+      new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0], // Últimos 30 dias
+      new Date().toISOString().split('T')[0]
+    );
+    
+    // Calcular contagem de visitantes por loja
+    const storeCounts = {};
+    visitors.forEach(visitor => {
+      const storeId = visitor.store_id;
+      if (storeId && storeId !== 'unknown') {
+        storeCounts[storeId] = (storeCounts[storeId] || 0) + 1;
+      }
+    });
+    
+    // Criar lista de lojas
+    const stores = devices.map(device => ({
+      id: String(device.id || device.device_id || ''),
+      name: device.name || `Dispositivo ${device.id}`,
+      visitor_count: storeCounts[String(device.id || device.device_id || '')] || 0,
+      status: device.status || 'active',
+      location: device.location || 'Assaí Atacadista'
+    }));
+    
+    // Adicionar "Todas as Lojas"
+    const totalVisitors = Object.values(storeCounts).reduce((sum, count) => sum + count, 0);
+    stores.unshift({
+      id: 'all',
+      name: 'Todas as Lojas',
+      visitor_count: totalVisitors,
+      status: 'active',
+      location: 'Todas as unidades'
+    });
+    
+    console.log(`✅ Encontradas ${stores.length} lojas`);
+    
+    return res.status(200).json({
+      success: true,
+      stores: stores,
+      count: stores.length,
+      source: 'displayforce'
+    });
+    
+  } catch (error) {
+    console.error('❌ Stores error:', error.message);
+    return res.status(200).json({
+      success: false,
       error: error.message,
+      stores: [],
       isFallback: true
     });
   }
 }
 
 // ===========================================
-// 2. RESUMO DO DASHBOARD (SIMPLIFICADO E CORRIGIDO)
-// ===========================================
-async function getSummary(req, res, start_date, end_date, store_id) {
-  try {
-    console.log(`📊 Summary request: start=${start_date}, end=${end_date}, store=${store_id}`);
-    
-    // Validação básica de datas
-    if (!start_date || !end_date) {
-      return res.status(400).json({
-        success: false,
-        error: 'Missing date parameters',
-        message: 'start_date and end_date are required'
-      });
-    }
-
-    // Buscar dados do dashboard_daily - CORRIGIDO
-    let summaryData = [];
-    let query = `
-      SELECT 
-        day,
-        store_id,
-        total_visitors,
-        male,
-        female,
-        COALESCE(avg_age_sum, 0) as avg_age_sum,
-        COALESCE(avg_age_count, 0) as avg_age_count,
-        COALESCE(age_18_25, 0) as age_18_25,
-        COALESCE(age_26_35, 0) as age_26_35,
-        COALESCE(age_36_45, 0) as age_36_45,
-        COALESCE(age_46_60, 0) as age_46_60,
-        COALESCE(age_60_plus, 0) as age_60_plus,
-        COALESCE(monday, 0) as monday,
-        COALESCE(tuesday, 0) as tuesday,
-        COALESCE(wednesday, 0) as wednesday,
-        COALESCE(thursday, 0) as thursday,
-        COALESCE(friday, 0) as friday,
-        COALESCE(saturday, 0) as saturday,
-        COALESCE(sunday, 0) as sunday
-      FROM dashboard_daily
-      WHERE day BETWEEN $1 AND $2
-    `;
-    
-    const params = [start_date, end_date];
-    
-    if (store_id && store_id !== "all") {
-      query += ` AND store_id = $3`;
-      params.push(store_id);
-    } else {
-      query += ` AND store_id = 'all'`;
-    }
-    
-    query += ` ORDER BY day`;
-    
-    console.log("📊 Executing dashboard_daily query");
-    const result = await pool.query(query, params);
-    summaryData = result.rows;
-    
-    console.log(`✅ Found ${summaryData.length} days in dashboard_daily`);
-    
-    // Se não encontrou dados agregados, buscar dados de todas as lojas e somar
-    if (summaryData.length === 0 && (!store_id || store_id === 'all')) {
-      console.log('🔄 No aggregated data found, summing store data...');
-      
-      const storeQuery = `
-        SELECT 
-          'all' as store_id,
-          SUM(COALESCE(total_visitors, 0)) as total_visitors,
-          SUM(COALESCE(male, 0)) as male,
-          SUM(COALESCE(female, 0)) as female,
-          SUM(COALESCE(avg_age_sum, 0)) as avg_age_sum,
-          SUM(COALESCE(avg_age_count, 0)) as avg_age_count,
-          SUM(COALESCE(age_18_25, 0)) as age_18_25,
-          SUM(COALESCE(age_26_35, 0)) as age_26_35,
-          SUM(COALESCE(age_36_45, 0)) as age_36_45,
-          SUM(COALESCE(age_46_60, 0)) as age_46_60,
-          SUM(COALESCE(age_60_plus, 0)) as age_60_plus,
-          SUM(COALESCE(monday, 0)) as monday,
-          SUM(COALESCE(tuesday, 0)) as tuesday,
-          SUM(COALESCE(wednesday, 0)) as wednesday,
-          SUM(COALESCE(thursday, 0)) as thursday,
-          SUM(COALESCE(friday, 0)) as friday,
-          SUM(COALESCE(saturday, 0)) as saturday,
-          SUM(COALESCE(sunday, 0)) as sunday
-        FROM dashboard_daily
-        WHERE day BETWEEN $1 AND $2 
-          AND store_id != 'all'
-      `;
-      
-      const storeResult = await pool.query(storeQuery, [start_date, end_date]);
-      if (storeResult.rows.length > 0 && storeResult.rows[0].total_visitors > 0) {
-        summaryData = [storeResult.rows[0]];
-        console.log(`🔄 Aggregated data from stores: ${summaryData[0].total_visitors} visitors`);
-      }
-    }
-    
-    // Se ainda não tem dados, retornar estrutura vazia
-    if (summaryData.length === 0 || summaryData[0].total_visitors === 0) {
-      console.log('📭 No summary data found');
-      
-      return res.status(200).json({
-        success: true,
-        totalVisitors: 0,
-        totalMale: 0,
-        totalFemale: 0,
-        averageAge: 0,
-        visitsByDay: {
-          Monday: 0, Tuesday: 0, Wednesday: 0, Thursday: 0, Friday: 0, Saturday: 0, Sunday: 0
-        },
-        byAgeGroup: {
-          "18-25": 0, "26-35": 0, "36-45": 0, "46-60": 0, "60+": 0
-        },
-        byHour: {},
-        byGenderHour: { male: {}, female: {} },
-        byAgeGender: {
-          "<20": { male: 0, female: 0 },
-          "20-29": { male: 0, female: 0 },
-          "30-45": { male: 0, female: 0 },
-          ">45": { male: 0, female: 0 }
-        },
-        isFallback: true,
-        message: "No data available for the selected period"
-      });
-    }
-
-    // Processar os dados encontrados
-    console.log('🔄 Processing summary data...');
-    
-    // Como temos apenas um registro (agregado), usar ele diretamente
-    const dayData = summaryData[0];
-    
-    const totalVisitors = Number(dayData.total_visitors || 0);
-    const totalMale = Number(dayData.male || 0);
-    const totalFemale = Number(dayData.female || 0);
-    const avgAgeSum = Number(dayData.avg_age_sum || 0);
-    const avgAgeCount = Number(dayData.avg_age_count || 0);
-    
-    const averageAge = avgAgeCount > 0 ? Math.round(avgAgeSum / avgAgeCount) : 0;
-    
-    const byAgeGroup = {
-      "18-25": Number(dayData.age_18_25 || 0),
-      "26-35": Number(dayData.age_26_35 || 0),
-      "36-45": Number(dayData.age_36_45 || 0),
-      "46-60": Number(dayData.age_46_60 || 0),
-      "60+": Number(dayData.age_60_plus || 0)
-    };
-    
-    const visitsByDay = {
-      Monday: Number(dayData.monday || 0),
-      Tuesday: Number(dayData.tuesday || 0),
-      Wednesday: Number(dayData.wednesday || 0),
-      Thursday: Number(dayData.thursday || 0),
-      Friday: Number(dayData.friday || 0),
-      Saturday: Number(dayData.saturday || 0),
-      Sunday: Number(dayData.sunday || 0)
-    };
-    
-    // Buscar dados por hora
-    let byHour = {};
-    let byGenderHour = { male: {}, female: {} };
-    
-    try {
-      let hourQuery = `
-        SELECT 
-          hour,
-          COALESCE(SUM(total), 0) as total,
-          COALESCE(SUM(male), 0) as male,
-          COALESCE(SUM(female), 0) as female
-        FROM dashboard_hourly
-        WHERE day BETWEEN $1 AND $2
-      `;
-      
-      const hourParams = [start_date, end_date];
-      
-      if (store_id && store_id !== "all") {
-        hourQuery += ` AND store_id = $3`;
-        hourParams.push(store_id);
-      } else {
-        hourQuery += ` AND store_id = 'all'`;
-      }
-      
-      hourQuery += ` GROUP BY hour ORDER BY hour`;
-      
-      const hourResult = await pool.query(hourQuery, hourParams);
-      
-      // Inicializar todas as horas (0-23)
-      for (let h = 0; h < 24; h++) {
-        byHour[h] = 0;
-        byGenderHour.male[h] = 0;
-        byGenderHour.female[h] = 0;
-      }
-      
-      // Preencher com dados reais
-      for (const row of hourResult.rows) {
-        const hour = parseInt(row.hour);
-        byHour[hour] = Number(row.total || 0);
-        byGenderHour.male[hour] = Number(row.male || 0);
-        byGenderHour.female[hour] = Number(row.female || 0);
-      }
-      
-      console.log(`⏰ Hourly data: ${hourResult.rows.length} hours found`);
-    } catch (hourError) {
-      console.log('⚠️ Hourly data not available:', hourError.message);
-      
-      // Inicializar estrutura vazia
-      for (let h = 0; h < 24; h++) {
-        byHour[h] = 0;
-        byGenderHour.male[h] = 0;
-        byGenderHour.female[h] = 0;
-      }
-    }
-    
-    // Calcular dados de idade por gênero (simulação baseada nos totais)
-    let byAgeGender = {
-      "<20": { male: 0, female: 0 },
-      "20-29": { male: 0, female: 0 },
-      "30-45": { male: 0, female: 0 },
-      ">45": { male: 0, female: 0 }
-    };
-    
-    // Distribuir os totais de idade entre gêneros proporcionalmente
-    const totalAgeVisitors = Object.values(byAgeGroup).reduce((a, b) => a + b, 0);
-    if (totalAgeVisitors > 0 && totalVisitors > 0) {
-      const maleRatio = totalMale / totalVisitors;
-      const femaleRatio = totalFemale / totalVisitors;
-      
-      for (const [ageRange, count] of Object.entries(byAgeGroup)) {
-        byAgeGender[ageRange].male = Math.round(count * maleRatio);
-        byAgeGender[ageRange].female = Math.round(count * femaleRatio);
-      }
-    }
-    
-    console.log(`✅ Summary processed: ${totalVisitors} total visitors`);
-    
-    // Retornar resposta completa
-    return res.status(200).json({
-      success: true,
-      totalVisitors,
-      totalMale,
-      totalFemale,
-      averageAge,
-      visitsByDay,
-      byAgeGroup,
-      byHour,
-      byGenderHour,
-      byAgeGender,
-      isFallback: false,
-      query: { start_date, end_date, store_id }
-    });
-    
-  } catch (error) {
-    console.error("❌ Summary error:", error.message, error.stack);
-    
-    return res.status(200).json({
-      success: true,
-      totalVisitors: 0,
-      totalMale: 0,
-      totalFemale: 0,
-      averageAge: 0,
-      visitsByDay: {
-        Monday: 0, Tuesday: 0, Wednesday: 0, Thursday: 0, Friday: 0, Saturday: 0, Sunday: 0
-      },
-      byAgeGroup: {
-        "18-25": 0, "26-35": 0, "36-45": 0, "46-60": 0, "60+": 0
-      },
-      byHour: {},
-      byGenderHour: { male: {}, female: {} },
-      byAgeGender: {
-        "<20": { male: 0, female: 0 },
-        "20-29": { male: 0, female: 0 },
-        "30-45": { male: 0, female: 0 },
-        ">45": { male: 0, female: 0 }
-      },
-      isFallback: true,
-      error: error.message
-    });
-  }
-}
-
-// ===========================================
-// 3. LOJAS (COM NOMES REAIS)
-// ===========================================
-async function getStores(req, res) {
-  try {
-    console.log('🏪 Fetching stores from database...');
-    
-    // Mapeamento de IDs para nomes reais (você pode expandir isso)
-    const storeNames = {
-      '15287': 'Assaí Cajamar - SP',
-      '15286': 'Assaí São Paulo - Zona Leste',
-      '15268': 'Assaí Campinas - SP',
-      '15267': 'Assaí Ribeirão Preto - SP',
-      '15266': 'Assaí São José dos Campos - SP',
-      '15265': 'Assaí Sorocaba - SP',
-      '16109': 'Assaí Goiânia - GO',
-      '16108': 'Assaí Brasília - DF',
-      '16107': 'Assaí Belo Horizonte - MG',
-      '16103': 'Assaí Curitiba - PR',
-      '14832': 'Assaí Porto Alegre - RS',
-      '14818': 'Assaí Florianópolis - SC',
-      'all': 'Todas as Lojas'
-    };
-    
-    // Buscar lojas com dados
-    const storesQuery = `
-      SELECT DISTINCT 
-        store_id as id,
-        COALESCE(SUM(total_visitors), 0) as visitor_count
-      FROM dashboard_daily
-      WHERE store_id IS NOT NULL 
-        AND store_id != ''
-      GROUP BY store_id
-      ORDER BY visitor_count DESC
-      LIMIT 20
-    `;
-    
-    const result = await pool.query(storesQuery);
-    
-    const stores = result.rows.map(row => {
-      const storeId = row.id;
-      const name = storeNames[storeId] || `Loja ${storeId}`;
-      
-      return {
-        id: storeId,
-        name: name,
-        visitor_count: parseInt(row.visitor_count || 0),
-        status: 'active'
-      };
-    });
-    
-    console.log(`✅ Found ${stores.length} stores in dashboard_daily`);
-    
-    // Garantir que "Todas as Lojas" está na lista
-    const allStoresExists = stores.some(store => store.id === 'all');
-    if (!allStoresExists) {
-      // Adicionar "Todas as Lojas" com a soma de todos os visitantes
-      const totalVisitors = stores.reduce((sum, store) => sum + store.visitor_count, 0);
-      stores.unshift({
-        id: 'all',
-        name: 'Todas as Lojas',
-        visitor_count: totalVisitors,
-        status: 'active'
-      });
-    }
-    
-    return res.status(200).json({
-      success: true,
-      stores: stores,
-      count: stores.length,
-      source: 'dashboard_daily'
-    });
-    
-  } catch (error) {
-    console.error('❌ Stores error:', error.message);
-    
-    // Fallback com nomes reais
-    const fallbackStores = [
-      { id: "all", name: 'Todas as Lojas', visitor_count: 4558, status: 'active' },
-      { id: "15287", name: 'Assaí Cajamar - SP', visitor_count: 0, status: 'active' },
-      { id: "15286", name: 'Assaí São Paulo - Zona Leste', visitor_count: 0, status: 'active' },
-      { id: "15268", name: 'Assaí Campinas - SP', visitor_count: 0, status: 'active' },
-      { id: "15267", name: 'Assaí Ribeirão Preto - SP', visitor_count: 0, status: 'active' },
-      { id: "15266", name: 'Assaí São José dos Campos - SP', visitor_count: 0, status: 'active' },
-      { id: "15265", name: 'Assaí Sorocaba - SP', visitor_count: 0, status: 'active' },
-      { id: "16109", name: 'Assaí Goiânia - GO', visitor_count: 0, status: 'active' },
-      { id: "16108", name: 'Assaí Brasília - DF', visitor_count: 0, status: 'active' },
-      { id: "16107", name: 'Assaí Belo Horizonte - MG', visitor_count: 0, status: 'active' }
-    ];
-    
-    return res.status(200).json({
-      success: true,
-      stores: fallbackStores,
-      count: fallbackStores.length,
-      isFallback: true,
-      error: error.message
-    });
-  }
-}
-
-// ===========================================
-// 4. DISPOSITIVOS (DisplayForce)
+// 4. DISPOSITIVOS
 // ===========================================
 async function getDevices(req, res) {
   try {
-    console.log('🌐 Calling DisplayForce API for devices...');
+    console.log('🌐 Buscando dispositivos da DisplayForce...');
     
-    const response = await fetch(`${DISPLAYFORCE_BASE}/device/list`, {
-      method: 'GET',
-      headers: {
-        'X-API-Token': DISPLAYFORCE_TOKEN,
-        'Accept': 'application/json'
-      },
-      timeout: 10000
-    });
-    
-    if (!response.ok) {
-      console.warn(`⚠️ DisplayForce API returned ${response.status}`);
-      // Se a API falhar, retornar as lojas do banco como dispositivos
-      return await getStoresAsDevices(req, res);
-    }
-    
-    const data = await response.json();
-    const devices = data.devices || data.data || [];
-    
-    console.log(`✅ Found ${devices.length} devices from DisplayForce`);
+    const devices = await fetchDevicesFromDisplayForce();
     
     return res.status(200).json({
       success: true,
@@ -659,202 +431,430 @@ async function getDevices(req, res) {
     });
     
   } catch (error) {
-    console.error('❌ Devices API error:', error.message);
-    return await getStoresAsDevices(req, res);
-  }
-}
-
-// Função auxiliar para retornar lojas como dispositivos
-async function getStoresAsDevices(req, res) {
-  try {
-    const storesResult = await pool.query(`
-      SELECT DISTINCT 
-        store_id as id,
-        CONCAT('Loja ', store_id) as name,
-        'active' as status,
-        'Assaí Atacadista' as location,
-        NOW() as last_seen
-      FROM dashboard_daily
-      WHERE store_id IS NOT NULL 
-        AND store_id != ''
-        AND store_id != 'all'
-      ORDER BY store_id
-      LIMIT 20
-    `);
-    
-    const devices = storesResult.rows.map(row => ({
-      id: row.id,
-      name: row.name,
-      status: row.status,
-      location: row.location,
-      last_seen: row.last_seen
-    }));
-    
-    return res.status(200).json({
-      success: true,
-      devices: devices,
-      count: devices.length,
-      source: 'database',
-      message: 'Using store data from database as devices'
-    });
-    
-  } catch (dbError) {
-    console.error('Database devices error:', dbError.message);
-    
-    // Fallback final
-    return res.status(200).json({
-      success: true,
-      devices: [
-        {
-          id: "15287",
-          name: "Assaí Cajamar - SP",
-          status: "active",
-          location: "Assaí Atacadista",
-          last_seen: new Date().toISOString()
-        },
-        {
-          id: "15286", 
-          name: "Assaí São Paulo - ZL",
-          status: "active",
-          location: "Assaí Atacadista",
-          last_seen: new Date().toISOString()
-        }
-      ],
-      isFallback: true,
-      message: 'Using fallback device data'
-    });
-  }
-}
-
-// ===========================================
-// 5. REFRESH (SINCRONIZAÇÃO)
-// ===========================================
-async function refreshRange(req, res, start_date, end_date, store_id) {
-  console.log(`🔄 Refresh request: start=${start_date}, end=${end_date}, store=${store_id}`);
-  
-  try {
-    const targetStart = start_date || new Date().toISOString().split('T')[0];
-    const targetEnd = end_date || targetStart;
-    
-    // Retornar resposta imediata
-    const response = {
-      success: true,
-      message: 'Refresh initiated',
-      details: {
-        start_date: targetStart,
-        end_date: targetEnd,
-        store_id: store_id || 'all',
-        note: 'Refresh would sync data from DisplayForce and update database'
-      },
-      timestamp: new Date().toISOString()
-    };
-    
-    // Iniciar refresh em background (não bloqueante)
-    setTimeout(async () => {
-      try {
-        console.log(`🔄 Starting background sync for ${targetStart} to ${targetEnd}`);
-        // Aqui iria a lógica real de sincronização
-      } catch (bgError) {
-        console.error('Background sync error:', bgError.message);
-      }
-    }, 100);
-    
-    return res.status(200).json(response);
-    
-  } catch (error) {
-    console.error('❌ Refresh error:', error.message);
+    console.error('❌ Devices error:', error.message);
     return res.status(200).json({
       success: false,
       error: error.message,
-      message: 'Refresh failed'
+      devices: [],
+      isFallback: true
+    });
+  }
+}
+
+// Buscar dispositivos da DisplayForce
+async function fetchDevicesFromDisplayForce() {
+  // Verificar cache
+  const now = Date.now();
+  if (now - cacheTimestamp < CACHE_DURATION && Object.keys(deviceCache).length > 0) {
+    console.log('📦 Usando cache de dispositivos');
+    return Object.values(deviceCache);
+  }
+  
+  console.log('🔄 Buscando dispositivos da API...');
+  
+  const response = await fetch(`${DISPLAYFORCE_BASE}/device/list`, {
+    method: 'GET',
+    headers: {
+      'X-API-Token': DISPLAYFORCE_TOKEN,
+      'Accept': 'application/json'
+    }
+  });
+  
+  if (!response.ok) {
+    throw new Error(`DisplayForce devices error: ${response.status}`);
+  }
+  
+  const data = await response.json();
+  const devices = data.devices || data.data || [];
+  
+  // Atualizar cache
+  deviceCache = {};
+  devices.forEach(device => {
+    const deviceId = String(device.id || device.device_id || '');
+    deviceCache[deviceId] = {
+      id: deviceId,
+      name: device.name || `Dispositivo ${deviceId}`,
+      status: device.status || 'active',
+      location: device.location || 'Assaí Atacadista',
+      last_seen: device.last_seen || new Date().toISOString()
+    };
+  });
+  
+  cacheTimestamp = now;
+  
+  console.log(`✅ Encontrados ${devices.length} dispositivos`);
+  return devices;
+}
+
+// ===========================================
+// 5. SINCRONIZAÇÃO COMPLETA
+// ===========================================
+async function syncFromDisplayForce(req, res, start_date, end_date, store_id) {
+  try {
+    console.log(`🔄 Sincronização completa da DisplayForce...`);
+    
+    const startDate = start_date || new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    const endDate = end_date || new Date().toISOString().split('T')[0];
+    
+    // 1. Buscar dispositivos
+    const devices = await fetchDevicesFromDisplayForce();
+    
+    // 2. Buscar visitantes
+    const visitors = await fetchVisitorsFromDisplayForce(startDate, endDate, store_id);
+    
+    // 3. Salvar no banco
+    await saveVisitorsToDB(visitors);
+    
+    // 4. Atualizar estatísticas agregadas
+    await updateAggregatedStats(visitors);
+    
+    return res.status(200).json({
+      success: true,
+      message: 'Sincronização completa realizada',
+      stats: {
+        devices: devices.length,
+        visitors: visitors.length,
+        period: `${startDate} a ${endDate}`,
+        store: store_id || 'Todas as lojas'
+      },
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('❌ Sync error:', error.message);
+    return res.status(500).json({
+      success: false,
+      error: error.message
     });
   }
 }
 
 // ===========================================
-// FUNÇÕES RESTANTES (SIMPLIFICADAS)
+// 6. REFRESH (PARA COMPATIBILIDADE)
 // ===========================================
-async function getVisitorsFromDisplayForce(res, start_date, end_date, store_id) {
-  console.log('🔄 Simulating DisplayForce visitors fetch');
-  
-  // Dados de exemplo
-  const exampleData = [
-    {
-      id: "visitor_001",
-      date: start_date || "2025-12-08",
-      store_id: store_id || "15287",
-      store_name: "Assaí Cajamar - SP",
-      timestamp: `${start_date || "2025-12-08"}T10:30:00.000Z`,
-      gender: "Masculino",
-      age: 35,
-      day_of_week: "Seg",
-      smile: true
-    },
-    {
-      id: "visitor_002", 
-      date: start_date || "2025-12-08",
-      store_id: store_id || "15287",
-      store_name: "Assaí Cajamar - SP",
-      timestamp: `${start_date || "2025-12-08"}T14:45:00.000Z`,
-      gender: "Feminino",
-      age: 28,
-      day_of_week: "Seg",
-      smile: false
-    }
-  ];
-  
-  return res.status(200).json({
-    success: true,
-    data: exampleData,
-    count: exampleData.length,
-    source: 'displayforce_simulated',
-    message: 'Using simulated visitor data'
-  });
+async function refreshRange(req, res, start_date, end_date, store_id) {
+  return await syncFromDisplayForce(req, res, start_date, end_date, store_id);
 }
 
-async function ensureIndexes(req, res) {
+// ===========================================
+// FUNÇÕES AUXILIARES
+// ===========================================
+
+// Obter nomes dos dispositivos
+async function getDeviceNames() {
   try {
-    // Criar índices se não existirem
-    const indexes = [
-      "CREATE INDEX IF NOT EXISTS visitors_day_idx ON public.visitors(day)",
-      "CREATE INDEX IF NOT EXISTS visitors_store_day_idx ON public.visitors(store_id, day)",
-      "CREATE INDEX IF NOT EXISTS dashboard_daily_day_store_idx ON public.dashboard_daily(day, store_id)",
-      "CREATE INDEX IF NOT EXISTS dashboard_hourly_day_store_hour_idx ON public.dashboard_hourly(day, store_id, hour)"
-    ];
+    const devices = await fetchDevicesFromDisplayForce();
+    const names = {};
+    devices.forEach(device => {
+      const deviceId = String(device.id || device.device_id || '');
+      names[deviceId] = device.name || `Loja ${deviceId}`;
+    });
+    return names;
+  } catch (error) {
+    console.error('Erro ao buscar nomes:', error.message);
+    return {};
+  }
+}
+
+// Converter dia da semana para português
+function getDayOfWeekPT(date) {
+  const days = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+  return days[date.getDay()];
+}
+
+// Calcular distribuição idade/gênero
+function calculateAgeGenderDistribution(visitors, byAgeGroup, totalMale, totalFemale) {
+  const byAgeGender = {
+    "<20": { male: 0, female: 0 },
+    "20-29": { male: 0, female: 0 },
+    "30-45": { male: 0, female: 0 },
+    ">45": { male: 0, female: 0 }
+  };
+  
+  // Distribuir proporcionalmente (simplificado)
+  const totalVisitors = visitors.length;
+  if (totalVisitors > 0) {
+    const maleRatio = totalMale / totalVisitors;
+    const femaleRatio = totalFemale / totalVisitors;
     
-    for (const indexQuery of indexes) {
-      await pool.query(indexQuery);
+    // Supor que 18-25 inclui <20 e 20-29
+    const youngTotal = byAgeGroup["18-25"] + byAgeGroup["26-35"];
+    byAgeGender["<20"].male = Math.round(youngTotal * 0.3 * maleRatio);
+    byAgeGender["<20"].female = Math.round(youngTotal * 0.3 * femaleRatio);
+    byAgeGender["20-29"].male = Math.round(youngTotal * 0.7 * maleRatio);
+    byAgeGender["20-29"].female = Math.round(youngTotal * 0.7 * femaleRatio);
+    
+    // 30-45
+    const middleTotal = byAgeGroup["36-45"];
+    byAgeGender["30-45"].male = Math.round(middleTotal * maleRatio);
+    byAgeGender["30-45"].female = Math.round(middleTotal * femaleRatio);
+    
+    // >45
+    const olderTotal = byAgeGroup["46-60"] + byAgeGroup["60+"];
+    byAgeGender[">45"].male = Math.round(olderTotal * maleRatio);
+    byAgeGender[">45"].female = Math.round(olderTotal * femaleRatio);
+  }
+  
+  return byAgeGender;
+}
+
+// ===========================================
+// FUNÇÕES DE BANCO DE DADOS (CACHE)
+// ===========================================
+
+// Salvar visitantes no banco
+async function saveVisitorsToDB(visitors) {
+  try {
+    // Criar tabela se não existir
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS visitors_cache (
+        visitor_id VARCHAR(255) PRIMARY KEY,
+        day DATE NOT NULL,
+        timestamp TIMESTAMP NOT NULL,
+        store_id VARCHAR(100),
+        store_name VARCHAR(255),
+        gender CHAR(1),
+        age INTEGER,
+        day_of_week VARCHAR(10),
+        smile BOOLEAN,
+        source VARCHAR(50) DEFAULT 'displayforce',
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    
+    // Inserir/atualizar visitantes
+    for (const visitor of visitors.slice(0, 1000)) { // Limitar para não sobrecarregar
+      await pool.query(`
+        INSERT INTO visitors_cache 
+        (visitor_id, day, timestamp, store_id, store_name, gender, age, day_of_week, smile, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+        ON CONFLICT (visitor_id) DO UPDATE SET
+          day = EXCLUDED.day,
+          timestamp = EXCLUDED.timestamp,
+          store_id = EXCLUDED.store_id,
+          store_name = EXCLUDED.store_name,
+          gender = EXCLUDED.gender,
+          age = EXCLUDED.age,
+          day_of_week = EXCLUDED.day_of_week,
+          smile = EXCLUDED.smile,
+          updated_at = NOW()
+      `, [
+        visitor.id,
+        visitor.day,
+        visitor.timestamp,
+        visitor.store_id,
+        visitor.store_name,
+        visitor.gender,
+        visitor.age,
+        visitor.day_of_week,
+        visitor.smile
+      ]);
+    }
+    
+    console.log(`💾 Salvo ${Math.min(visitors.length, 1000)} visitantes no cache`);
+  } catch (error) {
+    console.error('Erro ao salvar no banco:', error.message);
+  }
+}
+
+// Buscar visitantes do banco
+async function getVisitorsFromDB(start_date, end_date, store_id) {
+  try {
+    let query = `
+      SELECT 
+        visitor_id as id,
+        day,
+        store_id,
+        store_name,
+        timestamp,
+        gender,
+        age,
+        day_of_week,
+        smile
+      FROM visitors_cache
+      WHERE 1=1
+    `;
+    
+    const params = [];
+    let paramCount = 1;
+    
+    if (start_date) {
+      query += ` AND day >= $${paramCount}`;
+      params.push(start_date);
+      paramCount++;
+    }
+    
+    if (end_date) {
+      query += ` AND day <= $${paramCount}`;
+      params.push(end_date);
+      paramCount++;
+    }
+    
+    if (store_id && store_id !== "all") {
+      query += ` AND store_id = $${paramCount}`;
+      params.push(store_id);
+      paramCount++;
+    }
+    
+    query += ` ORDER BY timestamp DESC LIMIT 500`;
+    
+    const result = await pool.query(query, params);
+    return result.rows;
+  } catch (error) {
+    console.error('Erro ao buscar do banco:', error.message);
+    return [];
+  }
+}
+
+// Buscar resumo do banco
+async function getSummaryFromDB(start_date, end_date, store_id) {
+  try {
+    const visitors = await getVisitorsFromDB(start_date, end_date, store_id);
+    return processVisitorStats(visitors, store_id);
+  } catch (error) {
+    throw error;
+  }
+}
+
+// Atualizar estatísticas agregadas
+async function updateAggregatedStats(visitors) {
+  try {
+    // Criar tabela de estatísticas diárias
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS dashboard_stats (
+        day DATE NOT NULL,
+        store_id VARCHAR(100) NOT NULL,
+        total_visitors INTEGER DEFAULT 0,
+        male INTEGER DEFAULT 0,
+        female INTEGER DEFAULT 0,
+        avg_age FLOAT DEFAULT 0,
+        updated_at TIMESTAMP DEFAULT NOW(),
+        PRIMARY KEY (day, store_id)
+      )
+    `);
+    
+    // Agrupar por dia e loja
+    const statsByDayStore = {};
+    
+    visitors.forEach(visitor => {
+      const key = `${visitor.day}_${visitor.store_id}`;
+      if (!statsByDayStore[key]) {
+        statsByDayStore[key] = {
+          day: visitor.day,
+          store_id: visitor.store_id,
+          total: 0,
+          male: 0,
+          female: 0,
+          ageSum: 0,
+          ageCount: 0
+        };
+      }
+      
+      const stat = statsByDayStore[key];
+      stat.total++;
+      
+      if (visitor.gender === 'M') {
+        stat.male++;
+      } else {
+        stat.female++;
+      }
+      
+      if (visitor.age > 0) {
+        stat.ageSum += visitor.age;
+        stat.ageCount++;
+      }
+    });
+    
+    // Salvar no banco
+    for (const key in statsByDayStore) {
+      const stat = statsByDayStore[key];
+      const avgAge = stat.ageCount > 0 ? stat.ageSum / stat.ageCount : 0;
+      
+      await pool.query(`
+        INSERT INTO dashboard_stats (day, store_id, total_visitors, male, female, avg_age, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, NOW())
+        ON CONFLICT (day, store_id) DO UPDATE SET
+          total_visitors = EXCLUDED.total_visitors,
+          male = EXCLUDED.male,
+          female = EXCLUDED.female,
+          avg_age = EXCLUDED.avg_age,
+          updated_at = NOW()
+      `, [stat.day, stat.store_id, stat.total, stat.male, stat.female, avgAge]);
+    }
+    
+    console.log(`📊 Estatísticas atualizadas para ${Object.keys(statsByDayStore).length} combinações dia/loja`);
+  } catch (error) {
+    console.error('Erro ao atualizar estatísticas:', error.message);
+  }
+}
+
+// ===========================================
+// TESTE DE CONEXÃO
+// ===========================================
+async function testConnection(req, res) {
+  try {
+    // Testar conexão com DisplayForce
+    const devicesResponse = await fetch(`${DISPLAYFORCE_BASE}/device/list`, {
+      method: 'GET',
+      headers: {
+        'X-API-Token': DISPLAYFORCE_TOKEN,
+        'Accept': 'application/json'
+      }
+    });
+    
+    const devicesStatus = devicesResponse.ok ? 'OK' : `Erro ${devicesResponse.status}`;
+    
+    // Testar API de visitantes
+    const today = new Date().toISOString().split('T')[0];
+    const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
+    const sign = tz >= 0 ? "+" : "-";
+    const hh = String(Math.abs(tz)).padStart(2, "0");
+    const tzStr = `${sign}${hh}:00`;
+    
+    const visitorsResponse = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, {
+      method: 'POST',
+      headers: {
+        'X-API-Token': DISPLAYFORCE_TOKEN,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        start: `${today}T00:00:00${tzStr}`,
+        end: `${today}T23:59:59${tzStr}`,
+        limit: 10
+      })
+    });
+    
+    const visitorsStatus = visitorsResponse.ok ? 'OK' : `Erro ${visitorsResponse.status}`;
+    
+    // Testar banco de dados
+    let dbStatus = 'OK';
+    try {
+      await pool.query('SELECT NOW()');
+    } catch (dbError) {
+      dbStatus = `Erro: ${dbError.message}`;
     }
     
     return res.status(200).json({
       success: true,
-      message: 'Indexes created/verified'
+      connections: {
+        displayforce_devices: devicesStatus,
+        displayforce_visitors: visitorsStatus,
+        database: dbStatus
+      },
+      environment: {
+        timezone_offset: process.env.TIMEZONE_OFFSET_HOURS || '-3',
+        api_token: DISPLAYFORCE_TOKEN ? 'Configurado' : 'Não configurado',
+        database_url: process.env.DATABASE_URL ? 'Configurado' : 'Não configurado'
+      },
+      timestamp: new Date().toISOString()
     });
+    
   } catch (error) {
-    console.error('Index creation error:', error.message);
-    return res.status(500).json({ error: error.message });
+    return res.status(200).json({
+      success: false,
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
   }
-}
-
-async function refreshAll(req, res, start_date, end_date) {
-  return res.status(200).json({
-    success: true,
-    message: 'Refresh all stores initiated',
-    start_date: start_date || new Date().toISOString().split('T')[0],
-    end_date: end_date || new Date().toISOString().split('T')[0],
-    timestamp: new Date().toISOString()
-  });
-}
-
-async function autoRefresh(req, res) {
-  const yesterday = new Date();
-  yesterday.setDate(yesterday.getDate() - 1);
-  const yesterdayStr = yesterday.toISOString().split('T')[0];
-  
-  return res.status(200).json({
-    success: true,
-    message: 'Auto-refresh would sync yesterday\'s data',
-    date: yesterdayStr,
-    timestamp: new Date().toISOString()
-  });
 }

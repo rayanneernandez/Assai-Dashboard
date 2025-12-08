@@ -652,6 +652,17 @@ async function refreshRange(req, res, start_date, end_date, store_id) {
     while (d <= endD) { days.push(d.toISOString().slice(0,10)); d = new Date(d.getTime() + 86400000); }
     const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
     const sign = tz >= 0 ? "+" : "-"; const hh = String(Math.abs(tz)).padStart(2, "0"); const tzStr = `${sign}${hh}:00`;
+    let nameMap = {};
+    try {
+      let r = await fetch(`${DISPLAYFORCE_BASE}/device/list`, { method: 'POST', headers: { 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type': 'application/json', 'Accept': 'application/json' }, body: JSON.stringify({}) });
+      if (!r.ok && r.status === 405) {
+        r = await fetch(`${DISPLAYFORCE_BASE}/device/list`, { method: 'GET', headers: { 'X-API-Token': DISPLAYFORCE_TOKEN, 'Accept': 'application/json' } });
+      }
+      const dj = await r.json(); const arr = dj.devices || dj.data || [];
+      const names = {};
+      (Array.isArray(arr) ? arr : []).forEach((d) => { const id = String(d.id ?? d.device_id ?? ''); if (id) names[id] = String(d.name ?? ''); });
+      nameMap = names;
+    } catch {}
     for (const day of days) {
       let offset = 0; const limit = 500; const payload = [];
       while (true) {
@@ -712,8 +723,8 @@ async function refreshRange(req, res, start_date, end_date, store_id) {
       }
       const mapPt = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
       for (const v of payload) {
-        const ts = String(v.start || v.tracks?.[0]?.start || new Date().toISOString()); const base = new Date(ts); const local = new Date(base.getTime() + tz*3600000); const dstr = `${local.getFullYear()}-${String(local.getMonth()+1).padStart(2,'0')}-${String(local.getDate()).padStart(2,'0')}`; const dayOfWeek = mapPt[local.getDay()]; const deviceId = String(v.tracks?.[0]?.device_id ?? (Array.isArray(v.devices)? v.devices[0] : ''));
-        await pool.query(`INSERT INTO public.visitors (visitor_id, day, timestamp, store_id, store_name, gender, age, day_of_week, smile) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING`, [String(v.visitor_id ?? v.session_id ?? v.id ?? ''), dstr, ts, deviceId, String(v.store_name ?? ''), (v.sex===1?'M':'F'), Number(v.age||0), dayOfWeek, String(v.smile||'').toLowerCase()==='yes']);
+        const ts = String(v.start || v.tracks?.[0]?.start || new Date().toISOString()); const base = new Date(ts); const local = new Date(base.getTime() + tz*3600000); const dstr = `${local.getFullYear()}-${String(local.getMonth()+1).padStart(2,'0')}-${String(local.getDate()).padStart(2,'0')}`; const dayOfWeek = mapPt[local.getDay()]; const deviceId = String(v.tracks?.[0]?.device_id ?? (Array.isArray(v.devices)? v.devices[0] : '')); const storeName = nameMap[deviceId] || String(v.store_name ?? '');
+        await pool.query(`INSERT INTO public.visitors (visitor_id, day, timestamp, store_id, store_name, gender, age, day_of_week, smile) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING`, [String(v.visitor_id ?? v.session_id ?? v.id ?? ''), dstr, ts, deviceId, storeName, (v.sex===1?'M':'F'), Number(v.age||0), dayOfWeek, String(v.smile||'').toLowerCase()==='yes']);
       }
     }
     return res.status(200).json({ ok: true, days: days.length, store_id: store_id||'all' });

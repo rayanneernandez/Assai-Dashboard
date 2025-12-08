@@ -48,7 +48,8 @@ export default async function handler(req, res) {
         
       case 'refresh':
         return await handleRefresh(res);
-        
+      case 'devices':
+        return await handleStores(res);
       default:
         return res.status(400).json({ 
           success: false, 
@@ -130,6 +131,7 @@ async function handleStores(res) {
     
     return res.status(200).json({
       success: true,
+      devices: apiDevices,
       stores: allStores,
       count: allStores.length,
       from_api: true,
@@ -142,6 +144,7 @@ async function handleStores(res) {
     // Fallback com dados baseados na sua lista
     return res.status(200).json({
       success: true,
+      devices: getFixedDevicesData(),
       stores: generateFallbackStores(),
       from_fallback: true,
       error: error.message,

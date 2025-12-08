@@ -1,7 +1,9 @@
 // /api/assai/dashboard.js - API ATUALIZADA PARA PUXAR DADOS REAIS
 import fetch from 'node-fetch';
+import { Pool } from 'pg';
 
-// SUAS CONFIGURAÇÕES DO VERCEL
+const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
+
 const API_TOKEN = process.env.DISPLAYFORCE_API_TOKEN || '4MJH-BX6H-G2RJ-G7PB';
 const API_URL = 'https://api.displayforce.ai/public/v1';
 
@@ -31,8 +33,12 @@ export default async function handler(req, res) {
       case 'dashboard-data':
       case 'summary':
         const store = store_id || storeId || 'all';
-        const queryDate = date || getTodayDate();
-        return await getDashboardData(res, store, queryDate);
+        const effStart = start_date || date || getTodayDate();
+        const effEnd = end_date || effStart;
+        if (effStart !== effEnd) {
+          return res.status(400).json({ success: false, error: 'Apenas consultas de um dia são suportadas para summary', start_date: effStart, end_date: effEnd, storeId: store });
+        }
+        return await getDashboardData(res, store, effStart);
         
       case 'visitors':
         const start = start_date || getTodayDate();
@@ -182,68 +188,40 @@ async function getStores(res) {
 
 // =========== DASHBOARD DATA ===========
 async function getDashboardData(res, storeId = 'all', date = getTodayDate()) {
-  console.log(`📊 Dashboard: Loja=${storeId}, Data=${date}`);
-  
   try {
-    let totalVisitors = 0;
-    let maleCount = 0;
-    let femaleCount = 0;
-    let hourlyData = {};
-    let ageData = {};
-    let dayData = {};
-    
-    if (storeId === 'all') {
-      // Buscar dados agregados de todas as lojas
-      const aggregatedData = await fetchAggregatedData(date);
-      
-      totalVisitors = aggregatedData.totalVisitors || 0;
-      maleCount = aggregatedData.maleCount || Math.floor(totalVisitors * 0.682);
-      femaleCount = aggregatedData.femaleCount || Math.floor(totalVisitors * 0.318);
-      hourlyData = aggregatedData.hourlyData || generateHourlyDataFromAPI(totalVisitors);
-      ageData = aggregatedData.ageData || generateAgeDistribution(totalVisitors);
-      dayData = aggregatedData.dayData || generateDayDistribution(date, totalVisitors);
-      
-    } else {
-      // Buscar dados específicos da loja
-      const storeData = await fetchStoreData(storeId, date);
-      
-      totalVisitors = storeData.totalVisitors || 0;
-      maleCount = storeData.maleCount || Math.floor(totalVisitors * 0.682);
-      femaleCount = storeData.femaleCount || Math.floor(totalVisitors * 0.318);
-      hourlyData = storeData.hourlyData || generateHourlyDataFromAPI(totalVisitors);
-      ageData = storeData.ageData || generateAgeDistribution(totalVisitors);
-      dayData = storeData.dayData || generateDayDistribution(date, totalVisitors);
+    const sid = storeId || 'all';
+    const r = await pool.query('SELECT * FROM public.dashboard_daily WHERE day=$1 AND store_id=$2', [date, sid]);
+    if (!r.rows.length) {
+      return res.status(200).json({ success: true, date, storeId: sid, totalVisitors: 0, totalMale: 0, totalFemale: 0, averageAge: 0, visitsByDay: { Sunday:0, Monday:0, Tuesday:0, Wednesday:0, Thursday:0, Friday:0, Saturday:0 }, byAgeGroup: { '18-25':0,'26-35':0,'36-45':0,'46-60':0,'60+':0 }, byAgeGender: { '<20':{male:0,female:0}, '20-29':{male:0,female:0}, '30-45':{male:0,female:0}, '>45':{male:0,female:0} }, byHour: {}, byGenderHour: { male: {}, female: {} }, isFallback: true, timestamp: new Date().toISOString() });
     }
-    
-    // Preparar resposta
-    const response = {
+    const row = r.rows[0];
+    const hrs = await pool.query('SELECT hour, total, male, female FROM public.dashboard_hourly WHERE day=$1 AND store_id=$2', [date, sid]);
+    const byHour = {}; const byGenderHour = { male:{}, female:{} };
+    for (const h of hrs.rows) { byHour[h.hour] = Number(h.total||0); byGenderHour.male[h.hour] = Number(h.male||0); byGenderHour.female[h.hour] = Number(h.female||0); }
+    const wk = { Sunday:0, Monday:0, Tuesday:0, Wednesday:0, Thursday:0, Friday:0, Saturday:0 };
+    try { const d = new Date(date+'T00:00:00Z'); const idx = d.getUTCDay(); const keys = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday']; wk[keys[idx]] = Number(row.total_visitors||0); } catch {}
+    const ageBins = { '<20':{male:0,female:0}, '20-29':{male:0,female:0}, '30-45':{male:0,female:0}, '>45':{male:0,female:0} };
+    const vq = sid==='all' ? await pool.query('SELECT gender, age FROM public.visitors WHERE day=$1', [date]) : await pool.query('SELECT gender, age FROM public.visitors WHERE day=$1 AND store_id=$2', [date, sid]);
+    for (const v of vq.rows) { const g = (String(v.gender).toUpperCase()==='M'?'male':'female'); const age = Number(v.age||0); if (age>0){ if (age<20) ageBins['<20'][g]++; else if (age<=29) ageBins['20-29'][g]++; else if (age<=45) ageBins['30-45'][g]++; else ageBins['>45'][g]++; } }
+    const resp = {
       success: true,
-      date: date,
-      storeId: storeId,
-      totalVisitors: totalVisitors,
-      totalMale: maleCount,
-      totalFemale: femaleCount,
-      averageAge: calculateAverageAge(ageData),
-      visitsByDay: dayData,
-      byAgeGroup: ageData,
-      byAgeGender: calculateAgeGenderDistribution(ageData, maleCount, femaleCount),
-      byHour: hourlyData,
-      byGenderHour: {
-        male: distributeHourlyByGender(hourlyData, maleCount),
-        female: distributeHourlyByGender(hourlyData, femaleCount)
-      },
-      from_api: true,
+      date,
+      storeId: sid,
+      totalVisitors: Number(row.total_visitors||0),
+      totalMale: Number(row.male||0),
+      totalFemale: Number(row.female||0),
+      averageAge: Number(row.avg_age_count||0)>0 ? Math.round(Number(row.avg_age_sum||0)/Number(row.avg_age_count||0)) : 0,
+      visitsByDay: wk,
+      byAgeGroup: { '18-25': Number(row.age_18_25||0), '26-35': Number(row.age_26_35||0), '36-45': Number(row.age_36_45||0), '46-60': Number(row.age_46_60||0), '60+': Number(row.age_60_plus||0) },
+      byAgeGender: ageBins,
+      byHour,
+      byGenderHour,
+      isFallback: false,
       timestamp: new Date().toISOString()
     };
-    
-    console.log(`✅ Dashboard data: ${totalVisitors} visitantes`);
-    return res.status(200).json(response);
-    
-  } catch (error) {
-    console.error('❌ Erro no dashboard:', error);
-    
-    // Fallback com tentativa de buscar dados reais
-    return res.status(200).json(await getFallbackDashboardWithRealData(storeId, date));
+    return res.status(200).json(resp);
+  } catch (e) {
+    return res.status(200).json({ success: true, date, storeId, totalVisitors: 0, totalMale: 0, totalFemale: 0, averageAge: 0, visitsByDay: { Sunday:0, Monday:0, Tuesday:0, Wednesday:0, Thursday:0, Friday:0, Saturday:0 }, byAgeGroup: { '18-25':0,'26-35':0,'36-45':0,'46-60':0,'60+':0 }, byAgeGender: { '<20':{male:0,female:0}, '20-29':{male:0,female:0}, '30-45':{male:0,female:0}, '>45':{male:0,female:0} }, byHour: {}, byGenderHour: { male: {}, female: {} }, isFallback: true, error: e.message, timestamp: new Date().toISOString() });
   }
 }
 
@@ -739,113 +717,26 @@ async function getFallbackStoresWithRealData() {
     console.log('Usando fallback stores');
   }
   
-  // Fallback original
-  return [
-    {
-      id: 'all',
-      name: 'Todas as Lojas',
-      visitor_count: 3995,
-      status: 'active',
-      location: 'Todas as unidades',
-      type: 'all'
-    },
-    {
-      id: '14818',
-      name: 'Assai: Ayrton Sena - Entrada',
-      visitor_count: 0,
-      status: 'inactive',
-      location: 'Assaí Atacadista Ayrton Senna',
-      type: 'camera'
-    },
-    {
-      id: '14832',
-      name: 'Assai: Av Americas - Portico Entrada',
-      visitor_count: 625,
-      status: 'active',
-      location: 'Assaí Atacadista Av. das Américas',
-      type: 'camera'
-    },
-    {
-      id: '15265',
-      name: 'Assaí: Aricanduva - Gondula Caixa',
-      visitor_count: 680,
-      status: 'active',
-      location: 'Assaí Atacadista Aricanduva',
-      type: 'camera'
-    },
-    {
-      id: '15266',
-      name: 'Assaí: Aricanduva - LED Caixa',
-      visitor_count: 320,
-      status: 'active',
-      location: 'Assaí Atacadista Aricanduva',
-      type: 'camera'
-    },
-    {
-      id: '15267',
-      name: 'Assai: Aricanduva - Entrada',
-      visitor_count: 850,
-      status: 'active',
-      location: 'Assaí Atacadista Aricanduva',
-      type: 'camera'
-    },
-    {
-      id: '15268',
-      name: 'Assaí Aricanduva - Gondula Açougue',
-      visitor_count: 420,
-      status: 'active',
-      location: 'Assaí Atacadista Aricanduva',
-      type: 'camera'
-    },
-    {
-      id: '15286',
-      name: 'Assaí: Barueri - Gôndola Virada Açougue',
-      visitor_count: 475,
-      status: 'active',
-      location: 'Assaí Atacadista Barueri',
-      type: 'camera'
-    },
-    {
-      id: '15287',
-      name: 'Assaí: Barueri - Gôndola Virada Cafeteria',
-      visitor_count: 440,
-      status: 'active',
-      location: 'Assaí Atacadista Barueri',
-      type: 'camera'
-    },
-    {
-      id: '16103',
-      name: 'Assaí: Aricanduva - LED Direita',
-      visitor_count: 0,
-      status: 'inactive',
-      location: 'Assaí Atacadista Aricanduva',
-      type: 'camera'
-    },
-    {
-      id: '16107',
-      name: 'Assaí: Barueri - Entrada',
-      visitor_count: 635,
-      status: 'active',
-      location: 'Assaí Atacadista Barueri',
-      type: 'camera'
-    },
-    {
-      id: '16108',
-      name: 'Assaí: Barueri - Led caixas 1',
-      visitor_count: 490,
-      status: 'active',
-      location: 'Assaí Atacadista Barueri',
-      type: 'camera'
-    },
-    {
-      id: '16109',
-      name: 'Assaí: Barueri - Led caixas 2',
-      visitor_count: 455,
-      status: 'active',
-      location: 'Assaí Atacadista Barueri',
-      type: 'camera'
+  const date = getTodayDate();
+  try {
+    const r = await pool.query('SELECT total_visitors FROM public.dashboard_daily WHERE day=$1 AND store_id=$2', [date, 'all']);
+    if (r.rows.length > 0) {
+      const total = Number(r.rows[0].total_visitors || 0);
+      return [
+        {
+          id: 'all',
+          name: 'Todas as Lojas',
+          visitor_count: total,
+          status: 'active',
+          location: 'Todas as unidades',
+          type: 'all',
+          last_updated: new Date().toISOString(),
+          date
+        }
+      ];
     }
-  ];
+  } catch (e) {}
+  return [];
 }
 
 async function getFallbackDashboardWithRealData(storeId = 'all', date = getTodayDate()) {
@@ -902,48 +793,40 @@ async function getFallbackDashboardWithRealData(storeId = 'all', date = getToday
     console.log('Usando fallback dashboard');
   }
   
-  // Fallback original
-  const storeData = {
-    'all': { visitors: 3995 },
-    '14818': { visitors: 0 },
-    '14832': { visitors: 625 },
-    '15265': { visitors: 680 },
-    '15266': { visitors: 320 },
-    '15267': { visitors: 850 },
-    '15268': { visitors: 420 },
-    '15286': { visitors: 475 },
-    '15287': { visitors: 440 },
-    '16103': { visitors: 0 },
-    '16107': { visitors: 635 },
-    '16108': { visitors: 490 },
-    '16109': { visitors: 455 }
-  };
-  
-  const data = storeData[storeId] || { visitors: 500 };
-  const totalVisitors = data.visitors;
-  const maleCount = Math.floor(totalVisitors * 0.682);
-  const femaleCount = Math.floor(totalVisitors * 0.318);
-  const ageData = generateAgeDistribution(totalVisitors);
-  const hourlyData = generateHourlyDataFromAPI(totalVisitors);
-  const dayData = generateDayDistribution(date, totalVisitors);
-  
+  try {
+    const r = await pool.query('SELECT * FROM public.dashboard_daily WHERE day=$1 AND store_id=$2', [date, storeId]);
+    if (r.rows.length) {
+      const row = r.rows[0];
+      return {
+        success: true,
+        date,
+        storeId,
+        totalVisitors: Number(row.total_visitors || 0),
+        totalMale: Number(row.male || 0),
+        totalFemale: Number(row.female || 0),
+        averageAge: Number(row.avg_age_count || 0) > 0 ? Math.round(Number(row.avg_age_sum || 0) / Number(row.avg_age_count || 0)) : 0,
+        visitsByDay: generateDayDistribution(date, Number(row.total_visitors || 0)),
+        byAgeGroup: { '18-25': Number(row.age_18_25 || 0), '26-35': Number(row.age_26_35 || 0), '36-45': Number(row.age_36_45 || 0), '46-60': Number(row.age_46_60 || 0), '60+': Number(row.age_60_plus || 0) },
+        byAgeGender: { '<20': { male: 0, female: 0 }, '20-29': { male: 0, female: 0 }, '30-45': { male: 0, female: 0 }, '>45': { male: 0, female: 0 } },
+        byHour: {},
+        byGenderHour: { male: {}, female: {} },
+        timestamp: new Date().toISOString()
+      };
+    }
+  } catch (e) {}
   return {
     success: true,
-    date: date,
-    storeId: storeId,
-    totalVisitors: totalVisitors,
-    totalMale: maleCount,
-    totalFemale: femaleCount,
-    averageAge: calculateAverageAge(ageData),
-    visitsByDay: dayData,
-    byAgeGroup: ageData,
-    byAgeGender: calculateAgeGenderDistribution(ageData, maleCount, femaleCount),
-    byHour: hourlyData,
-    byGenderHour: {
-      male: distributeHourlyByGender(hourlyData, maleCount),
-      female: distributeHourlyByGender(hourlyData, femaleCount)
-    },
-    from_fallback: true,
+    date,
+    storeId,
+    totalVisitors: 0,
+    totalMale: 0,
+    totalFemale: 0,
+    averageAge: 0,
+    visitsByDay: generateDayDistribution(date, 0),
+    byAgeGroup: { '18-25': 0, '26-35': 0, '36-45': 0, '46-60': 0, '60+': 0 },
+    byAgeGender: { '<20': { male: 0, female: 0 }, '20-29': { male: 0, female: 0 }, '30-45': { male: 0, female: 0 }, '>45': { male: 0, female: 0 } },
+    byHour: {},
+    byGenderHour: { male: {}, female: {} },
     timestamp: new Date().toISOString()
   };
 }

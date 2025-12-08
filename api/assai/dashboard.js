@@ -37,6 +37,9 @@ export default async function handler(req, res) {
       case 'dashboard-data':
       case 'summary':
         const store = store_id || storeId || 'all';
+        if (start_date && end_date && start_date === end_date) {
+          return await handleDailySummary(res, store, start_date);
+        }
         const queryDate = date || getTodayDate();
         return await handleDashboardData(res, store, queryDate);
         
@@ -287,6 +290,55 @@ async function handleDashboardData(res, storeId = 'all', date = null) {
       from_fallback: true,
       error: error.message
     });
+  }
+}
+
+// =========== RESUMO DIÁRIO (DIA ÚNICO, PRECISO) ==========
+async function handleDailySummary(res, storeId, day) {
+  try {
+    const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
+    const sign = tz >= 0 ? "+" : "-"; const hh = String(Math.abs(tz)).padStart(2, "0"); const tzStr = `${sign}${hh}:00`;
+    const startISO = `${day}T00:00:00${tzStr}`; const endISO = `${day}T23:59:59${tzStr}`;
+    const LIMIT = 500; let offset = 0; const payload = [];
+    while (true) {
+      const qp = new URLSearchParams({ start: startISO, end: endISO, limit: String(LIMIT), offset: String(offset), tracks: 'true' });
+      if (storeId && storeId !== 'all') qp.set('device_id', String(storeId));
+      const resp = await fetch(`${STATS_URL}?${qp.toString()}`, { method: 'GET', headers: { 'X-API-Token': DISPLAYFORCE_TOKEN, 'Accept': 'application/json' } });
+      if (!resp.ok) break;
+      const j = await resp.json(); const arr = Array.isArray(j.payload || j.data) ? (j.payload || j.data) : [];
+      payload.push(...arr);
+      const pg = j.pagination; const pageLimit = Number(pg?.limit ?? LIMIT);
+      if (pg?.total && payload.length >= Number(pg.total)) break; if (arr.length < pageLimit) break; offset += pageLimit;
+    }
+    let total=0,male=0,female=0,avgSum=0,avgCount=0; const byAge={ '18-25':0,'26-35':0,'36-45':0,'46-60':0,'60+':0 }; const byWeek={ Sunday:0,Monday:0,Tuesday:0,Wednesday:0,Thursday:0,Friday:0,Saturday:0 }; const byHour={}; const byGenderHour={ male:{}, female:{} };
+    const mapPt = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+    for (const v of payload) {
+      const ts = String(v.start || v.tracks?.[0]?.start || new Date().toISOString());
+      const base = new Date(ts); const local = new Date(base.getTime() + tz*3600000);
+      const dstr = `${local.getFullYear()}-${String(local.getMonth()+1).padStart(2,'0')}-${String(local.getDate()).padStart(2,'0')}`;
+      if (dstr !== day) continue; total++;
+      const g = (v.sex===1 || String(v.sex).toLowerCase().startsWith('m')) ? 'M' : 'F'; if (g==='M') male++; else female++;
+      const age = Number(v.age||0); if (age>0){ avgSum+=age; avgCount++; }
+      if (age>=18&&age<=25) byAge['18-25']++; else if (age>=26&&age<=35) byAge['26-35']++; else if (age>=36&&age<=45) byAge['36-45']++; else if (age>=46&&age<=60) byAge['46-60']++; else if (age>60) byAge['60+']++;
+      const wdEN = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][local.getDay()]; byWeek[wdEN]=(byWeek[wdEN]||0)+1;
+      const h = local.getHours(); byHour[h]=(byHour[h]||0)+1; if (g==='M') byGenderHour.male[h]=(byGenderHour.male[h]||0)+1; else byGenderHour.female[h]=(byGenderHour.female[h]||0)+1;
+    }
+    const response = {
+      success: true,
+      totalVisitors: total,
+      totalMale: male,
+      totalFemale: female,
+      averageAge: avgCount>0?Math.round(avgSum/avgCount):0,
+      visitsByDay: byWeek,
+      byAgeGroup: { '18-25': byAge['18-25'], '26-35': byAge['26-35'], '36-45': byAge['36-45'], '46-60': byAge['46-60'], '60+': byAge['60+'] },
+      byAgeGender: undefined,
+      byHour: Object.fromEntries(Object.entries(byHour).map(([k,v])=>[String(k), Number(v)])),
+      byGenderHour: { male: Object.fromEntries(Object.entries(byGenderHour.male).map(([k,v])=>[String(k), Number(v)])), female: Object.fromEntries(Object.entries(byGenderHour.female).map(([k,v])=>[String(k), Number(v)])) },
+      isFallback: false,
+    };
+    return res.status(200).json(response);
+  } catch (e) {
+    return res.status(200).json({ success: true, totalVisitors: 0, totalMale: 0, totalFemale: 0, averageAge: 0, visitsByDay: { Sunday:0,Monday:0,Tuesday:0,Wednesday:0,Thursday:0,Friday:0,Saturday:0 }, byAgeGroup: { '18-25':0,'26-35':0,'36-45':0,'46-60':0,'60+':0 }, byHour: {}, byGenderHour: { male:{}, female:{} }, isFallback: true });
   }
 }
 

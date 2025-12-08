@@ -6,9 +6,9 @@ const DISPLAYFORCE_TOKEN = process.env.DISPLAYFORCE_API_TOKEN ||
                           process.env.DISPLAYFORCE_TOKEN || 
                           '4MJH-BX6H-G2RJ-G7PB';
 
-const DISPLAYFORCE_API_URL = process.env.DISPLAYFORCE_API_URL || 'https://api.displayforce.ai/public';
-const DEVICE_LIST_URL = `${DISPLAYFORCE_API_URL}/v1/device/list`;
-const STATS_URL = `${DISPLAYFORCE_API_URL}/v1/stats/visitor/list`;
+const DISPLAYFORCE_API_URL = process.env.DISPLAYFORCE_API_URL || 'https://api.displayforce.ai/public/v1';
+const DEVICE_LIST_URL = `${DISPLAYFORCE_API_URL}/device/list`;
+const STATS_URL = `${DISPLAYFORCE_API_URL}/stats/visitor/list`;
 
 // Cache para otimizar
 let cachedDevices = null;
@@ -46,6 +46,8 @@ export default async function handler(req, res) {
         const storeParam = store_id || 'all';
         return await handleVisitors(res, start, end, storeParam);
         
+      case 'refresh':
+        return await handleRefresh(res);
       case 'refresh':
         return await handleRefresh(res);
       case 'devices':
@@ -195,10 +197,20 @@ async function handleDashboardData(res, storeId = 'all', date = null) {
         last_updated: new Date().toISOString()
       };
       
+      const w = dashboardData.weekly_visits || { dom:0, seg:0, ter:0, qua:0, qui:0, sex:0, sab:0 };
+      const gd = dashboardData.gender_distribution || { male: 0, female: 0 };
       return res.status(200).json({
         success: true,
-        data: dashboardData,
-        from_api: true
+        totalVisitors: Number(dashboardData.total_visitors || 0),
+        totalMale: Number(gd.male || 0),
+        totalFemale: Number(gd.female || 0),
+        averageAge: 0,
+        visitsByDay: { Sunday: Number(w.dom||0), Monday: Number(w.seg||0), Tuesday: Number(w.ter||0), Wednesday: Number(w.qua||0), Thursday: Number(w.qui||0), Friday: Number(w.sex||0), Saturday: Number(w.sab||0) },
+        byAgeGroup: { '18-25': 0, '26-35': 0, '36-45': 0, '46-60': 0, '60+': 0 },
+        byAgeGender: undefined,
+        byHour: {},
+        byGenderHour: { male: {}, female: {} },
+        isFallback: false
       });
     }
     
@@ -236,10 +248,20 @@ async function handleDashboardData(res, storeId = 'all', date = null) {
         last_updated: new Date().toISOString()
       };
       
+      const w = dashboardData.weekly_visits || { dom:0, seg:0, ter:0, qua:0, qui:0, sex:0, sab:0 };
+      const gd = dashboardData.gender_distribution || { male: 0, female: 0 };
       return res.status(200).json({
         success: true,
-        data: dashboardData,
-        from_api: true
+        totalVisitors: Number(dashboardData.total_visitors || 0),
+        totalMale: Number(gd.male || 0),
+        totalFemale: Number(gd.female || 0),
+        averageAge: 0,
+        visitsByDay: { Sunday: Number(w.dom||0), Monday: Number(w.seg||0), Tuesday: Number(w.ter||0), Wednesday: Number(w.qua||0), Thursday: Number(w.qui||0), Friday: Number(w.sex||0), Saturday: Number(w.sab||0) },
+        byAgeGroup: { '18-25': 0, '26-35': 0, '36-45': 0, '46-60': 0, '60+': 0 },
+        byAgeGender: undefined,
+        byHour: {},
+        byGenderHour: { male: {}, female: {} },
+        isFallback: false
       });
       
     } catch (deviceError) {
@@ -380,9 +402,9 @@ async function fetchDevicesFromAPI(forceRefresh = false) {
     console.log(`🌐 Buscando dispositivos de: ${DEVICE_LIST_URL}`);
     
     const response = await fetch(DEVICE_LIST_URL, {
+      method: 'GET',
       headers: {
-        'Authorization': `Bearer ${DISPLAYFORCE_TOKEN}`,
-        'Content-Type': 'application/json',
+        'X-API-Token': DISPLAYFORCE_TOKEN,
         'Accept': 'application/json'
       },
       timeout: 10000
@@ -451,9 +473,9 @@ async function fetchVisitorStatsFromAPI(deviceId, startDate, endDate) {
     const url = `${STATS_URL}?${params}`;
     
     const response = await fetch(url, {
+      method: 'GET',
       headers: {
-        'Authorization': `Bearer ${DISPLAYFORCE_TOKEN}`,
-        'Content-Type': 'application/json',
+        'X-API-Token': DISPLAYFORCE_TOKEN,
         'Accept': 'application/json'
       },
       timeout: 10000

@@ -188,6 +188,18 @@ const Index = () => {
     feminino: stats.byGenderHour.female[i] || 0,
   }));
 
+  const ageGenderPercentData = (() => {
+    const ag = (backendStats as any)?.byAgeGender;
+    if (!ag) return [] as Array<{ faixa: string; masculino: number; feminino: number }>;
+    const keys = ['<20','20-29','30-45','>45'];
+    return keys.map((k) => {
+      const m = Number((ag[k]?.male) || 0);
+      const f = Number((ag[k]?.female) || 0);
+      const sum = m + f;
+      return { faixa: k, masculino: sum ? Math.round((m / sum) * 100) : 0, feminino: sum ? Math.round((f / sum) * 100) : 0 };
+    });
+  })();
+
   return (
     <div className="min-h-screen bg-background flex">
       <DashboardSidebar isOpen={sidebarOpen} />
@@ -329,28 +341,31 @@ const Index = () => {
                     <YAxis label={{ value: "Número de Visitantes", angle: -90, position: "insideLeft" }} />
                     <Tooltip content={<HourTooltip />} />
                     <Legend />
-                    <Line
-                      type="monotone"
-                      dataKey="masculino"
-                      stroke="#0047BB"
-                      strokeWidth={2}
-                      name="Masculino"
-                    />
-                    <Line
-                      type="monotone"
-                      dataKey="feminino"
-                      stroke="#E74C3C"
-                      strokeWidth={2}
-                      name="Feminino"
-                    />
+                    <Line type="monotone" dataKey="masculino" stroke="#0047BB" strokeWidth={2} name="Masculino" />
+                    <Line type="monotone" dataKey="feminino" stroke="#E74C3C" strokeWidth={2} name="Feminino" />
                   </LineChart>
                 </ResponsiveContainer>
                 {stats.total === 0 && (
                   <p className="text-center text-muted-foreground mt-4">
                     Nenhum dado disponível para o período selecionado
                   </p>
-      
-          )}
+                )}
+              </Card>
+
+              {/* Gender × Age Chart */}
+              <Card className="p-6 mt-6">
+                <h3 className="text-lg font-semibold text-primary mb-4">Gênero & Idade</h3>
+                <ResponsiveContainer width="100%" height={300}>
+                  <BarChart data={ageGenderPercentData}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="faixa" tickFormatter={(v) => String(v)} />
+                    <YAxis domain={[0,100]} tickFormatter={(v) => `${v}%`} label={{ value: "Número %", angle: -90, position: "insideLeft" }} />
+                    <Tooltip formatter={(value: any, name: any) => [`${value}%`, name]} />
+                    <Legend />
+                    <Bar dataKey="feminino" name="Feminino" fill="#E74C3C" />
+                    <Bar dataKey="masculino" name="Masculino" fill="#0047BB" />
+                  </BarChart>
+                </ResponsiveContainer>
               </Card>
         </main>
       </div>

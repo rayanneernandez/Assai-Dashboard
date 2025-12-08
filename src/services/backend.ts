@@ -74,6 +74,7 @@ export async function fetchVisitorStats(deviceId?: string, start?: string, end?:
       averageAge: Math.round(Number((json as any).averageAge ?? 0)),
       byDayOfWeek,
       byAgeGroup: (json as any).byAgeGroup ?? {},
+      byAgeGender: (json as any).byAgeGender ?? undefined,
       byHour: (json as any).byHour ?? {},
       byGenderHour: (json as any).byGenderHour ?? { male: {}, female: {} },
     };

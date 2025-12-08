@@ -23,6 +23,12 @@ export interface VisitorStats {
   averageAge: number;
   byDayOfWeek: Record<string, number>;
   byAgeGroup: Record<string, number>;
+  byAgeGender?: {
+    '<20': { male: number; female: number };
+    '20-29': { male: number; female: number };
+    '30-45': { male: number; female: number };
+    '>45': { male: number; female: number };
+  };
   byHour: Record<number, number>;
   byGenderHour: {
     male: Record<number, number>;

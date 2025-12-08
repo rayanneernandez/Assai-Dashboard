@@ -551,6 +551,22 @@ if (store_id && store_id !== "all") {
       byGenderHour.female[hour] = Number(r.female || 0);
     }
 
+    // ---------- AGE × GENDER (from visitors) ----------
+    let agQuery = `\n      SELECT\n        SUM(CASE WHEN gender='M' AND age < 20 THEN 1 ELSE 0 END) AS m_u20,\n        SUM(CASE WHEN gender='F' AND age < 20 THEN 1 ELSE 0 END) AS f_u20,\n        SUM(CASE WHEN gender='M' AND age BETWEEN 20 AND 29 THEN 1 ELSE 0 END) AS m_20_29,\n        SUM(CASE WHEN gender='F' AND age BETWEEN 20 AND 29 THEN 1 ELSE 0 END) AS f_20_29,\n        SUM(CASE WHEN gender='M' AND age BETWEEN 30 AND 45 THEN 1 ELSE 0 END) AS m_30_45,\n        SUM(CASE WHEN gender='F' AND age BETWEEN 30 AND 45 THEN 1 ELSE 0 END) AS f_30_45,\n        SUM(CASE WHEN gender='M' AND age > 45 THEN 1 ELSE 0 END) AS m_45_plus,\n        SUM(CASE WHEN gender='F' AND age > 45 THEN 1 ELSE 0 END) AS f_45_plus\n      FROM visitors\n      WHERE 1=1\n    `;
+    const agParams = [];
+    let agc = 1;
+    if (start_date) { agQuery += ` AND day >= ${agc}`; agParams.push(start_date); agc++; }
+    if (end_date) { agQuery += ` AND day <= ${agc}`; agParams.push(end_date); agc++; }
+    if (store_id && store_id !== 'all') { agQuery += ` AND store_id = ${agc}`; agParams.push(store_id); agc++; }
+    const agRes = await pool.query(agQuery, agParams);
+    const ag = agRes.rows[0] || {};
+    const byAgeGender = {
+      '<20': { male: Number(ag.m_u20||0), female: Number(ag.f_u20||0) },
+      '20-29': { male: Number(ag.m_20_29||0), female: Number(ag.f_20_29||0) },
+      '30-45': { male: Number(ag.m_30_45||0), female: Number(ag.f_30_45||0) },
+      '>45': { male: Number(ag.m_45_plus||0), female: Number(ag.f_45_plus||0) },
+    };
+
     // ---------- MONTA RESPOSTA ----------
     const response = {
       success: true,
@@ -574,6 +590,7 @@ if (store_id && store_id !== "all") {
         "46-60": Number(row.age_46_60 || 0),
         "60+": Number(row.age_60_plus || 0),
       },
+      byAgeGender,
       byHour,
       byGenderHour,
       isFallback: false,

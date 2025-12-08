@@ -261,10 +261,7 @@ async function getSummary(req, res, start_date, end_date, store_id) {
   const source = req.query.source;
 
   try {
-    // Se for explícito usar DisplayForce, mantém como já estava
-    if (source === "displayforce") {
-      return await getSummaryFromDisplayForce(res, start_date, end_date, store_id);
-    }
+    const __df = source === "displayforce";
 
     // ---------- DAILY / RESUMO GERAL ----------
     let query = `

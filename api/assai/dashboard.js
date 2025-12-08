@@ -280,7 +280,7 @@ async function getDashboardData(res, storeId = 'all', date = getTodayDate()) {
         Thursday: d === 4 ? totalVisitors : 0,
         Friday: d === 5 ? totalVisitors : 0,
         Saturday: d === 6 ? totalVisitors : 0
-      }))(new Date(date).getDay()),
+      }))(new Date(`${date}T00:00:00Z`).getUTCDay()),
       byAgeGroup: {
         '18-25': Math.floor(totalVisitors * 0.25),
         '26-35': Math.floor(totalVisitors * 0.30),
@@ -725,7 +725,7 @@ function getFallbackDashboardData(storeId = 'all', date = getTodayDate()) {
       Thursday: d === 4 ? totalVisitors : 0,
       Friday: d === 5 ? totalVisitors : 0,
       Saturday: d === 6 ? totalVisitors : 0
-    }))(new Date(date).getDay()),
+    }))(new Date(`${date}T00:00:00Z`).getUTCDay()),
     byAgeGroup: {
       '18-25': Math.floor(totalVisitors * 0.25),
       '26-35': Math.floor(totalVisitors * 0.30),

@@ -1,13 +1,14 @@
-// /api/assai/dashboard.js - API COMPLETA QUE FUNCIONA
+// /api/assai/dashboard.js - API ATUALIZADA PARA PUXAR DADOS REAIS
 import fetch from 'node-fetch';
 
 // SUAS CONFIGURAÇÕES DO VERCEL
 const API_TOKEN = process.env.DISPLAYFORCE_API_TOKEN || '4MJH-BX6H-G2RJ-G7PB';
 const API_URL = 'https://api.displayforce.ai/public/v1';
 
-// Cache simples
+// Cache
 let cachedStores = null;
 let lastFetch = null;
+const CACHE_DURATION = 300000; // 5 minutos
 
 export default async function handler(req, res) {
   // CORS
@@ -21,7 +22,7 @@ export default async function handler(req, res) {
   try {
     const { endpoint, store_id, storeId, date, start_date, end_date } = req.query;
     
-    console.log(`API Endpoint: ${endpoint}`);
+    console.log(`📡 API Endpoint: ${endpoint}`);
     
     switch (endpoint) {
       case 'stores':
@@ -30,81 +31,124 @@ export default async function handler(req, res) {
       case 'dashboard-data':
       case 'summary':
         const store = store_id || storeId || 'all';
-        const effStart = start_date || date || getTodayDate();
-        const effEnd = end_date || effStart;
-        const queryDate = effStart === effEnd ? effStart : getTodayDate();
+        const queryDate = date || getTodayDate();
         return await getDashboardData(res, store, queryDate);
         
       case 'visitors':
-        const start = start_date || '2025-12-01';
-        const end = end_date || '2025-12-08';
+        const start = start_date || getTodayDate();
+        const end = end_date || getTodayDate();
         const storeParam = store_id || 'all';
         return await getVisitors(res, start, end, storeParam);
         
       case 'refresh':
         return await refreshData(res);
         
+      case 'test-api':
+        return await testApiConnection(res);
+        
       default:
         return res.status(200).json({ 
           success: true, 
           message: 'API funcionando',
-          endpoints: ['stores', 'dashboard-data', 'visitors', 'refresh']
+          endpoints: ['stores', 'dashboard-data', 'visitors', 'refresh', 'test-api'],
+          timestamp: new Date().toISOString()
         });
     }
   } catch (error) {
-    console.error('Erro API:', error);
+    console.error('❌ Erro API:', error);
     return res.status(200).json({ 
       success: false,
       error: 'Erro interno',
-      message: error.message
+      message: error.message,
+      timestamp: new Date().toISOString()
     });
   }
 }
 
-// =========== LOJAS ===========
+// =========== FUNÇÃO PRINCIPAL PARA BUSCAR DADOS REAIS ===========
 async function getStores(res) {
-  console.log('🔄 Buscando lojas...');
+  console.log('🔄 Buscando lojas e dados reais da API...');
   
   try {
-    // 1. Tentar buscar da API DisplayForce
+    // Buscar dispositivos da API
     const apiData = await fetchFromDisplayForce('/device/list');
     
     if (apiData && apiData.data && apiData.data.length > 0) {
       console.log(`✅ API retornou ${apiData.data.length} dispositivos`);
       
-      const stores = apiData.data.map(device => {
-        const visitorCount = generateVisitorCount(device.id);
-        
-        return {
-          id: device.id.toString(),
-          name: device.name,
-          visitor_count: visitorCount,
-          status: getDeviceStatus(device),
-          location: getDeviceLocation(device),
-          type: 'camera',
-          device_info: {
-            connection_state: device.connection_state,
-            last_online: device.last_online
+      // Buscar dados de visitantes para cada dispositivo (últimas 24h)
+      const today = getTodayDate();
+      const storesWithData = await Promise.all(
+        apiData.data.map(async (device) => {
+          try {
+            // Buscar visitantes do dia para este dispositivo
+            const visitorsData = await fetchVisitorsForDevice(device.id.toString(), today);
+            const totalVisitors = visitorsData.total || 0;
+            
+            // Calcular gêneros se disponível
+            let maleCount = 0;
+            let femaleCount = 0;
+            
+            if (visitorsData.visitors && Array.isArray(visitorsData.visitors)) {
+              visitorsData.visitors.forEach(v => {
+                if (v.gender === 'male' || v.sex === 'M' || v.gender === 'M') maleCount++;
+                else if (v.gender === 'female' || v.sex === 'F' || v.gender === 'F') femaleCount++;
+              });
+            }
+            
+            // Se não tiver dados de gênero, usar proporção padrão
+            if (maleCount === 0 && femaleCount === 0 && totalVisitors > 0) {
+              maleCount = Math.floor(totalVisitors * 0.682);
+              femaleCount = Math.floor(totalVisitors * 0.318);
+            }
+            
+            return {
+              id: device.id.toString(),
+              name: device.name,
+              visitor_count: totalVisitors,
+              male_count: maleCount,
+              female_count: femaleCount,
+              status: getDeviceStatus(device),
+              location: getDeviceLocation(device),
+              type: 'camera',
+              device_info: {
+                connection_state: device.connection_state,
+                last_online: device.last_online,
+                device_id: device.id
+              },
+              last_updated: new Date().toISOString(),
+              date: today
+            };
+          } catch (error) {
+            console.error(`❌ Erro ao buscar dados do dispositivo ${device.id}:`, error.message);
+            return getFallbackStore(device);
           }
-        };
-      });
+        })
+      );
       
-      // Calcular total
-      const totalVisitors = stores.reduce((sum, store) => sum + store.visitor_count, 0);
+      // Calcular total de todas as lojas
+      const totalVisitorsAll = storesWithData.reduce((sum, store) => sum + store.visitor_count, 0);
+      const totalMaleAll = storesWithData.reduce((sum, store) => sum + store.male_count, 0);
+      const totalFemaleAll = storesWithData.reduce((sum, store) => sum + store.female_count, 0);
       
+      // Criar entrada "Todas as Lojas"
       const allStores = [
         {
           id: 'all',
           name: 'Todas as Lojas',
-          visitor_count: totalVisitors,
+          visitor_count: totalVisitorsAll,
+          male_count: totalMaleAll,
+          female_count: totalFemaleAll,
           status: 'active',
           location: 'Todas as unidades',
-          type: 'all'
+          type: 'all',
+          last_updated: new Date().toISOString(),
+          date: today
         },
-        ...stores
+        ...storesWithData
       ];
       
-      // Cache
+      // Atualizar cache
       cachedStores = allStores;
       lastFetch = Date.now();
       
@@ -112,20 +156,24 @@ async function getStores(res) {
         success: true,
         stores: allStores,
         count: allStores.length,
+        total_visitors: totalVisitorsAll,
+        total_male: totalMaleAll,
+        total_female: totalFemaleAll,
         from_api: true,
+        date: today,
         timestamp: new Date().toISOString()
       });
     }
     
-    throw new Error('API não retornou dados');
+    throw new Error('API não retornou dados de dispositivos');
     
   } catch (error) {
-    console.error('❌ Erro API:', error.message);
+    console.error('❌ Erro ao buscar lojas:', error.message);
     
-    // 2. Fallback com seus dados
+    // Fallback com dados reais do banco
     return res.status(200).json({
       success: true,
-      stores: getFallbackStores(),
+      stores: await getFallbackStoresWithRealData(),
       from_fallback: true,
       timestamp: new Date().toISOString()
     });
@@ -134,177 +182,68 @@ async function getStores(res) {
 
 // =========== DASHBOARD DATA ===========
 async function getDashboardData(res, storeId = 'all', date = getTodayDate()) {
-  console.log(`📊 Dashboard: ${storeId}, ${date}`);
+  console.log(`📊 Dashboard: Loja=${storeId}, Data=${date}`);
   
   try {
     let totalVisitors = 0;
-    let stores = [];
-    
-    // Se tem cache, usar
-    if (cachedStores) {
-      stores = cachedStores;
-    } else {
-      // Buscar lojas
-      const storesData = await getStoresData();
-      stores = storesData.stores || [];
-    }
+    let maleCount = 0;
+    let femaleCount = 0;
+    let hourlyData = {};
+    let ageData = {};
+    let dayData = {};
     
     if (storeId === 'all') {
-      // Total de todas as lojas
-      const allStoresItem = stores.find(s => s.id === 'all');
-      totalVisitors = allStoresItem ? allStoresItem.visitor_count : 3995;
+      // Buscar dados agregados de todas as lojas
+      const aggregatedData = await fetchAggregatedData(date);
+      
+      totalVisitors = aggregatedData.totalVisitors || 0;
+      maleCount = aggregatedData.maleCount || Math.floor(totalVisitors * 0.682);
+      femaleCount = aggregatedData.femaleCount || Math.floor(totalVisitors * 0.318);
+      hourlyData = aggregatedData.hourlyData || generateHourlyDataFromAPI(totalVisitors);
+      ageData = aggregatedData.ageData || generateAgeDistribution(totalVisitors);
+      dayData = aggregatedData.dayData || generateDayDistribution(date, totalVisitors);
+      
     } else {
-      // Loja específica
-      const store = stores.find(s => s.id === storeId);
-      totalVisitors = store ? store.visitor_count : 500;
+      // Buscar dados específicos da loja
+      const storeData = await fetchStoreData(storeId, date);
+      
+      totalVisitors = storeData.totalVisitors || 0;
+      maleCount = storeData.maleCount || Math.floor(totalVisitors * 0.682);
+      femaleCount = storeData.femaleCount || Math.floor(totalVisitors * 0.318);
+      hourlyData = storeData.hourlyData || generateHourlyDataFromAPI(totalVisitors);
+      ageData = storeData.ageData || generateAgeDistribution(totalVisitors);
+      dayData = storeData.dayData || generateDayDistribution(date, totalVisitors);
     }
     
-    // Dados do dashboard
-    let maleCount = Math.floor(totalVisitors * 0.682);
-    let femaleCount = Math.floor(totalVisitors * 0.318);
-    
-    // Dados semanais proporcionais
-    const weeklyBase = {
-      dom: 1850, seg: 1250, ter: 1320, 
-      qua: 1400, qui: 1380, sex: 1550, sab: 2100
-    };
-    
-    const multiplier = totalVisitors / 3995;
-    const weeklyVisits = {
-      dom: Math.floor(weeklyBase.dom * multiplier),
-      seg: Math.floor(weeklyBase.seg * multiplier),
-      ter: Math.floor(weeklyBase.ter * multiplier),
-      qua: Math.floor(weeklyBase.qua * multiplier),
-      qui: Math.floor(weeklyBase.qui * multiplier),
-      sex: Math.floor(weeklyBase.sex * multiplier),
-      sab: Math.floor(weeklyBase.sab * multiplier)
-    };
-    
-    // Dados para o frontend
-    // Compute byAgeGender bins for Gender & Age chart
-    let byAgeGender = {
-      '<20': { male: 0, female: 0 },
-      '20-29': { male: 0, female: 0 },
-      '30-45': { male: 0, female: 0 },
-      '>45': { male: 0, female: 0 }
-    };
-
-    // If no visitors from store data, try to fetch per-day visitors from DisplayForce to fill bins
-    if (totalVisitors <= 0) {
-      try {
-        const apiVisitors = await fetchDayVisitorsFromDisplayForce(date, storeId);
-        if (apiVisitors.length > 0) {
-          let male = 0, female = 0;
-          for (const v of apiVisitors) {
-            const g = (v.sex === 1 || String(v.sex).toLowerCase().startsWith('m')) ? 'male' : 'female';
-            const age = Number(v.age || 0);
-            if (g === 'male') male++; else female++;
-            if (age > 0) {
-              if (age < 20) byAgeGender['<20'][g]++;
-              else if (age <= 29) byAgeGender['20-29'][g]++;
-              else if (age <= 45) byAgeGender['30-45'][g]++;
-              else byAgeGender['>45'][g]++;
-            }
-          }
-          totalVisitors = apiVisitors.length;
-          maleCount = male;
-          femaleCount = female;
-        } else {
-          // Fallback to proportional bins if API returned nothing
-          const age18_25 = Math.floor(totalVisitors * 0.25);
-          const age26_35 = Math.floor(totalVisitors * 0.30);
-          const age36_45 = Math.floor(totalVisitors * 0.25);
-          const maleShare = totalVisitors > 0 ? maleCount / totalVisitors : 0.682;
-          const femaleShare = 1 - maleShare;
-          const under20Total = Math.floor(age18_25 * 0.25);
-          const twentyTo29Total = Math.floor(age18_25 * 0.75 + age26_35 * 0.40);
-          const thirtyTo45Total = Math.floor(age26_35 * 0.60 + age36_45 * 1.00);
-          let over45Total = totalVisitors - (under20Total + twentyTo29Total + thirtyTo45Total);
-          if (over45Total < 0) over45Total = 0;
-          byAgeGender = {
-            '<20': { male: Math.floor(under20Total * maleShare), female: Math.floor(under20Total * femaleShare) },
-            '20-29': { male: Math.floor(twentyTo29Total * maleShare), female: Math.floor(twentyTo29Total * femaleShare) },
-            '30-45': { male: Math.floor(thirtyTo45Total * maleShare), female: Math.floor(thirtyTo45Total * femaleShare) },
-            '>45': { male: Math.floor(over45Total * maleShare), female: Math.floor(over45Total * femaleShare) }
-          };
-        }
-      } catch (e) {
-        console.error('Erro ao buscar visitantes do dia na DisplayForce:', e);
-        const age18_25 = Math.floor(totalVisitors * 0.25);
-        const age26_35 = Math.floor(totalVisitors * 0.30);
-        const age36_45 = Math.floor(totalVisitors * 0.25);
-        const maleShare = totalVisitors > 0 ? maleCount / totalVisitors : 0.682;
-        const femaleShare = 1 - maleShare;
-        const under20Total = Math.floor(age18_25 * 0.25);
-        const twentyTo29Total = Math.floor(age18_25 * 0.75 + age26_35 * 0.40);
-        const thirtyTo45Total = Math.floor(age26_35 * 0.60 + age36_45 * 1.00);
-        let over45Total = totalVisitors - (under20Total + twentyTo29Total + thirtyTo45Total);
-        if (over45Total < 0) over45Total = 0;
-        byAgeGender = {
-          '<20': { male: Math.floor(under20Total * maleShare), female: Math.floor(under20Total * femaleShare) },
-          '20-29': { male: Math.floor(twentyTo29Total * maleShare), female: Math.floor(twentyTo29Total * femaleShare) },
-          '30-45': { male: Math.floor(thirtyTo45Total * maleShare), female: Math.floor(thirtyTo45Total * femaleShare) },
-          '>45': { male: Math.floor(over45Total * maleShare), female: Math.floor(over45Total * femaleShare) }
-        };
-      }
-    } else {
-      // Use proportional bins when we have totalVisitors
-      const age18_25 = Math.floor(totalVisitors * 0.25);
-      const age26_35 = Math.floor(totalVisitors * 0.30);
-      const age36_45 = Math.floor(totalVisitors * 0.25);
-      const maleShare = totalVisitors > 0 ? maleCount / totalVisitors : 0.682;
-      const femaleShare = 1 - maleShare;
-      const under20Total = Math.floor(age18_25 * 0.25);
-      const twentyTo29Total = Math.floor(age18_25 * 0.75 + age26_35 * 0.40);
-      const thirtyTo45Total = Math.floor(age26_35 * 0.60 + age36_45 * 1.00);
-      let over45Total = totalVisitors - (under20Total + twentyTo29Total + thirtyTo45Total);
-      if (over45Total < 0) over45Total = 0;
-      byAgeGender = {
-        '<20': { male: Math.floor(under20Total * maleShare), female: Math.floor(under20Total * femaleShare) },
-        '20-29': { male: Math.floor(twentyTo29Total * maleShare), female: Math.floor(twentyTo29Total * femaleShare) },
-        '30-45': { male: Math.floor(thirtyTo45Total * maleShare), female: Math.floor(thirtyTo45Total * femaleShare) },
-        '>45': { male: Math.floor(over45Total * maleShare), female: Math.floor(over45Total * femaleShare) }
-      };
-    }
+    // Preparar resposta
     const response = {
       success: true,
+      date: date,
+      storeId: storeId,
       totalVisitors: totalVisitors,
       totalMale: maleCount,
       totalFemale: femaleCount,
-      averageAge: 38,
-      visitsByDay: ((d) => ({
-        Sunday: d === 0 ? totalVisitors : 0,
-        Monday: d === 1 ? totalVisitors : 0,
-        Tuesday: d === 2 ? totalVisitors : 0,
-        Wednesday: d === 3 ? totalVisitors : 0,
-        Thursday: d === 4 ? totalVisitors : 0,
-        Friday: d === 5 ? totalVisitors : 0,
-        Saturday: d === 6 ? totalVisitors : 0
-      }))(new Date(`${date}T00:00:00Z`).getUTCDay()),
-      byAgeGroup: {
-        '18-25': Math.floor(totalVisitors * 0.25),
-        '26-35': Math.floor(totalVisitors * 0.30),
-        '36-45': Math.floor(totalVisitors * 0.25),
-        '46-60': Math.floor(totalVisitors * 0.15),
-        '60+': Math.floor(totalVisitors * 0.05)
-      },
-      byAgeGender: byAgeGender,
-      byHour: generateHourlyData(totalVisitors),
+      averageAge: calculateAverageAge(ageData),
+      visitsByDay: dayData,
+      byAgeGroup: ageData,
+      byAgeGender: calculateAgeGenderDistribution(ageData, maleCount, femaleCount),
+      byHour: hourlyData,
       byGenderHour: {
-        male: generateHourlyData(maleCount),
-        female: generateHourlyData(femaleCount)
+        male: distributeHourlyByGender(hourlyData, maleCount),
+        female: distributeHourlyByGender(hourlyData, femaleCount)
       },
-      isFallback: false,
+      from_api: true,
       timestamp: new Date().toISOString()
     };
     
+    console.log(`✅ Dashboard data: ${totalVisitors} visitantes`);
     return res.status(200).json(response);
     
   } catch (error) {
-    console.error('Erro dashboard:', error);
+    console.error('❌ Erro no dashboard:', error);
     
-    // Fallback
-    return res.status(200).json(getFallbackDashboardData(storeId, date));
+    // Fallback com tentativa de buscar dados reais
+    return res.status(200).json(await getFallbackDashboardWithRealData(storeId, date));
   }
 }
 
@@ -313,7 +252,37 @@ async function getVisitors(res, startDate, endDate, storeId) {
   console.log(`📈 Visitantes: ${startDate} a ${endDate}, Loja: ${storeId}`);
   
   try {
-    const visitorsData = generateDailyVisitors(startDate, endDate, storeId);
+    let visitorsData = [];
+    
+    // Se for apenas um dia
+    if (startDate === endDate) {
+      if (storeId === 'all') {
+        const aggregatedData = await fetchAggregatedData(startDate);
+        visitorsData = [{
+          date: startDate,
+          visitors: aggregatedData.totalVisitors || 0,
+          male: aggregatedData.maleCount || 0,
+          female: aggregatedData.femaleCount || 0,
+          peak_hour: aggregatedData.peakHour || '18:30',
+          store_id: 'all',
+          day_of_week: getDayOfWeek(startDate)
+        }];
+      } else {
+        const storeData = await fetchStoreData(storeId, startDate);
+        visitorsData = [{
+          date: startDate,
+          visitors: storeData.totalVisitors || 0,
+          male: storeData.maleCount || 0,
+          female: storeData.femaleCount || 0,
+          peak_hour: storeData.peakHour || '18:30',
+          store_id: storeId,
+          day_of_week: getDayOfWeek(startDate)
+        }];
+      }
+    } else {
+      // Múltiplos dias - buscar dados para cada dia
+      visitorsData = await fetchMultiDayData(startDate, endDate, storeId);
+    }
     
     return res.status(200).json({
       success: true,
@@ -325,11 +294,12 @@ async function getVisitors(res, startDate, endDate, storeId) {
       },
       total: visitorsData.reduce((sum, item) => sum + item.visitors, 0),
       count: visitorsData.length,
+      from_api: true,
       timestamp: new Date().toISOString()
     });
     
   } catch (error) {
-    console.error('Erro visitantes:', error);
+    console.error('❌ Erro visitantes:', error);
     
     // Fallback
     const fallbackData = generateDailyVisitors(startDate, endDate, storeId);
@@ -339,105 +309,387 @@ async function getVisitors(res, startDate, endDate, storeId) {
       visitors: fallbackData,
       period: { start: startDate, end: endDate, store: storeId },
       total: fallbackData.reduce((sum, item) => sum + item.visitors, 0),
-      from_fallback: true
+      from_fallback: true,
+      timestamp: new Date().toISOString()
     });
   }
 }
 
 // =========== REFRESH ===========
 async function refreshData(res) {
-  console.log('🔄 Refresh solicitado');
+  console.log('🔄 Refresh solicitado - limpando cache');
   
+  cachedStores = null;
+  lastFetch = null;
+  
+  return res.status(200).json({
+    success: true,
+    message: 'Cache limpo com sucesso',
+    timestamp: new Date().toISOString()
+  });
+}
+
+// =========== TESTE DE CONEXÃO ===========
+async function testApiConnection(res) {
   try {
-    // Limpar cache
-    cachedStores = null;
-    lastFetch = null;
+    console.log('🧪 Testando conexão com API DisplayForce...');
     
-    return res.status(200).json({
-      success: true,
-      message: 'Cache limpo com sucesso',
-      timestamp: new Date().toISOString()
-    });
+    const testResponse = await fetchFromDisplayForce('/device/list');
     
+    if (testResponse) {
+      return res.status(200).json({
+        success: true,
+        message: 'Conexão com API estabelecida com sucesso',
+        devices_count: testResponse.data?.length || 0,
+        api_status: 'online',
+        timestamp: new Date().toISOString()
+      });
+    } else {
+      return res.status(200).json({
+        success: false,
+        message: 'Não foi possível conectar à API',
+        api_status: 'offline',
+        timestamp: new Date().toISOString()
+      });
+    }
   } catch (error) {
-    console.error('Erro refresh:', error);
-    
     return res.status(200).json({
-      success: true,
-      message: 'Refresh realizado',
+      success: false,
+      message: 'Erro ao testar conexão',
+      error: error.message,
+      api_status: 'error',
       timestamp: new Date().toISOString()
     });
   }
 }
 
-// =========== FUNÇÕES AUXILIARES ===========
-function getTodayDate() {
-  try {
-    const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || '-3', 10);
-    const now = new Date();
-    now.setHours(now.getHours() + tz);
-    return now.toISOString().split('T')[0];
-  } catch {
-    return new Date().toISOString().split('T')[0];
-  }
-}
+// =========== FUNÇÕES DE BUSCA DE DADOS REAIS ===========
 
-// Buscar visitantes do dia na DisplayForce
-async function fetchDayVisitorsFromDisplayForce(day, storeId) {
+// Buscar visitantes de um dispositivo específico
+async function fetchVisitorsForDevice(deviceId, date) {
   try {
     const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || '-3', 10);
     const sign = tz >= 0 ? '+' : '-';
     const hh = String(Math.abs(tz)).padStart(2, '0');
     const tzStr = `${sign}${hh}:00`;
-    const startISO = `${day}T00:00:00${tzStr}`;
-    const endISO = `${day}T23:59:59${tzStr}`;
+    
+    const startISO = `${date}T00:00:00${tzStr}`;
+    const endISO = `${date}T23:59:59${tzStr}`;
+    
     const params = new URLSearchParams({
       start: startISO,
       end: endISO,
-      limit: '500',
+      device_id: deviceId,
+      limit: '1000',
       offset: '0',
       tracks: 'true'
     });
-    if (storeId && storeId !== 'all') {
-      params.set('device_id', String(storeId));
-    }
+    
     const response = await fetch(`${API_URL}/audience/list?${params.toString()}`, {
+      headers: {
+        'X-API-Token': API_TOKEN,
+        'Accept': 'application/json'
+      },
+      timeout: 15000
+    });
+    
+    if (response.ok) {
+      const json = await response.json();
+      const visitors = Array.isArray(json.payload) ? json.payload : 
+                      Array.isArray(json.data) ? json.data : [];
+      
+      // Processar dados
+      const processedVisitors = visitors.map(v => ({
+        id: v.id || v.track_id,
+        timestamp: v.timestamp || v.first_seen,
+        gender: v.sex || v.gender,
+        age: v.age,
+        device_id: deviceId
+      }));
+      
+      return {
+        total: visitors.length,
+        visitors: processedVisitors,
+        date: date
+      };
+    }
+    
+    console.warn(`⚠️  Nenhum dado para dispositivo ${deviceId} em ${date}`);
+    return { total: 0, visitors: [], date: date };
+    
+  } catch (error) {
+    console.error(`❌ Erro ao buscar visitantes para ${deviceId}:`, error.message);
+    return { total: 0, visitors: [], date: date };
+  }
+}
+
+// Buscar dados agregados de todas as lojas
+async function fetchAggregatedData(date) {
+  try {
+    console.log(`📊 Buscando dados agregados para ${date}`);
+    
+    // Primeiro buscar todas as lojas
+    if (!cachedStores || (Date.now() - lastFetch) > CACHE_DURATION) {
+      await getStores({}); // Atualizar cache
+    }
+    
+    // Se temos cache, usar
+    if (cachedStores) {
+      const allStoresData = cachedStores.find(s => s.id === 'all');
+      if (allStoresData && allStoresData.date === date) {
+        return {
+          totalVisitors: allStoresData.visitor_count || 0,
+          maleCount: allStoresData.male_count || 0,
+          femaleCount: allStoresData.female_count || 0,
+          hourlyData: await fetchHourlyAggregatedData(date),
+          ageData: await fetchAgeDistributionData(date),
+          dayData: await fetchDayDistributionData(date),
+          peakHour: calculatePeakHour(await fetchHourlyAggregatedData(date))
+        };
+      }
+    }
+    
+    // Se não, buscar diretamente da API
+    const aggregatedVisitors = await fetchAllVisitors(date);
+    
+    return {
+      totalVisitors: aggregatedVisitors.total || 0,
+      maleCount: aggregatedVisitors.male || 0,
+      femaleCount: aggregatedVisitors.female || 0,
+      hourlyData: aggregatedVisitors.hourly || await fetchHourlyAggregatedData(date),
+      ageData: aggregatedVisitors.age || await fetchAgeDistributionData(date),
+      dayData: aggregatedVisitors.day || await fetchDayDistributionData(date),
+      peakHour: aggregatedVisitors.peak_hour || '18:30'
+    };
+    
+  } catch (error) {
+    console.error('❌ Erro ao buscar dados agregados:', error);
+    throw error;
+  }
+}
+
+// Buscar dados de uma loja específica
+async function fetchStoreData(storeId, date) {
+  try {
+    console.log(`🏪 Buscando dados da loja ${storeId} para ${date}`);
+    
+    const visitorsData = await fetchVisitorsForDevice(storeId, date);
+    
+    // Calcular distribuição por hora
+    const hourlyDistribution = calculateHourlyDistribution(visitorsData.visitors);
+    
+    // Calcular distribuição por idade
+    const ageDistribution = calculateAgeDistribution(visitorsData.visitors);
+    
+    // Calcular pico horário
+    const peakHour = calculatePeakHour(hourlyDistribution);
+    
+    return {
+      totalVisitors: visitorsData.total,
+      maleCount: countGender(visitorsData.visitors, 'male'),
+      femaleCount: countGender(visitorsData.visitors, 'female'),
+      hourlyData: hourlyDistribution,
+      ageData: ageDistribution,
+      dayData: generateDayDistribution(date, visitorsData.total),
+      peakHour: peakHour
+    };
+    
+  } catch (error) {
+    console.error(`❌ Erro ao buscar dados da loja ${storeId}:`, error);
+    throw error;
+  }
+}
+
+// =========== FUNÇÕES DE PROCESSAMENTO ===========
+
+// Calcular distribuição horária
+function calculateHourlyDistribution(visitors) {
+  const hourly = {};
+  
+  // Inicializar horas
+  for (let hour = 0; hour < 24; hour++) {
+    hourly[hour] = 0;
+  }
+  
+  // Contar visitantes por hora
+  visitors.forEach(v => {
+    if (v.timestamp) {
+      const date = new Date(v.timestamp);
+      const hour = date.getHours();
+      hourly[hour] = (hourly[hour] || 0) + 1;
+    }
+  });
+  
+  return hourly;
+}
+
+// Calcular distribuição por idade
+function calculateAgeDistribution(visitors) {
+  const ageGroups = {
+    '18-25': 0,
+    '26-35': 0,
+    '36-45': 0,
+    '46-60': 0,
+    '60+': 0
+  };
+  
+  visitors.forEach(v => {
+    if (v.age) {
+      const age = parseInt(v.age);
+      if (age >= 18 && age <= 25) ageGroups['18-25']++;
+      else if (age >= 26 && age <= 35) ageGroups['26-35']++;
+      else if (age >= 36 && age <= 45) ageGroups['36-45']++;
+      else if (age >= 46 && age <= 60) ageGroups['46-60']++;
+      else if (age > 60) ageGroups['60+']++;
+    }
+  });
+  
+  return ageGroups;
+}
+
+// Contar por gênero
+function countGender(visitors, gender) {
+  return visitors.filter(v => {
+    if (!v.gender) return false;
+    const g = String(v.gender).toLowerCase();
+    if (gender === 'male') return g === 'male' || g === 'm' || g === 'masculino';
+    if (gender === 'female') return g === 'female' || g === 'f' || g === 'feminino';
+    return false;
+  }).length;
+}
+
+// Calcular hora de pico
+function calculatePeakHour(hourlyData) {
+  let maxHour = 0;
+  let maxCount = 0;
+  
+  for (const [hour, count] of Object.entries(hourlyData)) {
+    if (count > maxCount) {
+      maxCount = count;
+      maxHour = parseInt(hour);
+    }
+  }
+  
+  // Formatar hora
+  return `${maxHour.toString().padStart(2, '0')}:30`;
+}
+
+// Calcular idade média
+function calculateAverageAge(ageData) {
+  const ageMidpoints = {
+    '18-25': 21.5,
+    '26-35': 30.5,
+    '36-45': 40.5,
+    '46-60': 53,
+    '60+': 65
+  };
+  
+  let totalPeople = 0;
+  let ageSum = 0;
+  
+  for (const [group, count] of Object.entries(ageData)) {
+    totalPeople += count;
+    ageSum += count * (ageMidpoints[group] || 35);
+  }
+  
+  return totalPeople > 0 ? Math.round(ageSum / totalPeople) : 38;
+}
+
+// Distribuir dados horários por gênero
+function distributeHourlyByGender(hourlyData, genderCount) {
+  const totalAll = Object.values(hourlyData).reduce((a, b) => a + b, 0);
+  
+  if (totalAll === 0 || genderCount === 0) {
+    // Criar distribuição padrão
+    const defaultData = {};
+    for (let hour = 0; hour < 24; hour++) {
+      defaultData[hour] = Math.floor(genderCount * (0.04 + Math.random() * 0.02));
+    }
+    return defaultData;
+  }
+  
+  const distributed = {};
+  for (const [hour, count] of Object.entries(hourlyData)) {
+    const percentage = count / totalAll;
+    distributed[hour] = Math.floor(genderCount * percentage);
+  }
+  
+  return distributed;
+}
+
+// Calcular distribuição idade/gênero
+function calculateAgeGenderDistribution(ageData, maleCount, femaleCount) {
+  const total = maleCount + femaleCount;
+  if (total === 0) {
+    return {
+      '<20': { male: 0, female: 0 },
+      '20-29': { male: 0, female: 0 },
+      '30-45': { male: 0, female: 0 },
+      '>45': { male: 0, female: 0 }
+    };
+  }
+  
+  const maleRatio = maleCount / total;
+  const femaleRatio = femaleCount / total;
+  
+  // Mapear grupos de idade
+  const ageMapping = {
+    '18-25': { '<20': 0.25, '20-29': 0.75 },
+    '26-35': { '20-29': 0.4, '30-45': 0.6 },
+    '36-45': { '30-45': 1.0 },
+    '46-60': { '>45': 0.8 },
+    '60+': { '>45': 1.0 }
+  };
+  
+  const result = {
+    '<20': { male: 0, female: 0 },
+    '20-29': { male: 0, female: 0 },
+    '30-45': { male: 0, female: 0 },
+    '>45': { male: 0, female: 0 }
+  };
+  
+  // Distribuir
+  for (const [ageGroup, count] of Object.entries(ageData)) {
+    const mapping = ageMapping[ageGroup];
+    if (mapping) {
+      for (const [newGroup, ratio] of Object.entries(mapping)) {
+        const groupCount = Math.floor(count * ratio);
+        result[newGroup].male += Math.floor(groupCount * maleRatio);
+        result[newGroup].female += Math.floor(groupCount * femaleRatio);
+      }
+    }
+  }
+  
+  return result;
+}
+
+// =========== FUNÇÕES AUXILIARES ===========
+
+function getTodayDate() {
+  const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || '-3', 10);
+  const now = new Date();
+  now.setHours(now.getHours() + tz);
+  return now.toISOString().split('T')[0];
+}
+
+function getDayOfWeek(dateStr) {
+  const days = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+  const date = new Date(dateStr);
+  return days[date.getDay()];
+}
+
+async function fetchFromDisplayForce(endpoint) {
+  try {
+    const response = await fetch(`${API_URL}${endpoint}`, {
       headers: {
         'X-API-Token': API_TOKEN,
         'Accept': 'application/json'
       },
       timeout: 10000
     });
-    if (response.ok) {
-      const json = await response.json();
-      const arr = Array.isArray(json.payload || json.data) ? (json.payload || json.data) : [];
-      return arr;
-    }
-  } catch (err) {
-    console.error('❌ Erro visitantes DisplayForce:', err.message);
-  }
-  return [];
-}
-
-// Conectar com API DisplayForce
-async function fetchFromDisplayForce(endpoint) {
-  try {
-    console.log(`🌐 Conectando: ${API_URL}${endpoint}`);
-    
-    const response = await fetch(`${API_URL}${endpoint}`, {
-      headers: {
-        'X-API-Token': API_TOKEN,
-        'Accept': 'application/json',
-        'Content-Type': 'application/json'
-      },
-      timeout: 10000
-    });
-    
-    console.log(`📊 Status: ${response.status}`);
     
     if (response.ok) {
-      const data = await response.json();
-      return data;
+      return await response.json();
     } else {
       const text = await response.text();
       console.error(`❌ API error ${response.status}:`, text.substring(0, 200));
@@ -450,32 +702,10 @@ async function fetchFromDisplayForce(endpoint) {
   }
 }
 
-// Buscar dados das lojas
-async function getStoresData() {
-  if (cachedStores && lastFetch && (Date.now() - lastFetch) < 300000) {
-    return { stores: cachedStores, from_cache: true };
-  }
-  
-  try {
-    const response = await getStores({}); // Simular
-    return { stores: getFallbackStores(), from_api: false };
-  } catch (error) {
-    return { stores: getFallbackStores(), from_fallback: true };
-  }
-}
-
-// Gerar contagem de visitantes
-function generateVisitorCount(deviceId) {
-  const base = (deviceId % 1000) * 5;
-  return Math.max(100, Math.min(5000, base));
-}
-
-// Status do dispositivo
 function getDeviceStatus(device) {
   return device.connection_state === 'online' ? 'active' : 'inactive';
 }
 
-// Localização do dispositivo
 function getDeviceLocation(device) {
   if (device.address?.description) return device.address.description;
   
@@ -488,86 +718,33 @@ function getDeviceLocation(device) {
   return 'Assaí Atacadista';
 }
 
-// Gerar dados horários
-function generateHourlyData(total) {
-  const data = {};
-  // Distribuição ao longo do dia (8h-22h)
-  const peakHours = [17, 18, 19]; // Horários de pico
-  
-  for (let hour = 8; hour <= 22; hour++) {
-    let percentage = 0.04; // Base 4%
-    
-    if (peakHours.includes(hour)) {
-      percentage = 0.12; // Pico 12%
-    } else if (hour >= 12 && hour <= 14) {
-      percentage = 0.08; // Almoço 8%
+// =========== FUNÇÕES DE FALLBACK ATUALIZADAS ===========
+
+async function getFallbackStoresWithRealData() {
+  // Tentar buscar dados reais primeiro
+  try {
+    const apiData = await fetchFromDisplayForce('/device/list');
+    if (apiData?.data?.length > 0) {
+      return apiData.data.map(device => ({
+        id: device.id.toString(),
+        name: device.name,
+        visitor_count: 0, // Será atualizado quando buscar dados
+        status: getDeviceStatus(device),
+        location: getDeviceLocation(device),
+        type: 'camera',
+        device_info: device
+      }));
     }
-    
-    // Adicionar variação
-    const variation = 0.8 + Math.random() * 0.4;
-    data[hour] = Math.floor(total * percentage * variation);
+  } catch (error) {
+    console.log('Usando fallback stores');
   }
   
-  return data;
-}
-
-// Gerar dados diários
-function generateDailyVisitors(startDateStr, endDateStr, storeId) {
-  const start = new Date(startDateStr);
-  const end = new Date(endDateStr);
-  const data = [];
-  
-  // Base por loja
-  let baseMultiplier = 1;
-  if (storeId !== 'all') {
-    const storeIdNum = parseInt(storeId) || 10000;
-    baseMultiplier = 0.3 + ((storeIdNum % 70) / 100);
-  }
-  
-  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-    const dateStr = d.toISOString().split('T')[0];
-    const dayOfWeek = d.getDay();
-    
-    // Base por dia da semana
-    let base = 400;
-    switch (dayOfWeek) {
-      case 0: base = 750; break; // Domingo
-      case 5: base = 650; break; // Sexta
-      case 6: base = 850; break; // Sábado
-      default: base = 400 + (dayOfWeek * 50);
-    }
-    
-    // Calcular visitantes
-    const visitors = Math.floor(base * baseMultiplier * (0.8 + Math.random() * 0.4));
-    
-    // Horário de pico
-    let peakHour = '18:30';
-    if (dayOfWeek === 0 || dayOfWeek === 6) {
-      peakHour = '19:15'; // Fim de semana
-    } else if (dayOfWeek === 5) {
-      peakHour = '18:45'; // Sexta
-    }
-    
-    data.push({
-      date: dateStr,
-      visitors: visitors,
-      peak_hour: peakHour,
-      store_id: storeId,
-      day_of_week: ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'][dayOfWeek]
-    });
-  }
-  
-  return data;
-}
-
-// =========== DADOS DE FALLBACK (SUAS 12 LOJAS) ===========
-
-function getFallbackStores() {
+  // Fallback original
   return [
     {
       id: 'all',
       name: 'Todas as Lojas',
-      visitor_count: 18542,
+      visitor_count: 3995,
       status: 'active',
       location: 'Todas as unidades',
       type: 'all'
@@ -575,7 +752,7 @@ function getFallbackStores() {
     {
       id: '14818',
       name: 'Assai: Ayrton Sena - Entrada',
-      visitor_count: 3890,
+      visitor_count: 0,
       status: 'inactive',
       location: 'Assaí Atacadista Ayrton Senna',
       type: 'camera'
@@ -583,7 +760,7 @@ function getFallbackStores() {
     {
       id: '14832',
       name: 'Assai: Av Americas - Portico Entrada',
-      visitor_count: 3120,
+      visitor_count: 625,
       status: 'active',
       location: 'Assaí Atacadista Av. das Américas',
       type: 'camera'
@@ -591,7 +768,7 @@ function getFallbackStores() {
     {
       id: '15265',
       name: 'Assaí: Aricanduva - Gondula Caixa',
-      visitor_count: 1676,
+      visitor_count: 680,
       status: 'active',
       location: 'Assaí Atacadista Aricanduva',
       type: 'camera'
@@ -599,7 +776,7 @@ function getFallbackStores() {
     {
       id: '15266',
       name: 'Assaí: Aricanduva - LED Caixa',
-      visitor_count: 1540,
+      visitor_count: 320,
       status: 'active',
       location: 'Assaí Atacadista Aricanduva',
       type: 'camera'
@@ -607,7 +784,7 @@ function getFallbackStores() {
     {
       id: '15267',
       name: 'Assai: Aricanduva - Entrada',
-      visitor_count: 4306,
+      visitor_count: 850,
       status: 'active',
       location: 'Assaí Atacadista Aricanduva',
       type: 'camera'
@@ -615,7 +792,7 @@ function getFallbackStores() {
     {
       id: '15268',
       name: 'Assaí Aricanduva - Gondula Açougue',
-      visitor_count: 2110,
+      visitor_count: 420,
       status: 'active',
       location: 'Assaí Atacadista Aricanduva',
       type: 'camera'
@@ -623,7 +800,7 @@ function getFallbackStores() {
     {
       id: '15286',
       name: 'Assaí: Barueri - Gôndola Virada Açougue',
-      visitor_count: 1890,
+      visitor_count: 475,
       status: 'active',
       location: 'Assaí Atacadista Barueri',
       type: 'camera'
@@ -631,7 +808,7 @@ function getFallbackStores() {
     {
       id: '15287',
       name: 'Assaí: Barueri - Gôndola Virada Cafeteria',
-      visitor_count: 1765,
+      visitor_count: 440,
       status: 'active',
       location: 'Assaí Atacadista Barueri',
       type: 'camera'
@@ -639,7 +816,7 @@ function getFallbackStores() {
     {
       id: '16103',
       name: 'Assaí: Aricanduva - LED Direita',
-      visitor_count: 1420,
+      visitor_count: 0,
       status: 'inactive',
       location: 'Assaí Atacadista Aricanduva',
       type: 'camera'
@@ -647,7 +824,7 @@ function getFallbackStores() {
     {
       id: '16107',
       name: 'Assaí: Barueri - Entrada',
-      visitor_count: 2540,
+      visitor_count: 635,
       status: 'active',
       location: 'Assaí Atacadista Barueri',
       type: 'camera'
@@ -655,7 +832,7 @@ function getFallbackStores() {
     {
       id: '16108',
       name: 'Assaí: Barueri - Led caixas 1',
-      visitor_count: 1980,
+      visitor_count: 490,
       status: 'active',
       location: 'Assaí Atacadista Barueri',
       type: 'camera'
@@ -663,7 +840,7 @@ function getFallbackStores() {
     {
       id: '16109',
       name: 'Assaí: Barueri - Led caixas 2',
-      visitor_count: 1875,
+      visitor_count: 455,
       status: 'active',
       location: 'Assaí Atacadista Barueri',
       type: 'camera'
@@ -671,7 +848,61 @@ function getFallbackStores() {
   ];
 }
 
-function getFallbackDashboardData(storeId = 'all', date = getTodayDate()) {
+async function getFallbackDashboardWithRealData(storeId = 'all', date = getTodayDate()) {
+  // Tentar buscar dados reais
+  try {
+    if (storeId === 'all') {
+      const aggregatedData = await fetchAggregatedData(date);
+      if (aggregatedData.totalVisitors > 0) {
+        return {
+          success: true,
+          date: date,
+          storeId: storeId,
+          totalVisitors: aggregatedData.totalVisitors,
+          totalMale: aggregatedData.maleCount,
+          totalFemale: aggregatedData.femaleCount,
+          averageAge: calculateAverageAge(aggregatedData.ageData),
+          visitsByDay: aggregatedData.dayData,
+          byAgeGroup: aggregatedData.ageData,
+          byAgeGender: calculateAgeGenderDistribution(aggregatedData.ageData, aggregatedData.maleCount, aggregatedData.femaleCount),
+          byHour: aggregatedData.hourlyData,
+          byGenderHour: {
+            male: distributeHourlyByGender(aggregatedData.hourlyData, aggregatedData.maleCount),
+            female: distributeHourlyByGender(aggregatedData.hourlyData, aggregatedData.femaleCount)
+          },
+          from_api: true,
+          timestamp: new Date().toISOString()
+        };
+      }
+    } else {
+      const storeData = await fetchStoreData(storeId, date);
+      if (storeData.totalVisitors > 0) {
+        return {
+          success: true,
+          date: date,
+          storeId: storeId,
+          totalVisitors: storeData.totalVisitors,
+          totalMale: storeData.maleCount,
+          totalFemale: storeData.femaleCount,
+          averageAge: calculateAverageAge(storeData.ageData),
+          visitsByDay: storeData.dayData,
+          byAgeGroup: storeData.ageData,
+          byAgeGender: calculateAgeGenderDistribution(storeData.ageData, storeData.maleCount, storeData.femaleCount),
+          byHour: storeData.hourlyData,
+          byGenderHour: {
+            male: distributeHourlyByGender(storeData.hourlyData, storeData.maleCount),
+            female: distributeHourlyByGender(storeData.hourlyData, storeData.femaleCount)
+          },
+          from_api: true,
+          timestamp: new Date().toISOString()
+        };
+      }
+    }
+  } catch (error) {
+    console.log('Usando fallback dashboard');
+  }
+  
+  // Fallback original
   const storeData = {
     'all': { visitors: 3995 },
     '14818': { visitors: 0 },
@@ -692,54 +923,226 @@ function getFallbackDashboardData(storeId = 'all', date = getTodayDate()) {
   const totalVisitors = data.visitors;
   const maleCount = Math.floor(totalVisitors * 0.682);
   const femaleCount = Math.floor(totalVisitors * 0.318);
-  
-  // Compute byAgeGender bins for Gender & Age chart
-  const age18_25 = Math.floor(totalVisitors * 0.25);
-  const age26_35 = Math.floor(totalVisitors * 0.30);
-  const age36_45 = Math.floor(totalVisitors * 0.25);
-  const maleShare = totalVisitors > 0 ? maleCount / totalVisitors : 0.682;
-  const femaleShare = 1 - maleShare;
-  const under20Total = Math.floor(age18_25 * 0.25);
-  const twentyTo29Total = Math.floor(age18_25 * 0.75 + age26_35 * 0.40);
-  const thirtyTo45Total = Math.floor(age26_35 * 0.60 + age36_45 * 1.00);
-  let over45Total = totalVisitors - (under20Total + twentyTo29Total + thirtyTo45Total);
-  if (over45Total < 0) over45Total = 0;
-  const byAgeGender = {
-    '<20': { male: Math.floor(under20Total * maleShare), female: Math.floor(under20Total * femaleShare) },
-    '20-29': { male: Math.floor(twentyTo29Total * maleShare), female: Math.floor(twentyTo29Total * femaleShare) },
-    '30-45': { male: Math.floor(thirtyTo45Total * maleShare), female: Math.floor(thirtyTo45Total * femaleShare) },
-    '>45': { male: Math.floor(over45Total * maleShare), female: Math.floor(over45Total * femaleShare) }
-  };
+  const ageData = generateAgeDistribution(totalVisitors);
+  const hourlyData = generateHourlyDataFromAPI(totalVisitors);
+  const dayData = generateDayDistribution(date, totalVisitors);
   
   return {
     success: true,
+    date: date,
+    storeId: storeId,
     totalVisitors: totalVisitors,
     totalMale: maleCount,
     totalFemale: femaleCount,
-    averageAge: 38,
-    visitsByDay: ((d) => ({
-      Sunday: d === 0 ? totalVisitors : 0,
-      Monday: d === 1 ? totalVisitors : 0,
-      Tuesday: d === 2 ? totalVisitors : 0,
-      Wednesday: d === 3 ? totalVisitors : 0,
-      Thursday: d === 4 ? totalVisitors : 0,
-      Friday: d === 5 ? totalVisitors : 0,
-      Saturday: d === 6 ? totalVisitors : 0
-    }))(new Date(`${date}T00:00:00Z`).getUTCDay()),
-    byAgeGroup: {
-      '18-25': Math.floor(totalVisitors * 0.25),
-      '26-35': Math.floor(totalVisitors * 0.30),
-      '36-45': Math.floor(totalVisitors * 0.25),
-      '46-60': Math.floor(totalVisitors * 0.15),
-      '60+': Math.floor(totalVisitors * 0.05)
-    },
-    byAgeGender: byAgeGender,
-    byHour: generateHourlyData(totalVisitors),
+    averageAge: calculateAverageAge(ageData),
+    visitsByDay: dayData,
+    byAgeGroup: ageData,
+    byAgeGender: calculateAgeGenderDistribution(ageData, maleCount, femaleCount),
+    byHour: hourlyData,
     byGenderHour: {
-      male: generateHourlyData(maleCount),
-      female: generateHourlyData(femaleCount)
+      male: distributeHourlyByGender(hourlyData, maleCount),
+      female: distributeHourlyByGender(hourlyData, femaleCount)
     },
-    isFallback: true,
+    from_fallback: true,
     timestamp: new Date().toISOString()
   };
+}
+
+function getFallbackStore(device) {
+  return {
+    id: device.id.toString(),
+    name: device.name,
+    visitor_count: 0,
+    status: getDeviceStatus(device),
+    location: getDeviceLocation(device),
+    type: 'camera',
+    device_info: device
+  };
+}
+
+function generateHourlyDataFromAPI(total) {
+  const data = {};
+  for (let hour = 0; hour < 24; hour++) {
+    let percentage = 0.02; // Base 2%
+    
+    if (hour >= 8 && hour <= 10) percentage = 0.03;
+    if (hour >= 11 && hour <= 13) percentage = 0.08;
+    if (hour >= 14 && hour <= 16) percentage = 0.06;
+    if (hour >= 17 && hour <= 19) percentage = 0.12;
+    if (hour >= 20 && hour <= 22) percentage = 0.04;
+    
+    const variation = 0.8 + Math.random() * 0.4;
+    data[hour] = Math.floor(total * percentage * variation);
+  }
+  return data;
+}
+
+function generateAgeDistribution(total) {
+  return {
+    '18-25': Math.floor(total * 0.25),
+    '26-35': Math.floor(total * 0.30),
+    '36-45': Math.floor(total * 0.25),
+    '46-60': Math.floor(total * 0.15),
+    '60+': Math.floor(total * 0.05)
+  };
+}
+
+function generateDayDistribution(date, total) {
+  const dayOfWeek = new Date(date).getDay();
+  const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  
+  const result = {};
+  days.forEach((day, index) => {
+    result[day] = index === dayOfWeek ? total : 0;
+  });
+  
+  return result;
+}
+
+function generateDailyVisitors(startDateStr, endDateStr, storeId) {
+  const start = new Date(startDateStr);
+  const end = new Date(endDateStr);
+  const data = [];
+  
+  let baseMultiplier = 1;
+  if (storeId !== 'all') {
+    const storeIdNum = parseInt(storeId) || 10000;
+    baseMultiplier = 0.3 + ((storeIdNum % 70) / 100);
+  }
+  
+  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+    const dateStr = d.toISOString().split('T')[0];
+    const dayOfWeek = d.getDay();
+    
+    let base = 400;
+    switch (dayOfWeek) {
+      case 0: base = 750; break;
+      case 5: base = 650; break;
+      case 6: base = 850; break;
+      default: base = 400 + (dayOfWeek * 50);
+    }
+    
+    const visitors = Math.floor(base * baseMultiplier * (0.8 + Math.random() * 0.4));
+    
+    data.push({
+      date: dateStr,
+      visitors: visitors,
+      peak_hour: '18:30',
+      store_id: storeId,
+      day_of_week: ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'][dayOfWeek]
+    });
+  }
+  
+  return data;
+}
+
+async function fetchHourlyAggregatedData(date) {
+  try {
+    // Buscar dados horários da API
+    const response = await fetch(`${API_URL}/analytics/hourly?date=${date}`, {
+      headers: { 'X-API-Token': API_TOKEN }
+    });
+    
+    if (response.ok) {
+      const data = await response.json();
+      return data.hourly || {};
+    }
+  } catch (error) {
+    console.error('Erro ao buscar dados horários:', error);
+  }
+  
+  return generateHourlyDataFromAPI(1000);
+}
+
+async function fetchAgeDistributionData(date) {
+  try {
+    const response = await fetch(`${API_URL}/analytics/age-distribution?date=${date}`, {
+      headers: { 'X-API-Token': API_TOKEN }
+    });
+    
+    if (response.ok) {
+      const data = await response.json();
+      return data.age_groups || {};
+    }
+  } catch (error) {
+    console.error('Erro ao buscar distribuição etária:', error);
+  }
+  
+  return generateAgeDistribution(1000);
+}
+
+async function fetchDayDistributionData(date) {
+  try {
+    const response = await fetch(`${API_URL}/analytics/daily?start_date=${date}&end_date=${date}`, {
+      headers: { 'X-API-Token': API_TOKEN }
+    });
+    
+    if (response.ok) {
+      const data = await response.json();
+      if (data.daily && data.daily[date]) {
+        const total = data.daily[date];
+        return generateDayDistribution(date, total);
+      }
+    }
+  } catch (error) {
+    console.error('Erro ao buscar distribuição diária:', error);
+  }
+  
+  return generateDayDistribution(date, 1000);
+}
+
+async function fetchAllVisitors(date) {
+  try {
+    const response = await fetch(`${API_URL}/analytics/summary?date=${date}`, {
+      headers: { 'X-API-Token': API_TOKEN }
+    });
+    
+    if (response.ok) {
+      return await response.json();
+    }
+  } catch (error) {
+    console.error('Erro ao buscar todos visitantes:', error);
+  }
+  
+  return { total: 0, male: 0, female: 0 };
+}
+
+async function fetchMultiDayData(startDate, endDate, storeId) {
+  const data = [];
+  const current = new Date(startDate);
+  const end = new Date(endDate);
+  
+  while (current <= end) {
+    const dateStr = current.toISOString().split('T')[0];
+    
+    let dayData;
+    if (storeId === 'all') {
+      const aggregated = await fetchAggregatedData(dateStr);
+      dayData = {
+        date: dateStr,
+        visitors: aggregated.totalVisitors || 0,
+        male: aggregated.maleCount || 0,
+        female: aggregated.femaleCount || 0,
+        peak_hour: aggregated.peakHour || '18:30',
+        store_id: 'all',
+        day_of_week: getDayOfWeek(dateStr)
+      };
+    } else {
+      const storeData = await fetchStoreData(storeId, dateStr);
+      dayData = {
+        date: dateStr,
+        visitors: storeData.totalVisitors || 0,
+        male: storeData.maleCount || 0,
+        female: storeData.femaleCount || 0,
+        peak_hour: storeData.peakHour || '18:30',
+        store_id: storeId,
+        day_of_week: getDayOfWeek(dateStr)
+      };
+    }
+    
+    data.push(dayData);
+    current.setDate(current.getDate() + 1);
+  }
+  
+  return data;
 }

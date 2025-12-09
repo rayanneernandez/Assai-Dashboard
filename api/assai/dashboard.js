@@ -44,6 +44,12 @@ export default async function handler(req, res) {
         if (effStart !== effEnd) {
           return await getDashboardDataRange(res, store, effStart, effEnd);
         }
+        try {
+          const today = getTodayDate();
+          if (effStart === today && effEnd === today) {
+            await refreshData({ status: () => ({ json: () => ({}) }) }, effStart, effEnd, store);
+          }
+        } catch {}
         return await getDashboardData(res, store, effStart);
         
       case 'visitors': {
@@ -237,20 +243,30 @@ async function getDashboardData(res, storeId = 'all', date = getTodayDate()) {
     for (const h of hrs.rows) { byHour[h.hour] = Number(h.total||0); byGenderHour.male[h.hour] = Number(h.male||0); byGenderHour.female[h.hour] = Number(h.female||0); }
     const wk = { Sunday:0, Monday:0, Tuesday:0, Wednesday:0, Thursday:0, Friday:0, Saturday:0 };
     try { const d = new Date(date+'T00:00:00Z'); const idx = d.getUTCDay(); const keys = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday']; wk[keys[idx]] = Number(row.total_visitors||0); } catch {}
-    const ageBins = { '<20':{male:0,female:0}, '20-29':{male:0,female:0}, '30-45':{male:0,female:0}, '>45':{male:0,female:0} };
-    const vq = sid==='all' ? await pool.query('SELECT gender, age FROM public.visitors WHERE day=$1', [date]) : await pool.query('SELECT gender, age FROM public.visitors WHERE day=$1 AND store_id=$2', [date, sid]);
-    for (const v of vq.rows) { const g = (String(v.gender).toUpperCase()==='M'?'male':'female'); const age = Number(v.age||0); if (age>0){ if (age<20) ageBins['<20'][g]++; else if (age<=29) ageBins['20-29'][g]++; else if (age<=45) ageBins['30-45'][g]++; else ageBins['>45'][g]++; } }
+    const male = Number(row.male||0);
+    const female = Number(row.female||0);
+    const totalMF = male + female;
+    const maleRatio = totalMF>0 ? male/totalMF : 0;
+    const grp = { '18-25': Number(row.age_18_25||0), '26-35': Number(row.age_26_35||0), '36-45': Number(row.age_36_45||0), '46-60': Number(row.age_46_60||0), '60+': Number(row.age_60_plus||0) };
+    const bins = { '<20':{male:0,female:0}, '20-29':{male:0,female:0}, '30-45':{male:0,female:0}, '>45':{male:0,female:0} };
+    const bin20_29 = grp['18-25'] + Math.round(grp['26-35']/2);
+    const bin30_45 = Math.round(grp['26-35']/2) + grp['36-45'];
+    const binOver45 = grp['46-60'] + grp['60+'];
+    const alloc = (count) => { const m = Math.round(count * maleRatio); return { male: m, female: count - m }; };
+    bins['20-29'] = alloc(bin20_29);
+    bins['30-45'] = alloc(bin30_45);
+    bins['>45'] = alloc(binOver45);
     const resp = {
       success: true,
       date,
       storeId: sid,
       totalVisitors: Number(row.total_visitors||0),
-      totalMale: Number(row.male||0),
-      totalFemale: Number(row.female||0),
+      totalMale: male,
+      totalFemale: female,
       averageAge: Number(row.avg_age_count||0)>0 ? Math.round(Number(row.avg_age_sum||0)/Number(row.avg_age_count||0)) : 0,
       visitsByDay: wk,
-      byAgeGroup: { '18-25': Number(row.age_18_25||0), '26-35': Number(row.age_26_35||0), '36-45': Number(row.age_36_45||0), '46-60': Number(row.age_46_60||0), '60+': Number(row.age_60_plus||0) },
-      byAgeGender: ageBins,
+      byAgeGroup: grp,
+      byAgeGender: bins,
       byHour,
       byGenderHour,
       isFallback: false,

@@ -483,12 +483,12 @@ async function getHourlyAggregatesWithRealTime(start_date, end_date, store_id) {
     
     let query = `
       SELECT 
-        EXTRACT(HOUR FROM timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') as hour,
-        COUNT(*) as total,
-        SUM(CASE WHEN gender = 'M' THEN 1 ELSE 0 END) as male,
-        SUM(CASE WHEN gender = 'F' THEN 1 ELSE 0 END) as female
+        COALESCE(hour, EXTRACT(HOUR FROM timestamp)) AS hour,
+        COUNT(*) AS total,
+        SUM(CASE WHEN gender = 'M' THEN 1 ELSE 0 END) AS male,
+        SUM(CASE WHEN gender = 'F' THEN 1 ELSE 0 END) AS female
       FROM visitors
-      WHERE timestamp::date >= $1::date AND timestamp::date <= $2::date
+      WHERE day >= $1 AND day <= $2
     `;
     
     const params = [start_date, end_date];
@@ -1251,28 +1251,25 @@ async function fetchVisitorsFromDisplayForce(start_date, end_date, device_id = n
       allVisitors.push(...visitors);
       totalProcessed += visitors.length;
       
-      console.log(`📊 Lote ${Math.floor(offset/LIMIT) + 1}: ${visitors.length} visitantes, Total: ${totalProcessed}`);
+      const pageLimit = Number((data.pagination && data.pagination.limit) ?? LIMIT);
+      console.log(`📊 Lote ${Math.floor(offset/pageLimit) + 1}: ${visitors.length} visitantes, Total: ${totalProcessed}`);
       
-      // Verifica paginação
-      if (data.pagination) {
-        const totalFromAPI = data.pagination.total || 0;
+      if (data.pagination && data.pagination.total) {
+        const totalFromAPI = Number(data.pagination.total || 0);
         console.log(`📊 Total na API: ${totalFromAPI}, Obtidos: ${totalProcessed}`);
-        
         if (totalProcessed >= totalFromAPI) {
           console.log(`✅ Todos os ${totalFromAPI} visitantes obtidos`);
           break;
         }
       }
       
-      // Se não há mais dados
-      if (visitors.length < LIMIT) {
+      if (visitors.length < pageLimit) {
         console.log(`✅ Último lote obtido (${visitors.length} visitantes)`);
         break;
       }
       
-      offset += LIMIT;
+      offset += pageLimit;
       
-      // Pequena pausa
       await new Promise(resolve => setTimeout(resolve, 100));
     }
     

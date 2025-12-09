@@ -336,6 +336,13 @@ if (store_id && store_id !== "all") {
     if (store_id && store_id !== 'all') { sumQ += ` AND store_id = ${si}`; sumParams.push(store_id); si++; }
     const sumRes = await pool.query(sumQ, sumParams);
     let row = sumRes.rows[0] || {};
+    if ((Number(row.total_visitors || 0) === 0) && start_date && end_date && start_date === end_date) {
+      try {
+        await refreshData({ status: () => ({ json: () => ({}) }) }, start_date, end_date, store_id || 'all');
+        const sumRes2 = await pool.query(sumQ, sumParams);
+        row = sumRes2.rows[0] || row;
+      } catch {}
+    }
 
     const avgCount = Number(row.avg_age_count || 0);
     const averageAge =

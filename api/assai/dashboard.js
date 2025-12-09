@@ -296,14 +296,25 @@ async function getDashboardData(res, storeId = 'all', date = getTodayDate()) {
     const totalMF = male + female;
     const maleRatio = totalMF>0 ? male/totalMF : 0;
     const grp = { '18-25': Number(row.age_18_25||0), '26-35': Number(row.age_26_35||0), '36-45': Number(row.age_36_45||0), '46-60': Number(row.age_46_60||0), '60+': Number(row.age_60_plus||0) };
-    const bins = { '<20':{male:0,female:0}, '20-29':{male:0,female:0}, '30-45':{male:0,female:0}, '>45':{male:0,female:0} };
-    const bin20_29 = grp['18-25'] + Math.round(grp['26-35']/2);
-    const bin30_45 = Math.round(grp['26-35']/2) + grp['36-45'];
+    const binsApprox = { '<20':{male:0,female:0}, '20-29':{male:0,female:0}, '30-45':{male:0,female:0}, '>45':{male:0,female:0} };
+    const under20 = Math.round(grp['18-25'] * 0.25);
+    const bin20_29 = Math.round(grp['18-25'] * 0.75) + Math.round(grp['26-35'] * 0.4);
+    const bin30_45 = Math.round(grp['26-35'] * 0.6) + grp['36-45'];
     const binOver45 = grp['46-60'] + grp['60+'];
     const alloc = (count) => { const m = Math.round(count * maleRatio); return { male: m, female: count - m }; };
-    bins['20-29'] = alloc(bin20_29);
-    bins['30-45'] = alloc(bin30_45);
-    bins['>45'] = alloc(binOver45);
+    binsApprox['<20'] = alloc(under20);
+    binsApprox['20-29'] = alloc(bin20_29);
+    binsApprox['30-45'] = alloc(bin30_45);
+    binsApprox['>45'] = alloc(binOver45);
+    let binsUsed = binsApprox;
+    let avgFromVisitors = 0; let avgCountVisitors = 0;
+    try {
+      const vq = sid==='all' ? await pool.query('SELECT gender, age FROM public.visitors WHERE day=$1', [date]) : await pool.query('SELECT gender, age FROM public.visitors WHERE day=$1 AND store_id=$2', [date, sid]);
+      const direct = { '<20':{male:0,female:0}, '20-29':{male:0,female:0}, '30-45':{male:0,female:0}, '>45':{male:0,female:0} };
+      for (const v of vq.rows || []) { const g = (String(v.gender).toUpperCase()==='M'?'male':'female'); const age = Number(v.age||0); if (age>0){ avgFromVisitors += age; avgCountVisitors++; if (age<20) direct['<20'][g]++; else if (age<=29) direct['20-29'][g]++; else if (age<=45) direct['30-45'][g]++; else direct['>45'][g]++; } }
+      const sumDirect = Object.values(direct).reduce((s,x)=>s+x.male+x.female,0);
+      if (sumDirect>0) binsUsed = direct;
+    } catch {}
     const totalAgeN = grp['18-25'] + grp['26-35'] + grp['36-45'] + grp['46-60'] + grp['60+'];
     const avgApprox = totalAgeN>0 ? Math.round((grp['18-25']*22 + grp['26-35']*30 + grp['36-45']*40 + grp['46-60']*53 + grp['60+']*65)/totalAgeN) : 0;
     const resp = {
@@ -313,10 +324,10 @@ async function getDashboardData(res, storeId = 'all', date = getTodayDate()) {
       totalVisitors: Number(row.total_visitors||0),
       totalMale: male,
       totalFemale: female,
-      averageAge: Number(row.avg_age_count||0)>0 ? Math.round(Number(row.avg_age_sum||0)/Number(row.avg_age_count||0)) : avgApprox,
+      averageAge: Number(row.avg_age_count||0)>0 ? Math.round(Number(row.avg_age_sum||0)/Number(row.avg_age_count||0)) : (avgCountVisitors>0 ? Math.round(avgFromVisitors/avgCountVisitors) : avgApprox),
       visitsByDay: wk,
       byAgeGroup: grp,
-      byAgeGender: bins,
+      byAgeGender: binsUsed,
       byHour,
       byGenderHour,
       isFallback: false,
@@ -368,17 +379,21 @@ async function getDashboardDataRange(res, storeId = 'all', startDate = getTodayD
       for (const v of vq.rows || []) { const g = (String(v.gender).toUpperCase()==='M'?'male':'female'); const age = Number(v.age||0); if (age>0){ if (age<20) ageBins['<20'][g]++; else if (age<=29) ageBins['20-29'][g]++; else if (age<=45) ageBins['30-45'][g]++; else ageBins['>45'][g]++; } }
     } catch {}
     const totalMF = male + female; const maleRatio = totalMF>0 ? male/totalMF : 0;
-    const bins = { '<20':{male:0,female:0}, '20-29':{male:0,female:0}, '30-45':{male:0,female:0}, '>45':{male:0,female:0} };
-    const bin20_29 = byAge['18-25'] + Math.round(byAge['26-35']/2);
-    const bin30_45 = Math.round(byAge['26-35']/2) + byAge['36-45'];
+    const binsApprox = { '<20':{male:0,female:0}, '20-29':{male:0,female:0}, '30-45':{male:0,female:0}, '>45':{male:0,female:0} };
+    const under20 = Math.round(byAge['18-25'] * 0.25);
+    const bin20_29 = Math.round(byAge['18-25'] * 0.75) + Math.round(byAge['26-35'] * 0.4);
+    const bin30_45 = Math.round(byAge['26-35'] * 0.6) + byAge['36-45'];
     const binOver45 = byAge['46-60'] + byAge['60+'];
     const alloc = (count) => { const m = Math.round(count * maleRatio); return { male: m, female: count - m }; };
-    bins['20-29'] = alloc(bin20_29);
-    bins['30-45'] = alloc(bin30_45);
-    bins['>45'] = alloc(binOver45);
+    binsApprox['<20'] = alloc(under20);
+    binsApprox['20-29'] = alloc(bin20_29);
+    binsApprox['30-45'] = alloc(bin30_45);
+    binsApprox['>45'] = alloc(binOver45);
+    const sumDirect = Object.values(ageBins).reduce((s,x)=>s + x.male + x.female, 0);
+    const binsUsed = sumDirect>0 ? ageBins : binsApprox;
     const totalAgeN = byAge['18-25'] + byAge['26-35'] + byAge['36-45'] + byAge['46-60'] + byAge['60+'];
     const avgApprox = totalAgeN>0 ? Math.round((byAge['18-25']*22 + byAge['26-35']*30 + byAge['36-45']*40 + byAge['46-60']*53 + byAge['60+']*65)/totalAgeN) : 0;
-    return res.status(200).json({ success: true, startDate, endDate, storeId: sid, totalVisitors: total, totalMale: male, totalFemale: female, averageAge: avgCount>0 ? Math.round(avgSum/avgCount) : avgApprox, visitsByDay: wk, byAgeGroup: byAge, byAgeGender: bins, byHour, byGenderHour, isFallback: false, timestamp: new Date().toISOString() });
+    return res.status(200).json({ success: true, startDate, endDate, storeId: sid, totalVisitors: total, totalMale: male, totalFemale: female, averageAge: avgCount>0 ? Math.round(avgSum/avgCount) : avgApprox, visitsByDay: wk, byAgeGroup: byAge, byAgeGender: binsUsed, byHour, byGenderHour, isFallback: false, timestamp: new Date().toISOString() });
   } catch (e) {
     return res.status(200).json({ success: true, startDate, endDate, storeId, totalVisitors: 0, totalMale: 0, totalFemale: 0, averageAge: 0, visitsByDay: { Sunday:0, Monday:0, Tuesday:0, Wednesday:0, Thursday:0, Friday:0, Saturday:0 }, byAgeGroup: { '18-25':0,'26-35':0,'36-45':0,'46-60':0,'60+':0 }, byAgeGender: { '<20':{male:0,female:0}, '20-29':{male:0,female:0}, '30-45':{male:0,female:0}, '>45':{male:0,female:0} }, byHour: {}, byGenderHour: { male: {}, female: {} }, isFallback: false, error: e.message, timestamp: new Date().toISOString() });
   }

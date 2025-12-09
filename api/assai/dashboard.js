@@ -289,6 +289,25 @@ async function getDashboardData(res, storeId = 'all', date = getTodayDate()) {
     const hrs = await pool.query('SELECT hour, total, male, female FROM public.dashboard_hourly WHERE day=$1 AND store_id=$2', [date, sid]);
     const byHour = {}; const byGenderHour = { male:{}, female:{} };
     for (const h of hrs.rows) { byHour[h.hour] = Number(h.total||0); byGenderHour.male[h.hour] = Number(h.male||0); byGenderHour.female[h.hour] = Number(h.female||0); }
+    const isToday = date === getTodayDate();
+    if (isToday) {
+      try {
+        const payloadLive = await fetchDayAllPages(date, sid==='all' ? undefined : sid);
+        const aLive = aggregateVisitors(payloadLive);
+        const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || '-3', 10);
+        const nowLocal = new Date(Date.now() + tz * 3600000);
+        const currentHour = nowLocal.getHours();
+        for (let h = 0; h <= 23; h++) {
+          const key = String(h);
+          const val = Number(aLive.byHour[h] || 0);
+          byHour[key] = h <= currentHour ? val : 0;
+          const m = Number((aLive.byGenderHour?.male||{})[h] || 0);
+          const f = Number((aLive.byGenderHour?.female||{})[h] || 0);
+          byGenderHour.male[key] = h <= currentHour ? m : 0;
+          byGenderHour.female[key] = h <= currentHour ? f : 0;
+        }
+      } catch {}
+    }
     const wk = { Sunday:0, Monday:0, Tuesday:0, Wednesday:0, Thursday:0, Friday:0, Saturday:0 };
     try { const d = new Date(date+'T00:00:00Z'); const idx = d.getUTCDay(); const keys = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday']; wk[keys[idx]] = Number(row.total_visitors||0); } catch {}
     const male = Number(row.male||0);
@@ -309,9 +328,18 @@ async function getDashboardData(res, storeId = 'all', date = getTodayDate()) {
     let binsUsed = binsApprox;
     let avgFromVisitors = 0; let avgCountVisitors = 0;
     try {
-      const vq = sid==='all' ? await pool.query('SELECT gender, age FROM public.visitors WHERE day=$1', [date]) : await pool.query('SELECT gender, age FROM public.visitors WHERE day=$1 AND store_id=$2', [date, sid]);
+      const payload = await fetchDayAllPages(date, sid==='all' ? undefined : sid);
       const direct = { '<20':{male:0,female:0}, '20-29':{male:0,female:0}, '30-45':{male:0,female:0}, '>45':{male:0,female:0} };
-      for (const v of vq.rows || []) { const g = (String(v.gender).toUpperCase()==='M'?'male':'female'); const age = Number(v.age||0); if (age>0){ avgFromVisitors += age; avgCountVisitors++; if (age<20) direct['<20'][g]++; else if (age<=29) direct['20-29'][g]++; else if (age<=45) direct['30-45'][g]++; else direct['>45'][g]++; } }
+      for (const v of payload || []) {
+        const gRaw = (v.sex ?? v.gender ?? '').toString().toLowerCase();
+        const g = typeof v.sex === 'number' ? (v.sex === 1 ? 'male' : 'female') : (gRaw.startsWith('m') ? 'male' : 'female');
+        const a = v.age ?? v.age_years ?? v.face?.age ?? v.additional_attributes?.age;
+        const age = Number(a || 0);
+        if (age>0) {
+          avgFromVisitors += age; avgCountVisitors++;
+          if (age < 20) direct['<20'][g]++; else if (age <= 29) direct['20-29'][g]++; else if (age <= 45) direct['30-45'][g]++; else direct['>45'][g]++;
+        }
+      }
       const sumDirect = Object.values(direct).reduce((s,x)=>s+x.male+x.female,0);
       if (sumDirect>0) binsUsed = direct;
     } catch {}
@@ -328,6 +356,7 @@ async function getDashboardData(res, storeId = 'all', date = getTodayDate()) {
       visitsByDay: wk,
       byAgeGroup: grp,
       byAgeGender: binsUsed,
+      age_bins_source: avgCountVisitors>0 ? 'api' : 'approx',
       byHour,
       byGenderHour,
       isFallback: false,
@@ -708,9 +737,9 @@ function aggregateVisitors(payload) {
       const base = new Date(ts);
       const local = new Date(base.getTime() + tz * 3600000);
       const map = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
-      const key = map[local.getUTCDay()];
+      const key = map[local.getDay()];
       byWeekday[key] = (byWeekday[key] || 0) + 1;
-      const h = local.getUTCHours();
+      const h = local.getHours();
       byHour[h] = (byHour[h] || 0) + 1;
       if (g === 'm') byGenderHour.male[h] = (byGenderHour.male[h] || 0) + 1; else byGenderHour.female[h] = (byGenderHour.female[h] || 0) + 1;
     }

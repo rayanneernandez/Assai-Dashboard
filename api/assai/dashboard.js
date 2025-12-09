@@ -381,15 +381,13 @@ async function getSummary(req, res, start_date, end_date, store_id) {
     console.log(`📊 Período: ${sDate} até ${eDate}`);
     
     // Se necessário, ingere da DisplayForce primeiro
-    try {
-      const visitors = await fetchVisitorsFromDisplayForce(sDate, eDate, store_id && store_id !== 'all' ? store_id : null);
-      await saveVisitorsToDatabase(visitors);
-      const ds = new Date(sDate); const de = new Date(eDate);
-      for (let d = new Date(ds); d <= de; d.setDate(d.getDate() + 1)) {
-        const dateStr = d.toISOString().split('T')[0];
-        await updateAggregatesForDateAndDevice(dateStr, store_id || 'all');
-      }
-    } catch {}
+    const visitors = await fetchVisitorsFromDisplayForce(sDate, eDate, store_id && store_id !== 'all' ? store_id : null);
+    await saveVisitorsToDatabase(visitors);
+    const ds = new Date(sDate); const de = new Date(eDate);
+    for (let d = new Date(ds); d <= de; d.setDate(d.getDate() + 1)) {
+      const dateStr = d.toISOString().split('T')[0];
+      await updateAggregatesForDateAndDevice(dateStr, store_id || 'all');
+    }
     return await calculateRealTimeSummary(res, sDate, eDate, store_id);
     
   } catch (error) {
@@ -799,6 +797,30 @@ async function saveVisitorsToDatabase(visitors) {
 // ===========================================
 // 7. FUNÇÕES AUXILIARES RESTANTES
 // ===========================================
+function aggregateVisitors(visitors) {
+  const byHour = {}; const byGenderHour = { male:{}, female:{} };
+  const byAgeGroup = { "18-25":0, "26-35":0, "36-45":0, "46-60":0, "60+":0 };
+  const byAgeGender = { "<20":{male:0,female:0}, "20-29":{male:0,female:0}, "30-45":{male:0,female:0}, ">45":{male:0,female:0} };
+  const visitsByDay = { Sunday:0, Monday:0, Tuesday:0, Wednesday:0, Thursday:0, Friday:0, Saturday:0 };
+  let total=0, male=0, female=0, avgAgeSum=0, avgAgeCount=0;
+  const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
+  for (const v of visitors || []) {
+    const ts = String(v.start ?? v.tracks?.[0]?.start ?? v.timestamp ?? new Date().toISOString());
+    const d = new Date(ts); const local = new Date(d.getTime() + (tz*3600000));
+    const h = local.getHours(); const dowEn = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][local.getDay()];
+    byHour[h] = (byHour[h]||0)+1;
+    const gRaw = (v.sex===1?'M':(v.sex===2?'F':String(v.gender||'').toUpperCase().startsWith('M')?'M':'F'));
+    if (gRaw==='M'){ male++; byGenderHour.male[h]=(byGenderHour.male[h]||0)+1; } else { female++; byGenderHour.female[h]=(byGenderHour.female[h]||0)+1; }
+    visitsByDay[dowEn] = (visitsByDay[dowEn]||0)+1; total++;
+    const a = typeof v.age==='number'? v.age : (Array.isArray(v.additional_attributes)? v.additional_attributes.at(-1)?.age : Array.isArray(v.additional_atributes)? v.additional_atributes.at(-1)?.age : 0);
+    const age = Number(a||0); if (age>0){ avgAgeSum+=age; avgAgeCount++; }
+    if (age>=18&&age<=25) byAgeGroup['18-25']++; else if (age>=26&&age<=35) byAgeGroup['26-35']++; else if (age>=36&&age<=45) byAgeGroup['36-45']++; else if (age>=46&&age<=60) byAgeGroup['46-60']++; else if (age>60) byAgeGroup['60+']++;
+    const band = age<20?'<20':(age<=29?'20-29':(age<=45?'30-45':'>45'));
+    (gRaw==='M'? byAgeGender[band].male++ : byAgeGender[band].female++);
+  }
+  const averageAge = avgAgeCount>0 ? Math.round(avgAgeSum/avgAgeCount) : 0;
+  return { total, male, female, averageAge, visitsByDay, byAgeGroup, byAgeGender, byHour, byGenderHour };
+}
 async function getAgeGenderDistribution(start_date, end_date, store_id) {
   try {
     let query = `

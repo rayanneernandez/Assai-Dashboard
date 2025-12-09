@@ -573,19 +573,32 @@ async function calculateRealTimeSummary(res, start_date, end_date, store_id) {
     }
     
     const result = await pool.query(query, params);
-    const row = result.rows[0] || {};
+    let row = result.rows[0] || {};
     
-    const totalRealTime = Number(row.total_visitors || 0);
+    let totalRealTime = Number(row.total_visitors || 0);
     console.log(`🧮 Total em tempo real: ${totalRealTime}`);
     
-    // Calcula idade média
+    if (totalRealTime === 0) {
+      try {
+        const visitors = await fetchVisitorsFromDisplayForce(sDate, eDate, store_id && store_id !== 'all' ? store_id : null);
+        await saveVisitorsToDatabase(visitors);
+        const ds = new Date(sDate);
+        const de = new Date(eDate);
+        for (let d = new Date(ds); d <= de; d.setDate(d.getDate() + 1)) {
+          const dateStr = d.toISOString().split('T')[0];
+          await updateAggregatesForDateAndDevice(dateStr, store_id || 'all');
+        }
+        const re = await pool.query(query, params);
+        row = re.rows[0] || row;
+        totalRealTime = Number(row.total_visitors || 0);
+      } catch {}
+    }
+    
     const avgAgeCount = Number(row.avg_age_count || 0);
     const averageAge = avgAgeCount > 0 ? Math.round(Number(row.avg_age_sum || 0) / avgAgeCount) : 0;
     
-    // Busca dados por hora usando timestamp real
     const hourlyData = await getHourlyAggregatesWithRealTime(sDate, eDate, store_id);
     
-    // Busca distribuição por idade e gênero
     const ageGenderData = await getAgeGenderDistribution(sDate, eDate, store_id);
     
     const response = {
@@ -691,10 +704,9 @@ async function updateHourlyStatsForDate(date, device_id) {
       [date, device_id]
     );
     
-    // Calcula estatísticas por hora usando timestamp real
     let query = `
       SELECT 
-        EXTRACT(HOUR FROM timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') as hour,
+        COALESCE(hour, EXTRACT(HOUR FROM timestamp)) AS hour,
         COUNT(*) AS total,
         SUM(CASE WHEN gender = 'M' THEN 1 ELSE 0 END) AS male,
         SUM(CASE WHEN gender = 'F' THEN 1 ELSE 0 END) AS female
@@ -713,7 +725,6 @@ async function updateHourlyStatsForDate(date, device_id) {
     
     const result = await pool.query(query, params);
     
-    // Insere dados por hora
     for (const row of result.rows) {
       const hour = Number(row.hour);
       if (hour >= 0 && hour < 24) {
@@ -818,7 +829,7 @@ async function saveVisitorsToDatabase(visitors) {
         `INSERT INTO visitors (
           visitor_id, day, store_id, store_name, 
           timestamp, gender, age, day_of_week, smile, hour
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        ) VALUES ($1, $2, $3, (SELECT name FROM stores_catalog WHERE id=$3 LIMIT 1), $4, $5, $6, $7, $8, $9)
         ON CONFLICT (visitor_id, timestamp) 
         DO UPDATE SET
           day = EXCLUDED.day,
@@ -833,8 +844,7 @@ async function saveVisitorsToDatabase(visitors) {
           visitorId,
           dateStr,
           deviceId,
-          `Loja ${deviceId}`,
-          timestamp, // TIMESTAMP REAL da visita
+          timestamp,
           gender,
           age,
           dayOfWeek,
@@ -1036,7 +1046,14 @@ async function getVisitors(req, res, start_date, end_date, store_id) {
     
     query += ` ORDER BY timestamp DESC LIMIT 1000`;
     
-    const result = await pool.query(query, params);
+    let result = await pool.query(query, params);
+    if (result.rows.length === 0 && req.query.source !== 'displayforce') {
+      try {
+        const visitors = await fetchVisitorsFromDisplayForce(start_date || '', end_date || '', store_id && store_id !== 'all' ? store_id : null);
+        await saveVisitorsToDatabase(visitors);
+        result = await pool.query(query, params);
+      } catch {}
+    }
     
     return res.status(200).json({
       success: true,

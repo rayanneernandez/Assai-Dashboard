@@ -474,7 +474,7 @@ async function refreshData(res, startDate = getTodayDate(), endDate = startDate,
       if (storeId === 'all') {
         const api = await fetchFromDisplayForce('/device/list');
         const devices = Array.isArray(api?.data) ? api.data : [];
-        let aggTotal = 0, aggMale = 0, aggFemale = 0; const aggHourly = {}; const aggAge = { '18-25':0,'26-35':0,'36-45':0,'46-60':0,'60+':0 }; const aggWeek = { sunday:0, monday:0, tuesday:0, wednesday:0, thursday:0, friday:0, saturday:0 };
+        let aggTotal = 0, aggMale = 0, aggFemale = 0; let aggAvgSum = 0, aggAvgCount = 0; const aggHourly = {}; const aggAge = { '18-25':0,'26-35':0,'36-45':0,'46-60':0,'60+':0 }; const aggWeek = { sunday:0, monday:0, tuesday:0, wednesday:0, thursday:0, friday:0, saturday:0 };
         for (const dev of devices) {
           const payload = await fetchDayAllPages(day, String(dev.id));
           const a = aggregateVisitors(payload);
@@ -482,12 +482,12 @@ async function refreshData(res, startDate = getTodayDate(), endDate = startDate,
           const totals = { totalVisitors: a.total, maleCount: a.men, femaleCount: a.women, ageData: a.byAge, hourlyData: a.byHour, weekday: a.byWeekday, avgAgeSum: a.avgAgeSum, avgAgeCount: a.avgAgeCount };
           await saveDaily(day, String(dev.id), totals);
           await saveHourly(day, String(dev.id), totals.hourlyData || {}, totals.maleCount || 0, totals.femaleCount || 0, totals.totalVisitors || 0);
-          aggTotal += a.total; aggMale += a.men; aggFemale += a.women;
+          aggTotal += a.total; aggMale += a.men; aggFemale += a.women; aggAvgSum += a.avgAgeSum; aggAvgCount += a.avgAgeCount;
           for (const h in a.byHour) aggHourly[h] = (aggHourly[h]||0) + Number(a.byHour[h]||0);
           for (const g in a.byAge) aggAge[g] = (aggAge[g]||0) + Number(a.byAge[g]||0);
           for (const k in a.byWeekday) aggWeek[k] = (aggWeek[k]||0) + Number(a.byWeekday[k]||0);
         }
-        const totalsAll = { totalVisitors: aggTotal, maleCount: aggMale, femaleCount: aggFemale, ageData: aggAge, hourlyData: aggHourly, weekday: aggWeek, avgAgeSum: Object.values(aggAge).reduce((a,b)=>a+Number(b||0),0), avgAgeCount: Object.values(aggAge).reduce((a,b)=>a+Number(b||0),0) };
+        const totalsAll = { totalVisitors: aggTotal, maleCount: aggMale, femaleCount: aggFemale, ageData: aggAge, hourlyData: aggHourly, weekday: aggWeek, avgAgeSum: aggAvgSum, avgAgeCount: aggAvgCount };
         await saveDaily(day, 'all', totalsAll);
         await saveHourly(day, 'all', totalsAll.hourlyData || {}, totalsAll.maleCount || 0, totalsAll.femaleCount || 0, totalsAll.totalVisitors || 0);
       } else {
@@ -566,7 +566,13 @@ async function fetchDayAllPages(day, deviceId) {
     }
     const json = await resp.json();
     const payload = json.payload || json.data || [];
-    const arr = Array.isArray(payload) ? payload : [];
+    let arr = Array.isArray(payload) ? payload : [];
+    if (deviceId && deviceId !== 'all') {
+      arr = arr.filter((v) => {
+        const did = String(v.tracks?.[0]?.device_id ?? (Array.isArray(v.devices) ? v.devices[0] : ''));
+        return did === String(deviceId);
+      });
+    }
     all.push(...arr);
     const pg = json.pagination || {};
     const pageLimit = Number(pg.limit || limit);

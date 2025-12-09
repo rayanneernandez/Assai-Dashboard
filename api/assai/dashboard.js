@@ -343,6 +343,17 @@ if (store_id && store_id !== "all") {
         row = sumRes2.rows[0] || row;
       } catch {}
     }
+    if (Number(row.total_visitors || 0) === 0) {
+      const ap = [];
+      let aj = 1;
+      let aq = `SELECT COALESCE(SUM(total_visitors),0) AS total_visitors, COALESCE(SUM(male),0) AS total_male, COALESCE(SUM(female),0) AS total_female, COALESCE(SUM(avg_age_sum),0) AS avg_age_sum, COALESCE(SUM(avg_age_count),0) AS avg_age_count, COALESCE(SUM(age_18_25),0) AS age_18_25, COALESCE(SUM(age_26_35),0) AS age_26_35, COALESCE(SUM(age_36_45),0) AS age_36_45, COALESCE(SUM(age_46_60),0) AS age_46_60, COALESCE(SUM(age_60_plus),0) AS age_60_plus, COALESCE(SUM(sunday),0) AS sunday, COALESCE(SUM(monday),0) AS monday, COALESCE(SUM(tuesday),0) AS tuesday, COALESCE(SUM(wednesday),0) AS wednesday, COALESCE(SUM(thursday),0) AS thursday, COALESCE(SUM(friday),0) AS friday, COALESCE(SUM(saturday),0) AS saturday FROM public.dashboard_daily WHERE 1=1`;
+      if (start_date) { aq += ` AND day >= ${aj}`; ap.push(start_date); aj++; }
+      if (end_date) { aq += ` AND day <= ${aj}`; ap.push(end_date); aj++; }
+      if (store_id && store_id !== 'all') { aq += ` AND store_id = ${aj}`; ap.push(store_id); aj++; } else { aq += ` AND store_id <> 'all'`; }
+      const aRes = await pool.query(aq, ap);
+      const aRow = aRes.rows[0] || {};
+      if (Number(aRow.total_visitors || 0) > 0) row = aRow;
+    }
 
     const avgCount = Number(row.avg_age_count || 0);
     const averageAge =
@@ -365,6 +376,17 @@ if (store_id && store_id !== "all") {
     hq += ` GROUP BY hour ORDER BY hour ASC`;
     const hRes = await pool.query(hq, hp);
     let hRows = Array.isArray(hRes.rows) ? hRes.rows : [];
+    if (!hRows.length) {
+      const hAp = [];
+      let hk = 1;
+      let hAllQ = `SELECT hour, COALESCE(SUM(total),0) AS total, COALESCE(SUM(male),0) AS male, COALESCE(SUM(female),0) AS female FROM public.dashboard_hourly WHERE 1=1`;
+      if (start_date) { hAllQ += ` AND day >= ${hk}`; hAp.push(start_date); hk++; }
+      if (end_date) { hAllQ += ` AND day <= ${hk}`; hAp.push(end_date); hk++; }
+      if (store_id && store_id !== 'all') { hAllQ += ` AND store_id = ${hk}`; hAp.push(store_id); hk++; } else { hAllQ += ` AND store_id <> 'all'`; }
+      hAllQ += ` GROUP BY hour ORDER BY hour ASC`;
+      const hAllRes = await pool.query(hAllQ, hAp);
+      hRows = Array.isArray(hAllRes.rows) ? hAllRes.rows : [];
+    }
     if (source === "displayforce" && start_date && end_date && start_date === end_date) {
       try {
         const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);

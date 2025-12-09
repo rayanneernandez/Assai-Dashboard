@@ -22,7 +22,7 @@ export default async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).json({ success: false, error: 'Método não permitido' });
 
   try {
-    const { endpoint, store_id, storeId, date, start_date, end_date } = req.query;
+    const { endpoint, store_id, storeId, date, start_date, end_date, source } = req.query;
     
     console.log(`📡 API Endpoint: ${endpoint}`);
     
@@ -37,6 +37,10 @@ export default async function handler(req, res) {
         const store = store_id || storeId || 'all';
         const effStart = start_date || date || getTodayDate();
         const effEnd = end_date || effStart;
+        if (String(source).toLowerCase() === 'displayforce') {
+          if (effStart !== effEnd) return await getDashboardDataRangeLive(res, store, effStart, effEnd);
+          return await getDashboardDataLive(res, store, effStart);
+        }
         if (effStart !== effEnd) {
           return await getDashboardDataRange(res, store, effStart, effEnd);
         }
@@ -300,6 +304,42 @@ async function getDashboardDataRange(res, storeId = 'all', startDate = getTodayD
     return res.status(200).json({ success: true, startDate, endDate, storeId: sid, totalVisitors: total, totalMale: male, totalFemale: female, averageAge: avgCount>0 ? Math.round(avgSum/avgCount) : 0, visitsByDay: wk, byAgeGroup: byAge, byAgeGender: ageBins, byHour, byGenderHour, isFallback: false, timestamp: new Date().toISOString() });
   } catch (e) {
     return res.status(200).json({ success: true, startDate, endDate, storeId, totalVisitors: 0, totalMale: 0, totalFemale: 0, averageAge: 0, visitsByDay: { Sunday:0, Monday:0, Tuesday:0, Wednesday:0, Thursday:0, Friday:0, Saturday:0 }, byAgeGroup: { '18-25':0,'26-35':0,'36-45':0,'46-60':0,'60+':0 }, byAgeGender: { '<20':{male:0,female:0}, '20-29':{male:0,female:0}, '30-45':{male:0,female:0}, '>45':{male:0,female:0} }, byHour: {}, byGenderHour: { male: {}, female: {} }, isFallback: false, error: e.message, timestamp: new Date().toISOString() });
+  }
+}
+
+// =========== DADOS AO VIVO ==========
+async function getDashboardDataLive(res, storeId = 'all', date = getTodayDate()) {
+  try {
+    if (storeId === 'all') {
+      const a = await fetchAggregatedData(date);
+      return res.status(200).json({ success: true, date, storeId, totalVisitors: a.totalVisitors||0, totalMale: a.maleCount||0, totalFemale: a.femaleCount||0, averageAge: calculateAverageAge(a.ageData||{}), visitsByDay: a.dayData||generateDayDistribution(date, a.totalVisitors||0), byAgeGroup: a.ageData||{}, byAgeGender: calculateAgeGenderDistribution(a.ageData||{}, a.maleCount||0, a.femaleCount||0), byHour: a.hourlyData||{}, byGenderHour: { male: distributeHourlyByGender(a.hourlyData||{}, a.maleCount||0), female: distributeHourlyByGender(a.hourlyData||{}, a.femaleCount||0) }, isFallback: false, from_api: true, timestamp: new Date().toISOString() });
+    } else {
+      const s = await fetchStoreData(storeId, date);
+      return res.status(200).json({ success: true, date, storeId, totalVisitors: s.totalVisitors||0, totalMale: s.maleCount||0, totalFemale: s.femaleCount||0, averageAge: calculateAverageAge(s.ageData||{}), visitsByDay: s.dayData||generateDayDistribution(date, s.totalVisitors||0), byAgeGroup: s.ageData||{}, byAgeGender: calculateAgeGenderDistribution(s.ageData||{}, s.maleCount||0, s.femaleCount||0), byHour: s.hourlyData||{}, byGenderHour: { male: distributeHourlyByGender(s.hourlyData||{}, s.maleCount||0), female: distributeHourlyByGender(s.hourlyData||{}, s.femaleCount||0) }, isFallback: false, from_api: true, timestamp: new Date().toISOString() });
+    }
+  } catch (e) {
+    return res.status(200).json({ success: true, date, storeId, totalVisitors: 0, totalMale: 0, totalFemale: 0, averageAge: 0, visitsByDay: generateDayDistribution(date, 0), byAgeGroup: { '18-25':0,'26-35':0,'36-45':0,'46-60':0,'60+':0 }, byAgeGender: { '<20':{male:0,female:0}, '20-29':{male:0,female:0}, '30-45':{male:0,female:0}, '>45':{male:0,female:0} }, byHour: {}, byGenderHour: { male: {}, female: {} }, isFallback: false, timestamp: new Date().toISOString() });
+  }
+}
+
+async function getDashboardDataRangeLive(res, storeId = 'all', startDate = getTodayDate(), endDate = startDate) {
+  try {
+    const days = [];
+    let d = new Date(startDate + 'T00:00:00Z');
+    const e = new Date(endDate + 'T00:00:00Z');
+    while (d <= e) { days.push(d.toISOString().slice(0,10)); d = new Date(d.getTime() + 86400000); }
+    let total=0, male=0, female=0; const byHour = {}; const byAge = { '18-25':0,'26-35':0,'36-45':0,'46-60':0,'60+':0 }; const wk = { Sunday:0, Monday:0, Tuesday:0, Wednesday:0, Thursday:0, Friday:0, Saturday:0 };
+    for (const day of days) {
+      const a = storeId==='all' ? await fetchAggregatedData(day) : await fetchStoreData(storeId, day);
+      total += Number(a.totalVisitors||0); male += Number(a.maleCount||0); female += Number(a.femaleCount||0);
+      for (const h in (a.hourlyData||{})) byHour[h] = (byHour[h]||0) + Number(a.hourlyData[h]||0);
+      const ag = a.ageData||{}; byAge['18-25'] += Number(ag['18-25']||0); byAge['26-35'] += Number(ag['26-35']||0); byAge['36-45'] += Number(ag['36-45']||0); byAge['46-60'] += Number(ag['46-60']||0); byAge['60+'] += Number(ag['60+']||0);
+      const dd = a.dayData||generateDayDistribution(day, Number(a.totalVisitors||0));
+      for (const k in wk) wk[k] += Number(dd[k]||0);
+    }
+    return res.status(200).json({ success: true, startDate, endDate, storeId, totalVisitors: total, totalMale: male, totalFemale: female, averageAge: calculateAverageAge(byAge), visitsByDay: wk, byAgeGroup: byAge, byAgeGender: calculateAgeGenderDistribution(byAge, male, female), byHour, byGenderHour: { male: distributeHourlyByGender(byHour, male), female: distributeHourlyByGender(byHour, female) }, isFallback: false, from_api: true, timestamp: new Date().toISOString() });
+  } catch (e) {
+    return res.status(200).json({ success: true, startDate, endDate, storeId, totalVisitors: 0, totalMale: 0, totalFemale: 0, averageAge: 0, visitsByDay: { Sunday:0, Monday:0, Tuesday:0, Wednesday:0, Thursday:0, Friday:0, Saturday:0 }, byAgeGroup: { '18-25':0,'26-35':0,'36-45':0,'46-60':0,'60+':0 }, byAgeGender: { '<20':{male:0,female:0}, '20-29':{male:0,female:0}, '30-45':{male:0,female:0}, '>45':{male:0,female:0} }, byHour: {}, byGenderHour: { male: {}, female: {} }, isFallback: false, timestamp: new Date().toISOString() });
   }
 }
 

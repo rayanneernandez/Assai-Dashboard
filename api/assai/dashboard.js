@@ -734,12 +734,17 @@ function aggregateVisitors(payload) {
     if (age >= 18 && age <= 25) byAge['18-25']++; else if (age >= 26 && age <= 35) byAge['26-35']++; else if (age >= 36 && age <= 45) byAge['36-45']++; else if (age >= 46 && age <= 60) byAge['46-60']++; else if (age > 60) byAge['60+']++;
     const ts = v.start || (v.tracks && v.tracks[0] && v.tracks[0].start) || v.timestamp;
     if (ts) {
-      const base = new Date(ts);
-      const local = new Date(base.getTime() + tz * 3600000);
+      const d = new Date(ts);
+      let offsetH = tz, offsetM = 0;
+      if (typeof ts === 'string') {
+        const m = ts.match(/([+-])(\d{2}):?(\d{2})$/);
+        if (m) { const sign = m[1] === '-' ? -1 : 1; offsetH = sign * parseInt(m[2], 10); offsetM = sign * parseInt(m[3], 10); }
+      }
+      const shifted = new Date(d.getTime() + offsetH * 3600000 + offsetM * 60000);
       const map = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
-      const key = map[local.getDay()];
+      const key = map[shifted.getUTCDay()];
       byWeekday[key] = (byWeekday[key] || 0) + 1;
-      const h = local.getHours();
+      const h = shifted.getUTCHours();
       byHour[h] = (byHour[h] || 0) + 1;
       if (g === 'm') byGenderHour.male[h] = (byGenderHour.male[h] || 0) + 1; else byGenderHour.female[h] = (byGenderHour.female[h] || 0) + 1;
     }

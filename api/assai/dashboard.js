@@ -540,46 +540,57 @@ async function fetchVisitorsForDevice(deviceId, date) {
 // Buscar dados agregados de todas as lojas
 async function fetchAggregatedData(date) {
   try {
-    console.log(`📊 Buscando dados agregados para ${date}`);
-    
-    // Primeiro buscar todas as lojas
-    if (!cachedStores || (Date.now() - lastFetch) > CACHE_DURATION) {
-      await getStores({}); // Atualizar cache
-    }
-    
-    // Se temos cache, usar
-    if (cachedStores) {
-      const allStoresData = cachedStores.find(s => s.id === 'all');
-      if (allStoresData && allStoresData.date === date) {
+    const response = await fetch(`${API_URL}/analytics/summary?date=${date}`, { headers: { 'X-API-Token': API_TOKEN } });
+    if (response && response.ok) {
+      const data = await response.json();
+      const total = Number(data.total || data.visitors || 0);
+      if (total > 0) {
+        const hourly = data.hourly || {};
+        const age = data.age || {};
+        const day = data.day || generateDayDistribution(date, total);
         return {
-          totalVisitors: allStoresData.visitor_count || 0,
-          maleCount: allStoresData.male_count || 0,
-          femaleCount: allStoresData.female_count || 0,
-          hourlyData: await fetchHourlyAggregatedData(date),
-          ageData: await fetchAgeDistributionData(date),
-          dayData: await fetchDayDistributionData(date),
-          peakHour: calculatePeakHour(await fetchHourlyAggregatedData(date))
+          totalVisitors: total,
+          maleCount: Number(data.male || 0),
+          femaleCount: Number(data.female || 0),
+          hourlyData: hourly,
+          ageData: age,
+          dayData: day,
+          peakHour: calculatePeakHour(hourly)
         };
       }
     }
-    
-    // Se não, buscar diretamente da API
-    const aggregatedVisitors = await fetchAllVisitors(date);
-    
-    return {
-      totalVisitors: aggregatedVisitors.total || 0,
-      maleCount: aggregatedVisitors.male || 0,
-      femaleCount: aggregatedVisitors.female || 0,
-      hourlyData: aggregatedVisitors.hourly || await fetchHourlyAggregatedData(date),
-      ageData: aggregatedVisitors.age || await fetchAgeDistributionData(date),
-      dayData: aggregatedVisitors.day || await fetchDayDistributionData(date),
-      peakHour: aggregatedVisitors.peak_hour || '18:30'
-    };
-    
   } catch (error) {
-    console.error('❌ Erro ao buscar dados agregados:', error);
-    throw error;
+    console.error('Erro summary agregada:', error);
   }
+  try {
+    const apiData = await fetchFromDisplayForce('/device/list');
+    const list = Array.isArray(apiData?.data) ? apiData.data : [];
+    let total = 0, male = 0, female = 0;
+    const hourlyAgg = {};
+    const ageAgg = { '18-25':0,'26-35':0,'36-45':0,'46-60':0,'60+':0 };
+    for (const device of list) {
+      const vd = await fetchVisitorsForDevice(device.id.toString(), date);
+      total += Number(vd.total || 0);
+      male += countGender(vd.visitors || [], 'male');
+      female += countGender(vd.visitors || [], 'female');
+      const h = calculateHourlyDistribution(vd.visitors || []);
+      for (const k in h) hourlyAgg[k] = (hourlyAgg[k] || 0) + Number(h[k] || 0);
+      const a = calculateAgeDistribution(vd.visitors || []);
+      for (const g in a) ageAgg[g] = (ageAgg[g] || 0) + Number(a[g] || 0);
+    }
+    return {
+      totalVisitors: total,
+      maleCount: male,
+      femaleCount: female,
+      hourlyData: hourlyAgg,
+      ageData: ageAgg,
+      dayData: generateDayDistribution(date, total),
+      peakHour: calculatePeakHour(hourlyAgg)
+    };
+  } catch (error) {
+    console.error('Erro agregando por dispositivos:', error);
+  }
+  return { totalVisitors: 0, maleCount: 0, femaleCount: 0, hourlyData: {}, ageData: {}, dayData: generateDayDistribution(date, 0), peakHour: '18:30' };
 }
 
 // Buscar dados de uma loja específica

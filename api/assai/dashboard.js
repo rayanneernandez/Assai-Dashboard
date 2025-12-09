@@ -214,31 +214,40 @@ async function getStores(res) {
 async function getDevices(req, res) {
   try {
     const q = String((req?.query?.q || req?.query?.name || req?.query?.search || '')).toLowerCase();
-    const apiData = await fetchFromDisplayForce('/device/list');
-    const list = Array.isArray(apiData?.data) ? apiData.data : [];
-    const devicesRaw = list.map((device) => {
-      const name = String(device.name || device.device_name || 'Dispositivo');
-      const status = device.connection_state === 'online' ? 'active' : 'inactive';
-      let location = '';
-      if (device.address?.description) location = device.address.description;
-      else {
-        const nm = name.toLowerCase();
-        if (nm.includes('aricanduva')) location = 'Assaí Atacadista Aricanduva';
-        else if (nm.includes('ayrton') || nm.includes('sena')) location = 'Assaí Atacadista Ayrton Senna';
-        else if (nm.includes('barueri')) location = 'Assaí Atacadista Barueri';
-        else if (nm.includes('americas')) location = 'Assaí Atacadista Av. das Américas';
-        else location = 'Assaí Atacadista';
-      }
-      return {
-        id: device.id ? String(device.id) : '',
-        name,
-        location,
-        status
-      };
-    });
+    const limit = 500; let offset = 0; const all = [];
+    while (true) {
+      const resp = await fetch(`${API_URL}/device/list?limit=${limit}&offset=${offset}`, { headers: { 'X-API-Token': API_TOKEN, Accept: 'application/json' }, timeout: 15000 });
+      if (!resp.ok) break;
+      const json = await resp.json();
+      const arr = Array.isArray(json?.data) ? json.data : (Array.isArray(json?.devices) ? json.devices : []);
+      all.push(...arr);
+      const total = Number(json?.pagination?.total || 0);
+      if ((total && all.length >= total) || arr.length < limit) break;
+      offset += limit;
+    }
+    const devicesRaw = all.map((device) => ({
+      id: device.id ? String(device.id) : '',
+      name: String(device.name || device.device_name || 'Dispositivo'),
+      location: String(device.address?.description || device.location || device.place || ''),
+      status: String(device.connection_state || (device.enabled ? 'active' : 'inactive') || 'unknown')
+    }));
     const devices = q ? devicesRaw.filter(d => d.name.toLowerCase().includes(q)) : devicesRaw;
     return res.status(200).json({ success: true, devices, count: devices.length, timestamp: new Date().toISOString() });
   } catch (error) {
+    try {
+      const cat = await pool.query('SELECT id, name FROM public.stores_catalog');
+      const cats = Array.isArray(cat.rows) ? cat.rows : [];
+      if (cats.length) {
+        const devices = cats.map((c) => ({ id: String(c.id), name: String(c.name || c.id), location: '', status: 'unknown' }));
+        return res.status(200).json({ success: true, devices, count: devices.length, timestamp: new Date().toISOString() });
+      }
+    } catch {}
+    try {
+      const q = await pool.query('SELECT DISTINCT store_id FROM public.dashboard_daily WHERE store_id IS NOT NULL ORDER BY store_id');
+      const ids = q.rows.map((r) => String(r.store_id)).filter(Boolean);
+      const devices = ids.map((id) => ({ id, name: id, location: '', status: 'unknown' }));
+      return res.status(200).json({ success: true, devices, count: devices.length, timestamp: new Date().toISOString() });
+    } catch {}
     return res.status(200).json({ success: true, devices: [], count: 0, timestamp: new Date().toISOString() });
   }
 }

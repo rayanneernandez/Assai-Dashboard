@@ -42,14 +42,19 @@ export default async function handler(req, res) {
         }
         return await getDashboardData(res, store, effStart);
         
-      case 'visitors':
+      case 'visitors': {
         const start = start_date || getTodayDate();
         const end = end_date || getTodayDate();
         const storeParam = store_id || 'all';
         return await getVisitors(res, start, end, storeParam);
-        
-      case 'refresh':
-        return await refreshData(res);
+      }
+      
+      case 'refresh': {
+        const start = start_date || getTodayDate();
+        const end = end_date || getTodayDate();
+        const storeParam = store_id || 'all';
+        return await refreshData(res, start, end, storeParam);
+      }
         
       case 'test-api':
         return await testApiConnection(res);
@@ -367,17 +372,75 @@ async function getVisitors(res, startDate, endDate, storeId) {
 }
 
 // =========== REFRESH ===========
-async function refreshData(res) {
-  console.log('🔄 Refresh solicitado - limpando cache');
-  
-  cachedStores = null;
-  lastFetch = null;
-  
-  return res.status(200).json({
-    success: true,
-    message: 'Cache limpo com sucesso',
-    timestamp: new Date().toISOString()
-  });
+async function refreshData(res, startDate = getTodayDate(), endDate = startDate, storeId = 'all') {
+  try {
+    const days = [];
+    const sD = new Date(startDate + 'T00:00:00Z');
+    const eD = new Date(endDate + 'T00:00:00Z');
+    for (let d = sD; d <= eD; d = new Date(d.getTime() + 86400000)) {
+      days.push(d.toISOString().slice(0,10));
+    }
+    const saveDaily = async (day, sid, totals) => {
+      const byDay = generateDayDistribution(day, Number(totals.totalVisitors || 0));
+      const params = [
+        day, sid,
+        Number(totals.totalVisitors || 0),
+        Number(totals.maleCount || 0),
+        Number(totals.femaleCount || 0),
+        Number((totals.ageData || {})['18-25'] || 0),
+        Number((totals.ageData || {})['26-35'] || 0),
+        Number((totals.ageData || {})['36-45'] || 0),
+        Number((totals.ageData || {})['46-60'] || 0),
+        Number((totals.ageData || {})['60+'] || 0),
+        Number(byDay.Sunday || 0),
+        Number(byDay.Monday || 0),
+        Number(byDay.Tuesday || 0),
+        Number(byDay.Wednesday || 0),
+        Number(byDay.Thursday || 0),
+        Number(byDay.Friday || 0),
+        Number(byDay.Saturday || 0),
+        0,
+        0
+      ];
+      const upd = await pool.query(
+        'UPDATE public.dashboard_daily SET total_visitors=$3, male=$4, female=$5, age_18_25=$6, age_26_35=$7, age_36_45=$8, age_46_60=$9, age_60_plus=$10, sunday=$11, monday=$12, tuesday=$13, wednesday=$14, thursday=$15, friday=$16, saturday=$17, avg_age_sum=$18, avg_age_count=$19, updated_at=NOW() WHERE day=$1 AND store_id=$2',
+        params
+      );
+      if (!upd.rowCount) {
+        await pool.query(
+          'INSERT INTO public.dashboard_daily (day, store_id, total_visitors, male, female, age_18_25, age_26_35, age_36_45, age_46_60, age_60_plus, sunday, monday, tuesday, wednesday, thursday, friday, saturday, avg_age_sum, avg_age_count, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,NOW())',
+          params
+        );
+      }
+    };
+    const saveHourly = async (day, sid, hourly, maleTotal, femaleTotal, totalDay) => {
+      await pool.query('DELETE FROM public.dashboard_hourly WHERE day=$1 AND store_id=$2', [day, sid]);
+      const t = Number(totalDay || 0) > 0 ? Number(totalDay || 0) : Object.values(hourly || {}).reduce((a, b) => a + Number(b || 0), 0);
+      const mr = t > 0 ? Number(maleTotal || 0) / t : 0;
+      for (let h = 0; h < 24; h++) {
+        const totH = Number((hourly || {})[h] || 0);
+        const mH = Math.round(totH * mr);
+        const fH = totH - mH;
+        await pool.query('INSERT INTO public.dashboard_hourly (day, store_id, hour, total, male, female) VALUES ($1,$2,$3,$4,$5,$6)', [day, sid, h, totH, mH, fH]);
+      }
+    };
+    for (const day of days) {
+      if (storeId === 'all') {
+        const agg = await fetchAggregatedData(day);
+        await saveDaily(day, 'all', agg);
+        await saveHourly(day, 'all', agg.hourlyData || {}, agg.maleCount || 0, agg.femaleCount || 0, agg.totalVisitors || 0);
+      } else {
+        const st = await fetchStoreData(storeId, day);
+        await saveDaily(day, storeId, st);
+        await saveHourly(day, storeId, st.hourlyData || {}, st.maleCount || 0, st.femaleCount || 0, st.totalVisitors || 0);
+      }
+    }
+    cachedStores = null;
+    lastFetch = null;
+    return res.status(200).json({ success: true, days: days.length, start_date: startDate, end_date: endDate, storeId, timestamp: new Date().toISOString() });
+  } catch (error) {
+    return res.status(200).json({ success: false, error: error.message, start_date: startDate, end_date: endDate, storeId, timestamp: new Date().toISOString() });
+  }
 }
 
 // =========== TESTE DE CONEXÃO ===========

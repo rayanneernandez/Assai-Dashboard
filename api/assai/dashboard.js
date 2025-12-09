@@ -380,108 +380,25 @@ async function getSummary(req, res, start_date, end_date, store_id) {
     
     console.log(`📊 Período: ${sDate} até ${eDate}`);
     
-    // Busca dados agregados
-    let query = `
-      SELECT 
-        COALESCE(SUM(total_visitors), 0) AS total_visitors,
-        COALESCE(SUM(male), 0) AS total_male,
-        COALESCE(SUM(female), 0) AS total_female,
-        COALESCE(SUM(avg_age_sum), 0) AS avg_age_sum,
-        COALESCE(SUM(avg_age_count), 0) AS avg_age_count,
-        COALESCE(SUM(age_18_25), 0) AS age_18_25,
-        COALESCE(SUM(age_26_35), 0) AS age_26_35,
-        COALESCE(SUM(age_36_45), 0) AS age_36_45,
-        COALESCE(SUM(age_46_60), 0) AS age_46_60,
-        COALESCE(SUM(age_60_plus), 0) AS age_60_plus,
-        COALESCE(SUM(sunday), 0) AS sunday,
-        COALESCE(SUM(monday), 0) AS monday,
-        COALESCE(SUM(tuesday), 0) AS tuesday,
-        COALESCE(SUM(wednesday), 0) AS wednesday,
-        COALESCE(SUM(thursday), 0) AS thursday,
-        COALESCE(SUM(friday), 0) AS friday,
-        COALESCE(SUM(saturday), 0) AS saturday
-      FROM dashboard_daily
-      WHERE day >= $1 AND day <= $2
-    `;
-    
-    const params = [sDate, eDate];
-    
-    if (store_id && store_id !== "all") {
-      query += ` AND store_id = $3`;
-      params.push(store_id);
-    } else {
-      query += ` AND store_id = 'all'`;
-    }
-    
-    console.log("📊 Summary query:", query, params);
-    
-    let result = await pool.query(query, params);
-    let row = result.rows[0] || {};
-    
-    let totalFromAggregates = Number(row.total_visitors || 0);
-    console.log(`📊 Total nos agregados: ${totalFromAggregates}`);
-    
-    if (totalFromAggregates === 0 || req.query.source === 'displayforce') {
+    // Se necessário, ingere da DisplayForce primeiro
+    let countQ = `SELECT COUNT(*)::int AS c FROM visitors WHERE day >= $1 AND day <= $2`;
+    const countParams = [sDate, eDate];
+    if (store_id && store_id !== 'all') { countQ += ` AND store_id = $3`; countParams.push(store_id); }
+    let cRes = await pool.query(countQ, countParams);
+    let c = Number(cRes.rows[0]?.c || 0);
+    if (c === 0 || req.query.source === 'displayforce') {
       try {
         const visitors = await fetchVisitorsFromDisplayForce(sDate, eDate, store_id && store_id !== 'all' ? store_id : null);
         await saveVisitorsToDatabase(visitors);
-        const ds = new Date(sDate);
-        const de = new Date(eDate);
+        const ds = new Date(sDate); const de = new Date(eDate);
         for (let d = new Date(ds); d <= de; d.setDate(d.getDate() + 1)) {
           const dateStr = d.toISOString().split('T')[0];
           await updateAggregatesForDateAndDevice(dateStr, store_id || 'all');
         }
-        result = await pool.query(query, params);
-        row = result.rows[0] || row;
-        totalFromAggregates = Number(row.total_visitors || 0);
       } catch {}
     }
-    
-    if (totalFromAggregates === 0 || req.query.force_recalc === 'true') {
-      console.log("📊 Calculando summary em tempo real...");
-      return await calculateRealTimeSummary(res, sDate, eDate, store_id);
-    }
-    
-    // Calcula idade média
-    const avgAgeCount = Number(row.avg_age_count || 0);
-    const averageAge = avgAgeCount > 0 ? Math.round(Number(row.avg_age_sum || 0) / avgAgeCount) : 0;
-    
-    // Busca dados por hora (AGORA USANDO O TIMESTAMP REAL)
-    const hourlyData = await getHourlyAggregatesWithRealTime(sDate, eDate, store_id);
-    
-    // Busca distribuição por idade e gênero
-    const ageGenderData = await getAgeGenderDistribution(sDate, eDate, store_id);
-    
-    const response = {
-      success: true,
-      totalVisitors: totalFromAggregates,
-      totalMale: Number(row.total_male || 0),
-      totalFemale: Number(row.total_female || 0),
-      averageAge: averageAge,
-      visitsByDay: {
-        Sunday: Number(row.sunday || 0),
-        Monday: Number(row.monday || 0),
-        Tuesday: Number(row.tuesday || 0),
-        Wednesday: Number(row.wednesday || 0),
-        Thursday: Number(row.thursday || 0),
-        Friday: Number(row.friday || 0),
-        Saturday: Number(row.saturday || 0),
-      },
-      byAgeGroup: {
-        "18-25": Number(row.age_18_25 || 0),
-        "26-35": Number(row.age_26_35 || 0),
-        "36-45": Number(row.age_36_45 || 0),
-        "46-60": Number(row.age_46_60 || 0),
-        "60+": Number(row.age_60_plus || 0),
-      },
-      byAgeGender: ageGenderData,
-      byHour: hourlyData.byHour,
-      byGenderHour: hourlyData.byGenderHour,
-      source: 'dashboard_aggregates',
-      period: `${sDate} - ${eDate}`
-    };
-    
-    return res.status(200).json(response);
+    // Sempre calcula a resposta a partir de visitors (tempo real)
+    return await calculateRealTimeSummary(res, sDate, eDate, store_id);
     
   } catch (error) {
     console.error("❌ Summary error:", error);

@@ -456,7 +456,7 @@ if (store_id && store_id !== "all") {
     const byGenderHour = { male: {}, female: {} };
 
     for (const r of hRows) {
-      const hour = String(r.hour);
+      const hour = Number(r.hour);
       byHour[hour] = Number(r.total || 0);
       byGenderHour.male[hour] = Number(r.male || 0);
       byGenderHour.female[hour] = Number(r.female || 0);

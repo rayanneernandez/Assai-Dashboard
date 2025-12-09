@@ -42,22 +42,8 @@ export default async function handler(req, res) {
           return await getDashboardDataLive(res, store, effStart);
         }
         if (effStart !== effEnd) {
-          const today = getTodayDate();
-          const s = new Date(effStart + 'T00:00:00Z');
-          const e = new Date(effEnd + 'T00:00:00Z');
-          const t = new Date(today + 'T00:00:00Z');
-          const includesToday = t.getTime() >= s.getTime() && t.getTime() <= e.getTime();
-          if (includesToday) {
-            try { await refreshData({ status: () => ({ json: () => ({}) }) }, today, today, store); } catch {}
-          }
           return await getDashboardDataRange(res, store, effStart, effEnd);
         }
-        try {
-          const today = getTodayDate();
-          if (effStart === today && effEnd === today) {
-            await refreshData({ status: () => ({ json: () => ({}) }) }, effStart, effEnd, store);
-          }
-        } catch {}
         return await getDashboardData(res, store, effStart);
         
       case 'visitors': {
@@ -225,12 +211,17 @@ async function getDevices(req, res) {
       if ((total && all.length >= total) || arr.length < limit) break;
       offset += limit;
     }
-    const devicesRaw = all.map((device) => ({
-      id: device.id ? String(device.id) : '',
-      name: String(device.name || device.device_name || 'Dispositivo'),
-      location: String(device.address?.description || device.location || device.place || ''),
-      status: String(device.connection_state || (device.enabled ? 'active' : 'inactive') || 'unknown')
-    }));
+    const devicesRaw = [];
+    for (const device of all) {
+      const id = device.id ? String(device.id) : '';
+      const name = String(device.name || device.device_name || 'Dispositivo');
+      const location = String(device.address?.description || device.location || device.place || '');
+      const status = String(device.connection_state || (device.enabled ? 'active' : 'inactive') || 'unknown');
+      devicesRaw.push({ id, name, location, status });
+      if (id) {
+        try { await pool.query('INSERT INTO public.stores_catalog (id, name) VALUES ($1,$2) ON CONFLICT (id) DO UPDATE SET name=$2', [id, name]); } catch {}
+      }
+    }
     let devices = q ? devicesRaw.filter(d => d.name.toLowerCase().includes(q)) : devicesRaw;
     if (!devices.length) {
       try {
@@ -246,7 +237,9 @@ async function getDevices(req, res) {
       try {
         const qres = await pool.query('SELECT DISTINCT store_id FROM public.dashboard_daily WHERE store_id IS NOT NULL ORDER BY store_id');
         const ids = qres.rows.map((r) => String(r.store_id)).filter(Boolean);
-        const mapped = ids.map((id) => ({ id, name: id, location: '', status: 'unknown' }));
+        const nameRows = await pool.query('SELECT id, name FROM public.stores_catalog WHERE id = ANY($1)', [ids]);
+        const nameMap = new Map(nameRows.rows.map((r) => [String(r.id), String(r.name || r.id)]));
+        const mapped = ids.map((id) => ({ id, name: nameMap.get(id) || id, location: '', status: 'unknown' }));
         devices = q ? mapped.filter(d => d.name.toLowerCase().includes(q)) : mapped;
       } catch {}
     }
@@ -263,7 +256,9 @@ async function getDevices(req, res) {
     try {
       const q = await pool.query('SELECT DISTINCT store_id FROM public.dashboard_daily WHERE store_id IS NOT NULL ORDER BY store_id');
       const ids = q.rows.map((r) => String(r.store_id)).filter(Boolean);
-      const devices = ids.map((id) => ({ id, name: id, location: '', status: 'unknown' }));
+      const nameRows = await pool.query('SELECT id, name FROM public.stores_catalog WHERE id = ANY($1)', [ids]);
+      const nameMap = new Map(nameRows.rows.map((r) => [String(r.id), String(r.name || r.id)]));
+      const devices = ids.map((id) => ({ id, name: nameMap.get(id) || id, location: '', status: 'unknown' }));
       return res.status(200).json({ success: true, devices, count: devices.length, timestamp: new Date().toISOString() });
     } catch {}
     return res.status(200).json({ success: true, devices: [], count: 0, timestamp: new Date().toISOString() });
@@ -291,22 +286,6 @@ async function getDashboardData(res, storeId = 'all', date = getTodayDate()) {
     for (const h of hrs.rows) { byHour[h.hour] = Number(h.total||0); byGenderHour.male[h.hour] = Number(h.male||0); byGenderHour.female[h.hour] = Number(h.female||0); }
     const isToday = date === getTodayDate();
     if (isToday) {
-      try {
-        const payloadLive = await fetchDayAllPages(date, sid==='all' ? undefined : sid);
-        const aLive = aggregateVisitors(payloadLive);
-        const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || '-3', 10);
-        const nowLocal = new Date(Date.now() + tz * 3600000);
-        const currentHour = nowLocal.getHours();
-        for (let h = 0; h <= 23; h++) {
-          const key = String(h);
-          const val = Number(aLive.byHour[h] || 0);
-          byHour[key] = h <= currentHour ? val : 0;
-          const m = Number((aLive.byGenderHour?.male||{})[h] || 0);
-          const f = Number((aLive.byGenderHour?.female||{})[h] || 0);
-          byGenderHour.male[key] = h <= currentHour ? m : 0;
-          byGenderHour.female[key] = h <= currentHour ? f : 0;
-        }
-      } catch {}
     }
     const wk = { Sunday:0, Monday:0, Tuesday:0, Wednesday:0, Thursday:0, Friday:0, Saturday:0 };
     try { const d = new Date(date+'T00:00:00Z'); const idx = d.getUTCDay(); const keys = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday']; wk[keys[idx]] = Number(row.total_visitors||0); } catch {}
@@ -327,22 +306,7 @@ async function getDashboardData(res, storeId = 'all', date = getTodayDate()) {
     binsApprox['>45'] = alloc(binOver45);
     let binsUsed = binsApprox;
     let avgFromVisitors = 0; let avgCountVisitors = 0;
-    try {
-      const payload = await fetchDayAllPages(date, sid==='all' ? undefined : sid);
-      const direct = { '<20':{male:0,female:0}, '20-29':{male:0,female:0}, '30-45':{male:0,female:0}, '>45':{male:0,female:0} };
-      for (const v of payload || []) {
-        const gRaw = (v.sex ?? v.gender ?? '').toString().toLowerCase();
-        const g = typeof v.sex === 'number' ? (v.sex === 1 ? 'male' : 'female') : (gRaw.startsWith('m') ? 'male' : 'female');
-        const a = v.age ?? v.age_years ?? v.face?.age ?? v.additional_attributes?.age;
-        const age = Number(a || 0);
-        if (age>0) {
-          avgFromVisitors += age; avgCountVisitors++;
-          if (age < 20) direct['<20'][g]++; else if (age <= 29) direct['20-29'][g]++; else if (age <= 45) direct['30-45'][g]++; else direct['>45'][g]++;
-        }
-      }
-      const sumDirect = Object.values(direct).reduce((s,x)=>s+x.male+x.female,0);
-      if (sumDirect>0) binsUsed = direct;
-    } catch {}
+    try { } catch {}
     const totalAgeN = grp['18-25'] + grp['26-35'] + grp['36-45'] + grp['46-60'] + grp['60+'];
     const avgApprox = totalAgeN>0 ? Math.round((grp['18-25']*22 + grp['26-35']*30 + grp['36-45']*40 + grp['46-60']*53 + grp['60+']*65)/totalAgeN) : 0;
     const resp = {
@@ -578,7 +542,7 @@ async function refreshData(res, startDate = getTodayDate(), endDate = startDate,
         );
       }
     };
-    const saveHourly = async (day, sid, hourly, maleTotal, femaleTotal, totalDay) => {
+    const saveHourly = async (day, sid, hourly, maleTotal, femaleTotal, totalDay, genderHourly) => {
       const t = Number(totalDay || 0) > 0 ? Number(totalDay || 0) : Object.values(hourly || {}).reduce((a, b) => a + Number(b || 0), 0);
       if (t <= 0) return;
       await pool.query('DELETE FROM public.dashboard_hourly WHERE day=$1 AND store_id=$2', [day, sid]);
@@ -586,8 +550,10 @@ async function refreshData(res, startDate = getTodayDate(), endDate = startDate,
       const mr = t > 0 ? Number(maleTotal || 0) / t : 0;
       for (let h = 0; h < 24; h++) {
         const totH = Number((baseHourly || {})[h] || 0);
-        const mH = Math.round(totH * mr);
-        const fH = totH - mH;
+        const gm = Number((genderHourly?.male || {})[h] || NaN);
+        const gf = Number((genderHourly?.female || {})[h] || NaN);
+        const mH = isNaN(gm) ? Math.round(totH * mr) : gm;
+        const fH = isNaN(gf) ? (totH - mH) : gf;
         await pool.query('INSERT INTO public.dashboard_hourly (day, store_id, hour, total, male, female) VALUES ($1,$2,$3,$4,$5,$6)', [day, sid, h, totH, mH, fH]);
       }
     };
@@ -599,33 +565,36 @@ async function refreshData(res, startDate = getTodayDate(), endDate = startDate,
         if (devices.length === 0) {
           const payloadAll = await fetchDayAllPages(day, undefined);
           const aAll = aggregateVisitors(payloadAll);
-          const totalsAll = { totalVisitors: aAll.total, maleCount: aAll.men, femaleCount: aAll.women, ageData: aAll.byAge, hourlyData: aAll.byHour, weekday: aAll.byWeekday, avgAgeSum: aAll.avgAgeSum, avgAgeCount: aAll.avgAgeCount };
+          const totalsAll = { totalVisitors: aAll.total, maleCount: aAll.men, femaleCount: aAll.women, ageData: aAll.byAge, hourlyData: aAll.byHour, weekday: aAll.byWeekday, avgAgeSum: aAll.avgAgeSum, avgAgeCount: aAll.avgAgeCount, genderHourly: aAll.byGenderHour };
           await saveDaily(day, 'all', totalsAll);
-          await saveHourly(day, 'all', totalsAll.hourlyData || {}, totalsAll.maleCount || 0, totalsAll.femaleCount || 0, totalsAll.totalVisitors || 0);
+          await saveHourly(day, 'all', totalsAll.hourlyData || {}, totalsAll.maleCount || 0, totalsAll.femaleCount || 0, totalsAll.totalVisitors || 0, totalsAll.genderHourly || {});
         } else {
+          const aggGenderHour = { male: {}, female: {} };
           for (const dev of devices) {
             const payload = await fetchDayAllPages(day, String(dev.id));
             const a = aggregateVisitors(payload);
             console.log(`📦 Coleta ${day} store=${dev.id} registros=${a.total}`);
-            const totals = { totalVisitors: a.total, maleCount: a.men, femaleCount: a.women, ageData: a.byAge, hourlyData: a.byHour, weekday: a.byWeekday, avgAgeSum: a.avgAgeSum, avgAgeCount: a.avgAgeCount };
+            const totals = { totalVisitors: a.total, maleCount: a.men, femaleCount: a.women, ageData: a.byAge, hourlyData: a.byHour, weekday: a.byWeekday, avgAgeSum: a.avgAgeSum, avgAgeCount: a.avgAgeCount, genderHourly: a.byGenderHour };
             await saveDaily(day, String(dev.id), totals);
-            await saveHourly(day, String(dev.id), totals.hourlyData || {}, totals.maleCount || 0, totals.femaleCount || 0, totals.totalVisitors || 0);
+            await saveHourly(day, String(dev.id), totals.hourlyData || {}, totals.maleCount || 0, totals.femaleCount || 0, totals.totalVisitors || 0, totals.genderHourly || {});
             aggTotal += a.total; aggMale += a.men; aggFemale += a.women; aggAvgSum += a.avgAgeSum; aggAvgCount += a.avgAgeCount;
             for (const h in a.byHour) aggHourly[h] = (aggHourly[h]||0) + Number(a.byHour[h]||0);
             for (const g in a.byAge) aggAge[g] = (aggAge[g]||0) + Number(a.byAge[g]||0);
             for (const k in a.byWeekday) aggWeek[k] = (aggWeek[k]||0) + Number(a.byWeekday[k]||0);
+            for (const hh in (a.byGenderHour?.male||{})) aggGenderHour.male[hh] = (aggGenderHour.male[hh]||0) + Number(a.byGenderHour.male[hh]||0);
+            for (const hh in (a.byGenderHour?.female||{})) aggGenderHour.female[hh] = (aggGenderHour.female[hh]||0) + Number(a.byGenderHour.female[hh]||0);
           }
-          const totalsAll = { totalVisitors: aggTotal, maleCount: aggMale, femaleCount: aggFemale, ageData: aggAge, hourlyData: aggHourly, weekday: aggWeek, avgAgeSum: aggAvgSum, avgAgeCount: aggAvgCount };
+          const totalsAll = { totalVisitors: aggTotal, maleCount: aggMale, femaleCount: aggFemale, ageData: aggAge, hourlyData: aggHourly, weekday: aggWeek, avgAgeSum: aggAvgSum, avgAgeCount: aggAvgCount, genderHourly: aggGenderHour };
           await saveDaily(day, 'all', totalsAll);
-          await saveHourly(day, 'all', totalsAll.hourlyData || {}, totalsAll.maleCount || 0, totalsAll.femaleCount || 0, totalsAll.totalVisitors || 0);
+          await saveHourly(day, 'all', totalsAll.hourlyData || {}, totalsAll.maleCount || 0, totalsAll.femaleCount || 0, totalsAll.totalVisitors || 0, totalsAll.genderHourly || {});
         }
       } else {
         const payload = await fetchDayAllPages(day, storeId);
         const a = aggregateVisitors(payload);
         console.log(`📦 Coleta ${day} store=${storeId} registros=${a.total}`);
-        const totals = { totalVisitors: a.total, maleCount: a.men, femaleCount: a.women, ageData: a.byAge, hourlyData: a.byHour, weekday: a.byWeekday, avgAgeSum: a.avgAgeSum, avgAgeCount: a.avgAgeCount };
+        const totals = { totalVisitors: a.total, maleCount: a.men, femaleCount: a.women, ageData: a.byAge, hourlyData: a.byHour, weekday: a.byWeekday, avgAgeSum: a.avgAgeSum, avgAgeCount: a.avgAgeCount, genderHourly: a.byGenderHour };
         await saveDaily(day, storeId, totals);
-        await saveHourly(day, storeId, totals.hourlyData || {}, totals.maleCount || 0, totals.femaleCount || 0, totals.totalVisitors || 0);
+        await saveHourly(day, storeId, totals.hourlyData || {}, totals.maleCount || 0, totals.femaleCount || 0, totals.totalVisitors || 0, totals.genderHourly || {});
       }
     }
     cachedStores = null;
@@ -742,9 +711,9 @@ function aggregateVisitors(payload) {
       }
       const shifted = new Date(d.getTime() + offsetH * 3600000 + offsetM * 60000);
       const map = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
-      const key = map[shifted.getUTCDay()];
+      const key = map[shifted.getDay()];
       byWeekday[key] = (byWeekday[key] || 0) + 1;
-      const h = shifted.getUTCHours();
+      const h = shifted.getHours();
       byHour[h] = (byHour[h] || 0) + 1;
       if (g === 'm') byGenderHour.male[h] = (byGenderHour.male[h] || 0) + 1; else byGenderHour.female[h] = (byGenderHour.female[h] || 0) + 1;
     }

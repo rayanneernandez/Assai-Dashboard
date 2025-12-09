@@ -1,4 +1,4 @@
-// api/assai/dashboard.js - API CORRIGIDA PARA DISPLAYFORCE
+// api/assai/dashboard.js - API CORRIGIDA PARA BUSCAR TODOS OS DADOS
 import { Pool } from 'pg';
 
 // Configurar conexão com PostgreSQL
@@ -45,20 +45,20 @@ export default async function handler(req, res) {
       case 'refresh_all':
         return await refreshAll(req, res, start_date, end_date);
       
+      case 'sync_all_data':
+        return await syncAllHistoricalData(req, res);
+      
       case 'auto_refresh':
         return await autoRefresh(req, res);
       
       case 'optimize':
         return await ensureIndexes(req, res);
       
-      case 'sync_now':
-        return await syncNow(req, res);
-      
       case 'test':
         return res.status(200).json({
           success: true,
           message: 'API Assaí está funcionando!',
-          endpoints: ['visitors', 'summary', 'stores', 'devices', 'refresh', 'refresh_all', 'auto_refresh', 'optimize', 'sync_now', 'test'],
+          endpoints: ['visitors', 'summary', 'stores', 'devices', 'refresh', 'refresh_all', 'sync_all_data', 'auto_refresh', 'optimize', 'test'],
           timestamp: new Date().toISOString()
         });
       
@@ -72,11 +72,11 @@ export default async function handler(req, res) {
             'summary - Resumo do dashboard',
             'stores - Lista de lojas',
             'devices - Dispositivos da DisplayForce',
-            'refresh - Preenche banco a partir da DisplayForce',
+            'refresh - Atualiza período específico',
             'refresh_all - Atualiza todas as lojas',
+            'sync_all_data - Sincroniza TODOS os dados históricos',
             'auto_refresh - Atualiza automaticamente',
             'optimize - Cria índices',
-            'sync_now - Sincronização manual',
             'test - Teste da API'
           ]
         });
@@ -93,74 +93,68 @@ export default async function handler(req, res) {
 }
 
 // ===========================================
-// 1. FUNÇÃO PRINCIPAL DE SINCRONIZAÇÃO
+// 1. SINCRONIZAÇÃO DE TODOS OS DADOS HISTÓRICOS
 // ===========================================
-async function syncNow(req, res) {
+async function syncAllHistoricalData(req, res) {
   try {
-    const yesterday = new Date();
-    yesterday.setDate(yesterday.getDate() - 1);
-    const yesterdayStr = yesterday.toISOString().split('T')[0];
+    console.log('🚀 SINCRONIZAÇÃO COMPLETA DE DADOS HISTÓRICOS INICIADA');
     
-    console.log(`🚀 Sincronização manual iniciada para ${yesterdayStr}`);
-    
-    // Busca todos os dispositivos
+    // Primeiro, busca todos os dispositivos
     const devices = await fetchDisplayForceDevices();
-    
     console.log(`📱 ${devices.length} dispositivos encontrados`);
     
-    // Sincroniza cada dispositivo
     const results = [];
+    
+    // Para cada dispositivo, busca TODOS os dados históricos
     for (const device of devices) {
-      const deviceId = device.id;
-      console.log(`🔄 Sincronizando dispositivo ${deviceId}...`);
-      
       try {
-        // Busca visitantes do dispositivo
-        const visitors = await fetchVisitorsFromDisplayForce(
-          yesterdayStr,
-          yesterdayStr,
-          deviceId
-        );
+        console.log(`🔄 Buscando TODOS os dados históricos para dispositivo ${device.id}...`);
         
-        console.log(`📊 ${visitors.length} visitantes para dispositivo ${deviceId}`);
+        // Busca todos os visitantes deste dispositivo (sem filtro de data)
+        const visitors = await fetchAllVisitorsFromDisplayForce(device.id);
+        console.log(`📊 ${visitors.length} visitantes encontrados para dispositivo ${device.id}`);
         
         // Salva no banco
         const saved = await saveVisitorsToDatabase(visitors);
         
+        // Atualiza agregados para todas as datas
+        await updateAllAggregatesForDevice(device.id);
+        
         results.push({
-          device_id: deviceId,
+          device_id: device.id,
           visitors_found: visitors.length,
           visitors_saved: saved,
           success: true
         });
         
-        // Atualiza agregados
-        await updateAggregatesForDevice(yesterdayStr, deviceId);
+        console.log(`✅ Dispositivo ${device.id} sincronizado: ${saved} visitantes salvos`);
         
       } catch (deviceError) {
-        console.error(`❌ Erro no dispositivo ${deviceId}:`, deviceError.message);
+        console.error(`❌ Erro no dispositivo ${device.id}:`, deviceError.message);
         results.push({
-          device_id: deviceId,
+          device_id: device.id,
           error: deviceError.message,
           success: false
         });
       }
     }
     
-    // Atualiza agregado geral
-    await updateAggregatesForDevice(yesterdayStr, 'all');
+    // Atualiza agregado geral para todas as datas
+    console.log('🔄 Atualizando agregado geral (all)...');
+    await updateAllAggregatesForDevice('all');
+    
+    console.log('✅ Sincronização completa concluída');
     
     return res.status(200).json({
       success: true,
-      message: 'Sincronização concluída',
-      date: yesterdayStr,
+      message: 'Sincronização completa de dados históricos concluída',
       results: results,
       total_devices: devices.length,
       timestamp: new Date().toISOString()
     });
     
   } catch (error) {
-    console.error('❌ Sync error:', error);
+    console.error('❌ Sync all historical data error:', error);
     return res.status(500).json({
       success: false,
       error: error.message
@@ -168,30 +162,19 @@ async function syncNow(req, res) {
   }
 }
 
-// ===========================================
-// 2. BUSCA VISITANTES DA DISPLAYFORCE
-// ===========================================
-async function fetchVisitorsFromDisplayForce(start_date, end_date, device_id = null) {
+async function fetchAllVisitorsFromDisplayForce(device_id = null) {
   const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
-  const sign = tz >= 0 ? "+" : "-";
-  const hh = String(Math.abs(tz)).padStart(2, "0");
-  const tzStr = `${sign}${hh}:00`;
-  const startISO = `${start_date}T00:00:00${tzStr}`;
-  const endISO = `${end_date}T23:59:59${tzStr}`;
-  
-  const LIMIT = 100;
+  const LIMIT = 500; // Aumentei para 500 por página
   let offset = 0;
   const allVisitors = [];
-  let totalPages = 1;
-  let currentPage = 0;
+  let totalProcessed = 0;
+  let totalFromAPI = 0;
   
-  console.log(`🔍 Buscando visitantes: ${startISO} até ${endISO}, Dispositivo: ${device_id || 'todos'}`);
+  console.log(`🔍 Buscando TODOS os visitantes${device_id ? ` para dispositivo ${device_id}` : ''}...`);
   
   try {
     while (true) {
       const bodyPayload = {
-        start: startISO,
-        end: endISO,
         limit: LIMIT,
         offset: offset,
         tracks: true,
@@ -207,7 +190,7 @@ async function fetchVisitorsFromDisplayForce(start_date, end_date, device_id = n
         bodyPayload.devices = [parseInt(device_id)];
       }
       
-      console.log(`📄 Página ${currentPage + 1}, offset: ${offset}`);
+      console.log(`📄 Buscando lote ${Math.floor(offset/LIMIT) + 1}, offset: ${offset}`);
       
       const response = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, {
         method: 'POST',
@@ -233,167 +216,99 @@ async function fetchVisitorsFromDisplayForce(start_date, end_date, device_id = n
       
       const visitors = data.payload || data || [];
       allVisitors.push(...visitors);
+      totalProcessed += visitors.length;
+      
+      // Log progresso
+      console.log(`📊 Lote ${Math.floor(offset/LIMIT) + 1}: ${visitors.length} visitantes, Total: ${totalProcessed}`);
       
       // Verifica paginação
       if (data.pagination) {
-        const total = data.pagination.total || 0;
-        totalPages = Math.ceil(total / LIMIT);
-        console.log(`📊 Total: ${total}, Página ${currentPage + 1}/${totalPages}`);
+        totalFromAPI = data.pagination.total || 0;
+        console.log(`📊 Total na API: ${totalFromAPI}, Obtidos: ${totalProcessed}`);
         
-        if (allVisitors.length >= total) {
+        if (totalProcessed >= totalFromAPI) {
+          console.log(`✅ Todos os ${totalFromAPI} visitantes obtidos`);
           break;
         }
       }
       
       // Se não há mais dados
       if (visitors.length < LIMIT) {
+        console.log(`✅ Último lote obtido (${visitors.length} visitantes)`);
         break;
       }
       
       offset += LIMIT;
-      currentPage++;
       
-      // Limite de segurança
-      if (currentPage >= 50) {
-        console.warn('⚠️ Limite de páginas atingido (50)');
+      // Limite de segurança (máximo 10,000 visitantes)
+      if (offset >= 10000) {
+        console.warn('⚠️ Limite de segurança atingido (10,000 visitantes)');
         break;
       }
       
       // Pequena pausa para evitar rate limiting
-      await new Promise(resolve => setTimeout(resolve, 100));
+      await new Promise(resolve => setTimeout(resolve, 200));
     }
     
-    console.log(`✅ ${allVisitors.length} visitantes encontrados`);
+    console.log(`✅ Total final: ${allVisitors.length} visitantes obtidos`);
     return allVisitors;
     
   } catch (error) {
-    console.error('❌ Erro ao buscar visitantes:', error);
+    console.error('❌ Erro ao buscar todos os visitantes:', error);
     throw error;
   }
 }
 
-// ===========================================
-// 3. SALVA VISITANTES NO BANCO
-// ===========================================
-async function saveVisitorsToDatabase(visitors) {
-  if (!visitors || !Array.isArray(visitors) || visitors.length === 0) {
-    console.log('ℹ️ Nenhum visitante para salvar');
-    return 0;
-  }
-  
-  const DAYS = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
-  const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
-  let savedCount = 0;
-  let errorCount = 0;
-  
-  console.log(`💾 Salvando ${visitors.length} visitantes no banco...`);
-  
-  for (const visitor of visitors) {
-    try {
-      // Valida dados básicos
-      if (!visitor.visitor_id && !visitor.session_id) {
-        console.warn('⚠️ Visitante sem ID válido:', visitor);
-        continue;
-      }
-      
-      const visitorId = visitor.visitor_id || visitor.session_id;
-      const timestamp = visitor.start || visitor.tracks?.[0]?.start || new Date().toISOString();
-      const dateObj = new Date(timestamp);
-      
-      if (isNaN(dateObj.getTime())) {
-        console.warn('⚠️ Data inválida para visitante:', visitorId);
-        continue;
-      }
-      
-      // Calcula hora local
-      const localDate = new Date(dateObj.getTime() + (tz * 3600000));
-      const hour = localDate.getHours();
-      const dateStr = localDate.toISOString().split('T')[0];
-      const dayOfWeek = DAYS[localDate.getDay()];
-      
-      // Extrai device_id
-      let deviceId = 'unknown';
-      if (visitor.tracks && visitor.tracks.length > 0) {
-        deviceId = String(visitor.tracks[0].device_id || '');
-      } else if (visitor.devices && visitor.devices.length > 0) {
-        deviceId = String(visitor.devices[0] || '');
-      }
-      
-      // Processa gênero
-      let gender = 'U';
-      if (visitor.sex === 1) gender = 'M';
-      else if (visitor.sex === 2) gender = 'F';
-      
-      // Processa idade
-      let age = 0;
-      if (typeof visitor.age === 'number') {
-        age = Math.max(0, visitor.age);
-      }
-      
-      // Processa smile
-      let smile = false;
-      const attrs = visitor.additional_atributes || visitor.additional_attributes || [];
-      if (attrs.length > 0) {
-        const lastAttr = attrs[attrs.length - 1];
-        smile = String(lastAttr?.smile || '').toLowerCase() === 'yes';
-      }
-      
-      // Insere no banco
-      await pool.query(
-        `INSERT INTO visitors (
-          visitor_id, day, store_id, store_name, 
-          timestamp, gender, age, day_of_week, smile, hour
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-        ON CONFLICT (visitor_id, timestamp) 
-        DO UPDATE SET
-          day = EXCLUDED.day,
-          store_id = EXCLUDED.store_id,
-          store_name = EXCLUDED.store_name,
-          gender = EXCLUDED.gender,
-          age = EXCLUDED.age,
-          day_of_week = EXCLUDED.day_of_week,
-          smile = EXCLUDED.smile,
-          hour = EXCLUDED.hour`,
-        [
-          visitorId,
-          dateStr,
-          deviceId,
-          `Loja ${deviceId}`,
-          timestamp,
-          gender,
-          age,
-          dayOfWeek,
-          smile,
-          hour
-        ]
-      );
-      
-      savedCount++;
-      
-    } catch (error) {
-      errorCount++;
-      console.error('❌ Erro ao salvar visitante:', error.message);
-      if (errorCount <= 5) {
-        console.error('❌ Dados do visitante:', JSON.stringify(visitor, null, 2));
+async function updateAllAggregatesForDevice(device_id) {
+  try {
+    console.log(`📈 Atualizando TODOS os agregados para ${device_id}...`);
+    
+    // Primeiro, identifica todas as datas únicas para este dispositivo
+    let query = `
+      SELECT DISTINCT day 
+      FROM visitors 
+      WHERE 1=1
+    `;
+    
+    const params = [];
+    
+    if (device_id !== 'all') {
+      query += ` AND store_id = $1`;
+      params.push(device_id);
+    }
+    
+    query += ` ORDER BY day`;
+    
+    const result = await pool.query(query, params);
+    const uniqueDates = result.rows.map(row => row.day);
+    
+    console.log(`📅 ${uniqueDates.length} datas únicas encontradas para ${device_id}`);
+    
+    // Atualiza agregados para cada data
+    for (const date of uniqueDates) {
+      try {
+        await updateAggregatesForDateAndDevice(date, device_id);
+      } catch (dateError) {
+        console.error(`❌ Erro na data ${date}:`, dateError.message);
       }
     }
+    
+    console.log(`✅ Todos os agregados atualizados para ${device_id}`);
+    
+  } catch (error) {
+    console.error(`❌ Erro ao atualizar todos os agregados para ${device_id}:`, error);
   }
-  
-  console.log(`✅ ${savedCount} visitantes salvos, ${errorCount} erros`);
-  return savedCount;
 }
 
-// ===========================================
-// 4. ATUALIZA AGREGADOS
-// ===========================================
-async function updateAggregatesForDevice(date, device_id) {
+async function updateAggregatesForDateAndDevice(date, device_id) {
   try {
-    console.log(`📈 Atualizando agregados para ${date}, dispositivo: ${device_id}`);
+    // Calcula estatísticas do dia específico
+    const stats = await calculateDailyStatsForDate(date, device_id);
     
-    // Calcula estatísticas do dia
-    const stats = await calculateDailyStats(date, device_id);
+    // Determina o store_id para salvar
+    const saveStoreId = device_id && device_id !== 'all' ? device_id : 'all';
     
-    // Salva em dashboard_daily
+    // Insere ou atualiza no dashboard_daily
     await pool.query(
       `INSERT INTO dashboard_daily (
         day, store_id, total_visitors, male, female,
@@ -423,7 +338,7 @@ async function updateAggregatesForDevice(date, device_id) {
         updated_at = EXCLUDED.updated_at`,
       [
         date,
-        device_id,
+        saveStoreId,
         stats.total_visitors,
         stats.male,
         stats.female,
@@ -445,16 +360,275 @@ async function updateAggregatesForDevice(date, device_id) {
     );
     
     // Atualiza dados por hora
-    await updateHourlyStats(date, device_id);
-    
-    console.log(`✅ Agregados atualizados para ${date}, dispositivo: ${device_id}`);
+    await updateHourlyStatsForDate(date, device_id);
     
   } catch (error) {
     console.error(`❌ Erro ao atualizar agregados para ${date}, ${device_id}:`, error);
   }
 }
 
-async function calculateDailyStats(date, device_id) {
+// ===========================================
+// 2. GET SUMMARY - CORRIGIDO PARA BUSCAR DADOS COMPLETOS
+// ===========================================
+async function getSummary(req, res, start_date, end_date, store_id) {
+  try {
+    console.log(`📊 Summary request: ${start_date} - ${end_date}, store: ${store_id}`);
+    
+    // Se não tem datas, usa um período maior
+    const sDate = start_date || '2025-01-01';
+    const eDate = end_date || new Date().toISOString().split('T')[0];
+    
+    console.log(`📊 Período: ${sDate} até ${eDate}`);
+    
+    // Busca dados agregados
+    let query = `
+      SELECT 
+        COALESCE(SUM(total_visitors), 0) AS total_visitors,
+        COALESCE(SUM(male), 0) AS total_male,
+        COALESCE(SUM(female), 0) AS total_female,
+        COALESCE(SUM(avg_age_sum), 0) AS avg_age_sum,
+        COALESCE(SUM(avg_age_count), 0) AS avg_age_count,
+        COALESCE(SUM(age_18_25), 0) AS age_18_25,
+        COALESCE(SUM(age_26_35), 0) AS age_26_35,
+        COALESCE(SUM(age_36_45), 0) AS age_36_45,
+        COALESCE(SUM(age_46_60), 0) AS age_46_60,
+        COALESCE(SUM(age_60_plus), 0) AS age_60_plus,
+        COALESCE(SUM(sunday), 0) AS sunday,
+        COALESCE(SUM(monday), 0) AS monday,
+        COALESCE(SUM(tuesday), 0) AS tuesday,
+        COALESCE(SUM(wednesday), 0) AS wednesday,
+        COALESCE(SUM(thursday), 0) AS thursday,
+        COALESCE(SUM(friday), 0) AS friday,
+        COALESCE(SUM(saturday), 0) AS saturday
+      FROM dashboard_daily
+      WHERE day >= $1 AND day <= $2
+    `;
+    
+    const params = [sDate, eDate];
+    
+    if (store_id && store_id !== "all") {
+      query += ` AND store_id = $3`;
+      params.push(store_id);
+    } else {
+      query += ` AND store_id = 'all'`;
+    }
+    
+    console.log("📊 Summary query:", query, params);
+    
+    const result = await pool.query(query, params);
+    const row = result.rows[0] || {};
+    
+    const totalFromAggregates = Number(row.total_visitors || 0);
+    console.log(`📊 Total nos agregados: ${totalFromAggregates}`);
+    
+    // Se não tem dados nos agregados OU se o usuário quer forçar recálculo
+    if (totalFromAggregates === 0 || req.query.force_recalc === 'true') {
+      console.log("📊 Calculando summary em tempo real...");
+      return await calculateRealTimeSummary(res, sDate, eDate, store_id);
+    }
+    
+    // Calcula idade média
+    const avgAgeCount = Number(row.avg_age_count || 0);
+    const averageAge = avgAgeCount > 0 ? Math.round(Number(row.avg_age_sum || 0) / avgAgeCount) : 0;
+    
+    // Busca dados por hora (AGORA USANDO O TIMESTAMP REAL)
+    const hourlyData = await getHourlyAggregatesWithRealTime(sDate, eDate, store_id);
+    
+    // Busca distribuição por idade e gênero
+    const ageGenderData = await getAgeGenderDistribution(sDate, eDate, store_id);
+    
+    const response = {
+      success: true,
+      totalVisitors: totalFromAggregates,
+      totalMale: Number(row.total_male || 0),
+      totalFemale: Number(row.total_female || 0),
+      averageAge: averageAge,
+      visitsByDay: {
+        Sunday: Number(row.sunday || 0),
+        Monday: Number(row.monday || 0),
+        Tuesday: Number(row.tuesday || 0),
+        Wednesday: Number(row.wednesday || 0),
+        Thursday: Number(row.thursday || 0),
+        Friday: Number(row.friday || 0),
+        Saturday: Number(row.saturday || 0),
+      },
+      byAgeGroup: {
+        "18-25": Number(row.age_18_25 || 0),
+        "26-35": Number(row.age_26_35 || 0),
+        "36-45": Number(row.age_36_45 || 0),
+        "46-60": Number(row.age_46_60 || 0),
+        "60+": Number(row.age_60_plus || 0),
+      },
+      byAgeGender: ageGenderData,
+      byHour: hourlyData.byHour,
+      byGenderHour: hourlyData.byGenderHour,
+      source: 'dashboard_aggregates',
+      period: `${sDate} - ${eDate}`
+    };
+    
+    return res.status(200).json(response);
+    
+  } catch (error) {
+    console.error("❌ Summary error:", error);
+    return await calculateRealTimeSummary(res, start_date, end_date, store_id);
+  }
+}
+
+// ===========================================
+// 3. FUNÇÃO PARA HORÁRIO USANDO TIMESTAMP REAL
+// ===========================================
+async function getHourlyAggregatesWithRealTime(start_date, end_date, store_id) {
+  try {
+    console.log(`⏰ Calculando fluxo horário REAL para ${start_date} - ${end_date}`);
+    
+    let query = `
+      SELECT 
+        EXTRACT(HOUR FROM timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') as hour,
+        COUNT(*) as total,
+        SUM(CASE WHEN gender = 'M' THEN 1 ELSE 0 END) as male,
+        SUM(CASE WHEN gender = 'F' THEN 1 ELSE 0 END) as female
+      FROM visitors
+      WHERE timestamp::date >= $1::date AND timestamp::date <= $2::date
+    `;
+    
+    const params = [start_date, end_date];
+    
+    if (store_id && store_id !== "all") {
+      query += ` AND store_id = $3`;
+      params.push(store_id);
+    }
+    
+    query += ` GROUP BY hour ORDER BY hour`;
+    
+    const result = await pool.query(query, params);
+    
+    const byHour = {};
+    const byGenderHour = { male: {}, female: {} };
+    
+    // Inicializa todas as horas (0-23)
+    for (let h = 0; h < 24; h++) {
+      byHour[h] = 0;
+      byGenderHour.male[h] = 0;
+      byGenderHour.female[h] = 0;
+    }
+    
+    // Preenche com os dados reais
+    for (const row of result.rows) {
+      const hour = Number(row.hour);
+      if (hour >= 0 && hour < 24) {
+        byHour[hour] = Number(row.total || 0);
+        byGenderHour.male[hour] = Number(row.male || 0);
+        byGenderHour.female[hour] = Number(row.female || 0);
+      }
+    }
+    
+    console.log(`⏰ Fluxo horário calculado: ${Object.values(byHour).reduce((a, b) => a + b, 0)} visitantes`);
+    
+    return { byHour, byGenderHour };
+    
+  } catch (error) {
+    console.error("❌ Hourly aggregates with real time error:", error);
+    return createEmptyHourlyData();
+  }
+}
+
+// ===========================================
+// 4. CALCULAR SUMMARY EM TEMPO REAL
+// ===========================================
+async function calculateRealTimeSummary(res, start_date, end_date, store_id) {
+  try {
+    const sDate = start_date || '2025-01-01';
+    const eDate = end_date || new Date().toISOString().split('T')[0];
+    
+    console.log(`🧮 Calculando summary em tempo real para ${sDate} - ${eDate}`);
+    
+    let query = `
+      SELECT 
+        COUNT(*) AS total_visitors,
+        SUM(CASE WHEN gender = 'M' THEN 1 ELSE 0 END) AS male,
+        SUM(CASE WHEN gender = 'F' THEN 1 ELSE 0 END) AS female,
+        SUM(age) AS avg_age_sum,
+        SUM(CASE WHEN age > 0 THEN 1 ELSE 0 END) AS avg_age_count,
+        SUM(CASE WHEN age BETWEEN 18 AND 25 THEN 1 ELSE 0 END) AS age_18_25,
+        SUM(CASE WHEN age BETWEEN 26 AND 35 THEN 1 ELSE 0 END) AS age_26_35,
+        SUM(CASE WHEN age BETWEEN 36 AND 45 THEN 1 ELSE 0 END) AS age_36_45,
+        SUM(CASE WHEN age BETWEEN 46 AND 60 THEN 1 ELSE 0 END) AS age_46_60,
+        SUM(CASE WHEN age > 60 THEN 1 ELSE 0 END) AS age_60_plus,
+        SUM(CASE WHEN day_of_week = 'Dom' THEN 1 ELSE 0 END) AS sunday,
+        SUM(CASE WHEN day_of_week = 'Seg' THEN 1 ELSE 0 END) AS monday,
+        SUM(CASE WHEN day_of_week = 'Ter' THEN 1 ELSE 0 END) AS tuesday,
+        SUM(CASE WHEN day_of_week = 'Qua' THEN 1 ELSE 0 END) AS wednesday,
+        SUM(CASE WHEN day_of_week = 'Qui' THEN 1 ELSE 0 END) AS thursday,
+        SUM(CASE WHEN day_of_week = 'Sex' THEN 1 ELSE 0 END) AS friday,
+        SUM(CASE WHEN day_of_week = 'Sáb' THEN 1 ELSE 0 END) AS saturday
+      FROM visitors
+      WHERE day >= $1 AND day <= $2
+    `;
+    
+    const params = [sDate, eDate];
+    
+    if (store_id && store_id !== "all") {
+      query += ` AND store_id = $3`;
+      params.push(store_id);
+    }
+    
+    const result = await pool.query(query, params);
+    const row = result.rows[0] || {};
+    
+    const totalRealTime = Number(row.total_visitors || 0);
+    console.log(`🧮 Total em tempo real: ${totalRealTime}`);
+    
+    // Calcula idade média
+    const avgAgeCount = Number(row.avg_age_count || 0);
+    const averageAge = avgAgeCount > 0 ? Math.round(Number(row.avg_age_sum || 0) / avgAgeCount) : 0;
+    
+    // Busca dados por hora usando timestamp real
+    const hourlyData = await getHourlyAggregatesWithRealTime(sDate, eDate, store_id);
+    
+    // Busca distribuição por idade e gênero
+    const ageGenderData = await getAgeGenderDistribution(sDate, eDate, store_id);
+    
+    const response = {
+      success: true,
+      totalVisitors: totalRealTime,
+      totalMale: Number(row.male || 0),
+      totalFemale: Number(row.female || 0),
+      averageAge: averageAge,
+      visitsByDay: {
+        Sunday: Number(row.sunday || 0),
+        Monday: Number(row.monday || 0),
+        Tuesday: Number(row.tuesday || 0),
+        Wednesday: Number(row.wednesday || 0),
+        Thursday: Number(row.thursday || 0),
+        Friday: Number(row.friday || 0),
+        Saturday: Number(row.saturday || 0),
+      },
+      byAgeGroup: {
+        "18-25": Number(row.age_18_25 || 0),
+        "26-35": Number(row.age_26_35 || 0),
+        "36-45": Number(row.age_36_45 || 0),
+        "46-60": Number(row.age_46_60 || 0),
+        "60+": Number(row.age_60_plus || 0),
+      },
+      byAgeGender: ageGenderData,
+      byHour: hourlyData.byHour,
+      byGenderHour: hourlyData.byGenderHour,
+      source: 'realtime_calculation',
+      period: `${sDate} - ${eDate}`
+    };
+    
+    return res.status(200).json(response);
+    
+  } catch (error) {
+    console.error("❌ Real-time summary error:", error);
+    return res.status(200).json(createEmptySummary());
+  }
+}
+
+// ===========================================
+// 5. FUNÇÕES AUXILIARES PARA PROCESSAR DADOS
+// ===========================================
+async function calculateDailyStatsForDate(date, device_id) {
   let query = `
     SELECT 
       COUNT(*) AS total_visitors,
@@ -509,7 +683,7 @@ async function calculateDailyStats(date, device_id) {
   };
 }
 
-async function updateHourlyStats(date, device_id) {
+async function updateHourlyStatsForDate(date, device_id) {
   try {
     // Limpa dados existentes
     await pool.query(
@@ -517,10 +691,10 @@ async function updateHourlyStats(date, device_id) {
       [date, device_id]
     );
     
-    // Calcula estatísticas por hora
+    // Calcula estatísticas por hora usando timestamp real
     let query = `
       SELECT 
-        hour,
+        EXTRACT(HOUR FROM timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') as hour,
         COUNT(*) AS total,
         SUM(CASE WHEN gender = 'M' THEN 1 ELSE 0 END) AS male,
         SUM(CASE WHEN gender = 'F' THEN 1 ELSE 0 END) AS female
@@ -541,74 +715,244 @@ async function updateHourlyStats(date, device_id) {
     
     // Insere dados por hora
     for (const row of result.rows) {
+      const hour = Number(row.hour);
+      if (hour >= 0 && hour < 24) {
+        await pool.query(
+          `INSERT INTO dashboard_hourly (day, store_id, hour, total, male, female)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [
+            date,
+            device_id,
+            hour,
+            Number(row.total || 0),
+            Number(row.male || 0),
+            Number(row.female || 0)
+          ]
+        );
+      }
+    }
+    
+  } catch (error) {
+    console.error(`❌ Erro ao atualizar hourly stats para ${date}:`, error);
+  }
+}
+
+// ===========================================
+// 6. SALVAR VISITANTES CORRETAMENTE (USANDO START TIME)
+// ===========================================
+async function saveVisitorsToDatabase(visitors) {
+  if (!visitors || !Array.isArray(visitors) || visitors.length === 0) {
+    console.log('ℹ️ Nenhum visitante para salvar');
+    return 0;
+  }
+  
+  const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
+  const DAYS = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+  let savedCount = 0;
+  let errorCount = 0;
+  
+  console.log(`💾 Salvando ${visitors.length} visitantes no banco...`);
+  
+  for (const visitor of visitors) {
+    try {
+      // Usa o timestamp de START (que é o momento real da visita)
+      const timestamp = visitor.start || visitor.tracks?.[0]?.start || new Date().toISOString();
+      const dateObj = new Date(timestamp);
+      
+      if (isNaN(dateObj.getTime())) {
+        console.warn('⚠️ Data inválida, usando data atual');
+        continue;
+      }
+      
+      // Converte para horário local (Brasil)
+      const localDate = new Date(dateObj.getTime() + (tz * 3600000));
+      const hour = localDate.getHours();
+      const dateStr = localDate.toISOString().split('T')[0];
+      const dayOfWeek = DAYS[localDate.getDay()];
+      
+      // Extrai device_id dos tracks
+      let deviceId = 'unknown';
+      if (visitor.tracks && visitor.tracks.length > 0) {
+        deviceId = String(visitor.tracks[0].device_id || '');
+      } else if (visitor.devices && visitor.devices.length > 0) {
+        deviceId = String(visitor.devices[0] || '');
+      }
+      
+      // Processa gênero (sex: 1 = Masculino, 2 = Feminino)
+      let gender = 'U';
+      if (visitor.sex === 1) gender = 'M';
+      else if (visitor.sex === 2) gender = 'F';
+      
+      // Processa idade
+      let age = 0;
+      if (typeof visitor.age === 'number') {
+        age = Math.max(0, visitor.age);
+      }
+      
+      // Processa smile dos atributos adicionais
+      let smile = false;
+      const attrs = visitor.additional_atributes || visitor.additional_attributes || [];
+      if (attrs.length > 0) {
+        const lastAttr = attrs[attrs.length - 1];
+        smile = String(lastAttr?.smile || '').toLowerCase() === 'yes';
+      }
+      
+      const visitorId = visitor.visitor_id || visitor.session_id || `temp_${Date.now()}_${savedCount}`;
+      
+      // Insere no banco usando timestamp REAL (start time)
       await pool.query(
-        `INSERT INTO dashboard_hourly (day, store_id, hour, total, male, female)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
+        `INSERT INTO visitors (
+          visitor_id, day, store_id, store_name, 
+          timestamp, gender, age, day_of_week, smile, hour
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        ON CONFLICT (visitor_id, timestamp) 
+        DO UPDATE SET
+          day = EXCLUDED.day,
+          store_id = EXCLUDED.store_id,
+          store_name = EXCLUDED.store_name,
+          gender = EXCLUDED.gender,
+          age = EXCLUDED.age,
+          day_of_week = EXCLUDED.day_of_week,
+          smile = EXCLUDED.smile,
+          hour = EXCLUDED.hour`,
         [
-          date,
-          device_id,
-          Number(row.hour),
-          Number(row.total || 0),
-          Number(row.male || 0),
-          Number(row.female || 0)
+          visitorId,
+          dateStr,
+          deviceId,
+          `Loja ${deviceId}`,
+          timestamp, // TIMESTAMP REAL da visita
+          gender,
+          age,
+          dayOfWeek,
+          smile,
+          hour
         ]
       );
+      
+      savedCount++;
+      
+      // Log progresso a cada 100 registros
+      if (savedCount % 100 === 0) {
+        console.log(`💾 Progresso: ${savedCount} visitantes salvos...`);
+      }
+      
+    } catch (error) {
+      errorCount++;
+      if (errorCount <= 3) {
+        console.error('❌ Erro ao salvar visitante:', error.message);
+      }
     }
-    
-  } catch (error) {
-    console.error(`❌ Erro ao atualizar hourly stats:`, error);
   }
+  
+  console.log(`✅ ${savedCount} visitantes salvos, ${errorCount} erros`);
+  return savedCount;
 }
 
 // ===========================================
-// 5. BUSCA DISPOSITIVOS DA DISPLAYFORCE
+// 7. FUNÇÕES AUXILIARES RESTANTES
 // ===========================================
-async function fetchDisplayForceDevices() {
+async function getAgeGenderDistribution(start_date, end_date, store_id) {
   try {
-    console.log('🌐 Buscando dispositivos da DisplayForce...');
+    let query = `
+      SELECT 
+        gender,
+        age
+      FROM visitors
+      WHERE age > 0 AND day >= $1 AND day <= $2
+    `;
     
-    let response = await fetch(`${DISPLAYFORCE_BASE}/device/list`, {
-      method: 'POST',
-      headers: {
-        'X-API-Token': DISPLAYFORCE_TOKEN,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({})
-    });
+    const params = [start_date, end_date];
     
-    if (!response.ok && response.status === 405) {
-      response = await fetch(`${DISPLAYFORCE_BASE}/device/list`, {
-        method: 'GET',
-        headers: {
-          'X-API-Token': DISPLAYFORCE_TOKEN
-        }
-      });
+    if (store_id && store_id !== "all") {
+      query += ` AND store_id = $3`;
+      params.push(store_id);
     }
     
-    if (!response.ok) {
-      throw new Error(`DisplayForce API: ${response.status}`);
+    const result = await pool.query(query, params);
+    
+    const byAgeGender = {
+      "<20": { male: 0, female: 0 },
+      "20-29": { male: 0, female: 0 },
+      "30-45": { male: 0, female: 0 },
+      ">45": { male: 0, female: 0 }
+    };
+    
+    for (const row of result.rows) {
+      const gender = row.gender === 'M' ? 'male' : 'female';
+      const age = Number(row.age || 0);
+      
+      if (age < 20) {
+        byAgeGender["<20"][gender]++;
+      } else if (age <= 29) {
+        byAgeGender["20-29"][gender]++;
+      } else if (age <= 45) {
+        byAgeGender["30-45"][gender]++;
+      } else {
+        byAgeGender[">45"][gender]++;
+      }
     }
     
-    const data = await response.json();
-    const devices = data.devices || data.data || [];
-    
-    console.log(`✅ ${devices.length} dispositivos encontrados`);
-    
-    return devices.map(device => ({
-      id: String(device.id || device.device_id || ''),
-      name: device.name || `Dispositivo ${device.id || device.device_id}`,
-      location: device.location || 'Local desconhecido',
-      status: device.status || 'active'
-    }));
-    
+    return byAgeGender;
   } catch (error) {
-    console.error('❌ Erro ao buscar dispositivos:', error);
-    return [];
+    console.error("❌ Age gender distribution error:", error);
+    return createEmptyAgeGender();
   }
 }
 
+function createEmptySummary() {
+  return {
+    success: true,
+    totalVisitors: 0,
+    totalMale: 0,
+    totalFemale: 0,
+    averageAge: 0,
+    visitsByDay: {
+      Sunday: 0,
+      Monday: 0,
+      Tuesday: 0,
+      Wednesday: 0,
+      Thursday: 0,
+      Friday: 0,
+      Saturday: 0,
+    },
+    byAgeGroup: {
+      "18-25": 0,
+      "26-35": 0,
+      "36-45": 0,
+      "46-60": 0,
+      "60+": 0,
+    },
+    byAgeGender: createEmptyAgeGender(),
+    byHour: createEmptyHourlyData().byHour,
+    byGenderHour: createEmptyHourlyData().byGenderHour,
+    source: 'empty_fallback'
+  };
+}
+
+function createEmptyHourlyData() {
+  const byHour = {};
+  const byGenderHour = { male: {}, female: {} };
+  
+  for (let h = 0; h < 24; h++) {
+    byHour[h] = 0;
+    byGenderHour.male[h] = 0;
+    byGenderHour.female[h] = 0;
+  }
+  
+  return { byHour, byGenderHour };
+}
+
+function createEmptyAgeGender() {
+  return {
+    "<20": { male: 0, female: 0 },
+    "20-29": { male: 0, female: 0 },
+    "30-45": { male: 0, female: 0 },
+    ">45": { male: 0, female: 0 }
+  };
+}
+
 // ===========================================
-// 6. GET VISITORS (CORRIGIDO)
+// 8. OUTROS ENDPOINTS (mantidos do código anterior)
 // ===========================================
 async function getVisitors(req, res, start_date, end_date, store_id) {
   try {
@@ -707,510 +1051,11 @@ async function getVisitors(req, res, start_date, end_date, store_id) {
   }
 }
 
-// ===========================================
-// 7. GET SUMMARY (CORRIGIDO)
-// ===========================================
-async function getSummary(req, res, start_date, end_date, store_id) {
-  try {
-    console.log(`📊 Summary request: ${start_date} - ${end_date}, store: ${store_id}`);
-    
-    // Primeiro, sincroniza se necessário
-    if (req.query.sync === 'true') {
-      await syncData(start_date, end_date, store_id);
-    }
-    
-    // Busca dados agregados
-    let query = `
-      SELECT 
-        COALESCE(SUM(total_visitors), 0) AS total_visitors,
-        COALESCE(SUM(male), 0) AS total_male,
-        COALESCE(SUM(female), 0) AS total_female,
-        COALESCE(SUM(avg_age_sum), 0) AS avg_age_sum,
-        COALESCE(SUM(avg_age_count), 0) AS avg_age_count,
-        COALESCE(SUM(age_18_25), 0) AS age_18_25,
-        COALESCE(SUM(age_26_35), 0) AS age_26_35,
-        COALESCE(SUM(age_36_45), 0) AS age_36_45,
-        COALESCE(SUM(age_46_60), 0) AS age_46_60,
-        COALESCE(SUM(age_60_plus), 0) AS age_60_plus,
-        COALESCE(SUM(sunday), 0) AS sunday,
-        COALESCE(SUM(monday), 0) AS monday,
-        COALESCE(SUM(tuesday), 0) AS tuesday,
-        COALESCE(SUM(wednesday), 0) AS wednesday,
-        COALESCE(SUM(thursday), 0) AS thursday,
-        COALESCE(SUM(friday), 0) AS friday,
-        COALESCE(SUM(saturday), 0) AS saturday
-      FROM dashboard_daily
-      WHERE 1=1
-    `;
-    
-    const params = [];
-    let paramCount = 1;
-    
-    if (start_date) {
-      query += ` AND day >= $${paramCount}`;
-      params.push(start_date);
-      paramCount++;
-    }
-    
-    if (end_date) {
-      query += ` AND day <= $${paramCount}`;
-      params.push(end_date);
-      paramCount++;
-    }
-    
-    if (store_id && store_id !== "all") {
-      query += ` AND store_id = $${paramCount}`;
-      params.push(store_id);
-      paramCount++;
-    } else {
-      query += ` AND store_id = 'all'`;
-    }
-    
-    console.log("📊 Summary query:", query, params);
-    
-    const result = await pool.query(query, params);
-    const row = result.rows[0] || {};
-    
-    // Se não tem dados, calcula na hora
-    if (Number(row.total_visitors || 0) === 0) {
-      console.log("📊 Calculando summary em tempo real...");
-      return await calculateRealTimeSummary(res, start_date, end_date, store_id);
-    }
-    
-    // Calcula idade média
-    const avgAgeCount = Number(row.avg_age_count || 0);
-    const averageAge = avgAgeCount > 0 ? Math.round(Number(row.avg_age_sum || 0) / avgAgeCount) : 0;
-    
-    // Busca dados por hora
-    const hourlyData = await getHourlyAggregates(start_date, end_date, store_id);
-    
-    // Busca distribuição por idade e gênero
-    const ageGenderData = await getAgeGenderDistribution(start_date, end_date, store_id);
-    
-    const response = {
-      success: true,
-      totalVisitors: Number(row.total_visitors || 0),
-      totalMale: Number(row.total_male || 0),
-      totalFemale: Number(row.total_female || 0),
-      averageAge: averageAge,
-      visitsByDay: {
-        Sunday: Number(row.sunday || 0),
-        Monday: Number(row.monday || 0),
-        Tuesday: Number(row.tuesday || 0),
-        Wednesday: Number(row.wednesday || 0),
-        Thursday: Number(row.thursday || 0),
-        Friday: Number(row.friday || 0),
-        Saturday: Number(row.saturday || 0),
-      },
-      byAgeGroup: {
-        "18-25": Number(row.age_18_25 || 0),
-        "26-35": Number(row.age_26_35 || 0),
-        "36-45": Number(row.age_36_45 || 0),
-        "46-60": Number(row.age_46_60 || 0),
-        "60+": Number(row.age_60_plus || 0),
-      },
-      byAgeGender: ageGenderData,
-      byHour: hourlyData.byHour,
-      byGenderHour: hourlyData.byGenderHour,
-      source: 'dashboard_aggregates'
-    };
-    
-    return res.status(200).json(response);
-    
-  } catch (error) {
-    console.error("❌ Summary error:", error);
-    return await calculateRealTimeSummary(res, start_date, end_date, store_id);
-  }
-}
-
-async function syncData(start_date, end_date, store_id) {
-  try {
-    console.log(`🔄 Sincronizando dados para ${start_date} - ${end_date}`);
-    
-    const visitors = await fetchVisitorsFromDisplayForce(start_date, end_date, store_id);
-    await saveVisitorsToDatabase(visitors);
-    
-    // Atualiza agregados para cada dia
-    const start = new Date(start_date);
-    const end = new Date(end_date);
-    
-    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-      const dateStr = d.toISOString().split('T')[0];
-      await updateAggregatesForDevice(dateStr, store_id || 'all');
-    }
-    
-  } catch (error) {
-    console.error('❌ Sync data error:', error);
-  }
-}
-
-async function calculateRealTimeSummary(res, start_date, end_date, store_id) {
-  try {
-    let query = `
-      SELECT 
-        COUNT(*) AS total_visitors,
-        SUM(CASE WHEN gender = 'M' THEN 1 ELSE 0 END) AS male,
-        SUM(CASE WHEN gender = 'F' THEN 1 ELSE 0 END) AS female,
-        SUM(age) AS avg_age_sum,
-        SUM(CASE WHEN age > 0 THEN 1 ELSE 0 END) AS avg_age_count,
-        SUM(CASE WHEN age BETWEEN 18 AND 25 THEN 1 ELSE 0 END) AS age_18_25,
-        SUM(CASE WHEN age BETWEEN 26 AND 35 THEN 1 ELSE 0 END) AS age_26_35,
-        SUM(CASE WHEN age BETWEEN 36 AND 45 THEN 1 ELSE 0 END) AS age_36_45,
-        SUM(CASE WHEN age BETWEEN 46 AND 60 THEN 1 ELSE 0 END) AS age_46_60,
-        SUM(CASE WHEN age > 60 THEN 1 ELSE 0 END) AS age_60_plus,
-        SUM(CASE WHEN day_of_week = 'Dom' THEN 1 ELSE 0 END) AS sunday,
-        SUM(CASE WHEN day_of_week = 'Seg' THEN 1 ELSE 0 END) AS monday,
-        SUM(CASE WHEN day_of_week = 'Ter' THEN 1 ELSE 0 END) AS tuesday,
-        SUM(CASE WHEN day_of_week = 'Qua' THEN 1 ELSE 0 END) AS wednesday,
-        SUM(CASE WHEN day_of_week = 'Qui' THEN 1 ELSE 0 END) AS thursday,
-        SUM(CASE WHEN day_of_week = 'Sex' THEN 1 ELSE 0 END) AS friday,
-        SUM(CASE WHEN day_of_week = 'Sáb' THEN 1 ELSE 0 END) AS saturday
-      FROM visitors
-      WHERE 1=1
-    `;
-    
-    const params = [];
-    let paramCount = 1;
-    
-    if (start_date) {
-      query += ` AND day >= $${paramCount}`;
-      params.push(start_date);
-      paramCount++;
-    }
-    
-    if (end_date) {
-      query += ` AND day <= $${paramCount}`;
-      params.push(end_date);
-      paramCount++;
-    }
-    
-    if (store_id && store_id !== "all") {
-      query += ` AND store_id = $${paramCount}`;
-      params.push(store_id);
-      paramCount++;
-    }
-    
-    const result = await pool.query(query, params);
-    const row = result.rows[0] || {};
-    
-    // Calcula idade média
-    const avgAgeCount = Number(row.avg_age_count || 0);
-    const averageAge = avgAgeCount > 0 ? Math.round(Number(row.avg_age_sum || 0) / avgAgeCount) : 0;
-    
-    // Busca dados por hora
-    const hourlyData = await getRealTimeHourlyData(start_date, end_date, store_id);
-    
-    // Busca distribuição por idade e gênero
-    const ageGenderData = await getAgeGenderDistribution(start_date, end_date, store_id);
-    
-    const response = {
-      success: true,
-      totalVisitors: Number(row.total_visitors || 0),
-      totalMale: Number(row.male || 0),
-      totalFemale: Number(row.female || 0),
-      averageAge: averageAge,
-      visitsByDay: {
-        Sunday: Number(row.sunday || 0),
-        Monday: Number(row.monday || 0),
-        Tuesday: Number(row.tuesday || 0),
-        Wednesday: Number(row.wednesday || 0),
-        Thursday: Number(row.thursday || 0),
-        Friday: Number(row.friday || 0),
-        Saturday: Number(row.saturday || 0),
-      },
-      byAgeGroup: {
-        "18-25": Number(row.age_18_25 || 0),
-        "26-35": Number(row.age_26_35 || 0),
-        "36-45": Number(row.age_36_45 || 0),
-        "46-60": Number(row.age_46_60 || 0),
-        "60+": Number(row.age_60_plus || 0),
-      },
-      byAgeGender: ageGenderData,
-      byHour: hourlyData.byHour,
-      byGenderHour: hourlyData.byGenderHour,
-      source: 'realtime_calculation'
-    };
-    
-    return res.status(200).json(response);
-    
-  } catch (error) {
-    console.error("❌ Real-time summary error:", error);
-    return res.status(200).json(createEmptySummary());
-  }
-}
-
-async function getHourlyAggregates(start_date, end_date, store_id) {
-  try {
-    let query = `
-      SELECT 
-        hour,
-        COALESCE(SUM(total), 0) AS total,
-        COALESCE(SUM(male), 0) AS male,
-        COALESCE(SUM(female), 0) AS female
-      FROM dashboard_hourly
-      WHERE 1=1
-    `;
-    
-    const params = [];
-    let paramCount = 1;
-    
-    if (start_date) {
-      query += ` AND day >= $${paramCount}`;
-      params.push(start_date);
-      paramCount++;
-    }
-    
-    if (end_date) {
-      query += ` AND day <= $${paramCount}`;
-      params.push(end_date);
-      paramCount++;
-    }
-    
-    if (store_id && store_id !== "all") {
-      query += ` AND store_id = $${paramCount}`;
-      params.push(store_id);
-      paramCount++;
-    } else {
-      query += ` AND store_id = 'all'`;
-    }
-    
-    query += ` GROUP BY hour ORDER BY hour ASC`;
-    
-    const result = await pool.query(query, params);
-    
-    const byHour = {};
-    const byGenderHour = { male: {}, female: {} };
-    
-    // Inicializa
-    for (let h = 0; h < 24; h++) {
-      byHour[h] = 0;
-      byGenderHour.male[h] = 0;
-      byGenderHour.female[h] = 0;
-    }
-    
-    // Preenche
-    for (const row of result.rows) {
-      const hour = Number(row.hour);
-      byHour[hour] = Number(row.total || 0);
-      byGenderHour.male[hour] = Number(row.male || 0);
-      byGenderHour.female[hour] = Number(row.female || 0);
-    }
-    
-    return { byHour, byGenderHour };
-  } catch (error) {
-    console.error("❌ Hourly aggregates error:", error);
-    return createEmptyHourlyData();
-  }
-}
-
-async function getRealTimeHourlyData(start_date, end_date, store_id) {
-  try {
-    let query = `
-      SELECT 
-        hour,
-        COUNT(*) AS total,
-        SUM(CASE WHEN gender = 'M' THEN 1 ELSE 0 END) AS male,
-        SUM(CASE WHEN gender = 'F' THEN 1 ELSE 0 END) AS female
-      FROM visitors
-      WHERE 1=1
-    `;
-    
-    const params = [];
-    let paramCount = 1;
-    
-    if (start_date) {
-      query += ` AND day >= $${paramCount}`;
-      params.push(start_date);
-      paramCount++;
-    }
-    
-    if (end_date) {
-      query += ` AND day <= $${paramCount}`;
-      params.push(end_date);
-      paramCount++;
-    }
-    
-    if (store_id && store_id !== "all") {
-      query += ` AND store_id = $${paramCount}`;
-      params.push(store_id);
-      paramCount++;
-    }
-    
-    query += ` GROUP BY hour ORDER BY hour ASC`;
-    
-    const result = await pool.query(query, params);
-    
-    const byHour = {};
-    const byGenderHour = { male: {}, female: {} };
-    
-    // Inicializa
-    for (let h = 0; h < 24; h++) {
-      byHour[h] = 0;
-      byGenderHour.male[h] = 0;
-      byGenderHour.female[h] = 0;
-    }
-    
-    // Preenche
-    for (const row of result.rows) {
-      const hour = Number(row.hour);
-      byHour[hour] = Number(row.total || 0);
-      byGenderHour.male[hour] = Number(row.male || 0);
-      byGenderHour.female[hour] = Number(row.female || 0);
-    }
-    
-    return { byHour, byGenderHour };
-  } catch (error) {
-    console.error("❌ Real-time hourly error:", error);
-    return createEmptyHourlyData();
-  }
-}
-
-async function getAgeGenderDistribution(start_date, end_date, store_id) {
-  try {
-    let query = `
-      SELECT 
-        gender,
-        age
-      FROM visitors
-      WHERE age > 0
-    `;
-    
-    const params = [];
-    let paramCount = 1;
-    
-    if (start_date) {
-      query += ` AND day >= $${paramCount}`;
-      params.push(start_date);
-      paramCount++;
-    }
-    
-    if (end_date) {
-      query += ` AND day <= $${paramCount}`;
-      params.push(end_date);
-      paramCount++;
-    }
-    
-    if (store_id && store_id !== "all") {
-      query += ` AND store_id = $${paramCount}`;
-      params.push(store_id);
-      paramCount++;
-    }
-    
-    const result = await pool.query(query, params);
-    
-    const byAgeGender = {
-      "<20": { male: 0, female: 0 },
-      "20-29": { male: 0, female: 0 },
-      "30-45": { male: 0, female: 0 },
-      ">45": { male: 0, female: 0 }
-    };
-    
-    for (const row of result.rows) {
-      const gender = row.gender === 'M' ? 'male' : 'female';
-      const age = Number(row.age || 0);
-      
-      if (age < 20) {
-        byAgeGender["<20"][gender]++;
-      } else if (age <= 29) {
-        byAgeGender["20-29"][gender]++;
-      } else if (age <= 45) {
-        byAgeGender["30-45"][gender]++;
-      } else {
-        byAgeGender[">45"][gender]++;
-      }
-    }
-    
-    return byAgeGender;
-  } catch (error) {
-    console.error("❌ Age gender distribution error:", error);
-    return createEmptyAgeGender();
-  }
-}
-
-function createEmptySummary() {
-  return {
-    success: true,
-    totalVisitors: 0,
-    totalMale: 0,
-    totalFemale: 0,
-    averageAge: 0,
-    visitsByDay: {
-      Sunday: 0,
-      Monday: 0,
-      Tuesday: 0,
-      Wednesday: 0,
-      Thursday: 0,
-      Friday: 0,
-      Saturday: 0,
-    },
-    byAgeGroup: {
-      "18-25": 0,
-      "26-35": 0,
-      "36-45": 0,
-      "46-60": 0,
-      "60+": 0,
-    },
-    byAgeGender: createEmptyAgeGender(),
-    byHour: createEmptyHourlyData().byHour,
-    byGenderHour: createEmptyHourlyData().byGenderHour,
-    source: 'empty_fallback'
-  };
-}
-
-function createEmptyHourlyData() {
-  const byHour = {};
-  const byGenderHour = { male: {}, female: {} };
-  
-  for (let h = 0; h < 24; h++) {
-    byHour[h] = 0;
-    byGenderHour.male[h] = 0;
-    byGenderHour.female[h] = 0;
-  }
-  
-  return { byHour, byGenderHour };
-}
-
-function createEmptyAgeGender() {
-  return {
-    "<20": { male: 0, female: 0 },
-    "20-29": { male: 0, female: 0 },
-    "30-45": { male: 0, female: 0 },
-    ">45": { male: 0, female: 0 }
-  };
-}
-
-// ===========================================
-// 8. FUNÇÕES AUXILIARES
-// ===========================================
-function getDayOfWeek(timestamp) {
-  if (!timestamp) return '';
-  const DAYS = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
-  const date = new Date(timestamp);
-  return DAYS[date.getDay()] || '';
-}
-
-function getHourFromTimestamp(timestamp) {
-  if (!timestamp) return 0;
-  const date = new Date(timestamp);
-  const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
-  const localDate = new Date(date.getTime() + (tz * 3600000));
-  return localDate.getHours();
-}
-
-function getSmileStatus(attributes) {
-  if (!Array.isArray(attributes) || attributes.length === 0) return false;
-  const lastAttr = attributes[attributes.length - 1];
-  return String(lastAttr?.smile || '').toLowerCase() === 'yes';
-}
-
-// ===========================================
-// 9. OUTROS ENDPOINTS
-// ===========================================
 async function getStores(req, res) {
   try {
     const devices = await fetchDisplayForceDevices();
     
-    // Adiciona contagem de visitantes de cada dispositivo
+    // Adiciona contagem de visitantes
     const storesWithCount = await Promise.all(
       devices.map(async (device) => {
         const countResult = await pool.query(
@@ -1233,17 +1078,51 @@ async function getStores(req, res) {
     
   } catch (error) {
     console.error('❌ Stores error:', error);
-    
-    // Fallback
     return res.status(200).json({
       success: true,
-      stores: [
-        { id: '15267', name: 'Loja Principal', visitor_count: 0, status: 'active' },
-        { id: '15268', name: 'Loja Norte', visitor_count: 0, status: 'active' },
-        { id: '15269', name: 'Loja Sul', visitor_count: 0, status: 'active' }
-      ],
+      stores: [],
       isFallback: true
     });
+  }
+}
+
+async function fetchDisplayForceDevices() {
+  try {
+    let response = await fetch(`${DISPLAYFORCE_BASE}/device/list`, {
+      method: 'POST',
+      headers: {
+        'X-API-Token': DISPLAYFORCE_TOKEN,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({})
+    });
+    
+    if (!response.ok && response.status === 405) {
+      response = await fetch(`${DISPLAYFORCE_BASE}/device/list`, {
+        method: 'GET',
+        headers: {
+          'X-API-Token': DISPLAYFORCE_TOKEN
+        }
+      });
+    }
+    
+    if (!response.ok) {
+      throw new Error(`DisplayForce API: ${response.status}`);
+    }
+    
+    const data = await response.json();
+    const devices = data.devices || data.data || [];
+    
+    return devices.map(device => ({
+      id: String(device.id || device.device_id || ''),
+      name: device.name || `Dispositivo ${device.id || device.device_id}`,
+      location: device.location || 'Local desconhecido',
+      status: device.status || 'active'
+    }));
+    
+  } catch (error) {
+    console.error('❌ Erro ao buscar dispositivos:', error);
+    return [];
   }
 }
 
@@ -1259,7 +1138,6 @@ async function getDevices(req, res) {
     
   } catch (error) {
     console.error('❌ Devices error:', error);
-    
     return res.status(200).json({
       success: true,
       devices: [],
@@ -1287,7 +1165,7 @@ async function refreshRange(req, res, start_date, end_date, store_id) {
     
     for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
       const dateStr = d.toISOString().split('T')[0];
-      await updateAggregatesForDevice(dateStr, store_id || 'all');
+      await updateAggregatesForDateAndDevice(dateStr, store_id || 'all');
     }
     
     return res.status(200).json({
@@ -1305,6 +1183,91 @@ async function refreshRange(req, res, start_date, end_date, store_id) {
       success: false,
       error: error.message
     });
+  }
+}
+
+async function fetchVisitorsFromDisplayForce(start_date, end_date, device_id = null) {
+  const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
+  const sign = tz >= 0 ? "+" : "-";
+  const hh = String(Math.abs(tz)).padStart(2, "0");
+  const tzStr = `${sign}${hh}:00`;
+  const startISO = `${start_date}T00:00:00${tzStr}`;
+  const endISO = `${end_date}T23:59:59${tzStr}`;
+  
+  const LIMIT = 500;
+  let offset = 0;
+  const allVisitors = [];
+  let totalProcessed = 0;
+  
+  console.log(`🔍 Buscando visitantes: ${startISO} até ${endISO}, Dispositivo: ${device_id || 'todos'}`);
+  
+  try {
+    while (true) {
+      const bodyPayload = {
+        start: startISO,
+        end: endISO,
+        limit: LIMIT,
+        offset: offset,
+        tracks: true
+      };
+      
+      if (device_id) {
+        bodyPayload.devices = [parseInt(device_id)];
+      }
+      
+      console.log(`📄 Buscando lote ${Math.floor(offset/LIMIT) + 1}, offset: ${offset}`);
+      
+      const response = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, {
+        method: 'POST',
+        headers: { 
+          'X-API-Token': DISPLAYFORCE_TOKEN, 
+          'Content-Type': 'application/json' 
+        },
+        body: JSON.stringify(bodyPayload)
+      });
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`API Error ${response.status}: ${errorText}`);
+      }
+      
+      const data = await response.json();
+      
+      const visitors = data.payload || data || [];
+      allVisitors.push(...visitors);
+      totalProcessed += visitors.length;
+      
+      console.log(`📊 Lote ${Math.floor(offset/LIMIT) + 1}: ${visitors.length} visitantes, Total: ${totalProcessed}`);
+      
+      // Verifica paginação
+      if (data.pagination) {
+        const totalFromAPI = data.pagination.total || 0;
+        console.log(`📊 Total na API: ${totalFromAPI}, Obtidos: ${totalProcessed}`);
+        
+        if (totalProcessed >= totalFromAPI) {
+          console.log(`✅ Todos os ${totalFromAPI} visitantes obtidos`);
+          break;
+        }
+      }
+      
+      // Se não há mais dados
+      if (visitors.length < LIMIT) {
+        console.log(`✅ Último lote obtido (${visitors.length} visitantes)`);
+        break;
+      }
+      
+      offset += LIMIT;
+      
+      // Pequena pausa
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    
+    console.log(`✅ Total final: ${allVisitors.length} visitantes obtidos`);
+    return allVisitors;
+    
+  } catch (error) {
+    console.error('❌ Erro ao buscar visitantes:', error);
+    throw error;
   }
 }
 
@@ -1329,7 +1292,7 @@ async function refreshAll(req, res, start_date, end_date) {
         
         for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
           const dateStr = d.toISOString().split('T')[0];
-          await updateAggregatesForDevice(dateStr, device.id);
+          await updateAggregatesForDateAndDevice(dateStr, device.id);
         }
         
         results.push({
@@ -1355,7 +1318,7 @@ async function refreshAll(req, res, start_date, end_date) {
     
     for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
       const dateStr = d.toISOString().split('T')[0];
-      await updateAggregatesForDevice(dateStr, 'all');
+      await updateAggregatesForDateAndDevice(dateStr, 'all');
     }
     
     return res.status(200).json({
@@ -1405,7 +1368,6 @@ async function ensureIndexes(req, res) {
   try {
     console.log('🔧 Criando índices...');
     
-    // Índices para visitors
     await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_visitors_day ON visitors(day);
       CREATE INDEX IF NOT EXISTS idx_visitors_store_id ON visitors(store_id);
@@ -1414,17 +1376,11 @@ async function ensureIndexes(req, res) {
       CREATE INDEX IF NOT EXISTS idx_visitors_gender ON visitors(gender);
       CREATE INDEX IF NOT EXISTS idx_visitors_age ON visitors(age);
       CREATE INDEX IF NOT EXISTS idx_visitors_hour ON visitors(hour);
-    `);
-    
-    // Índices para dashboard_daily
-    await pool.query(`
+      
       CREATE INDEX IF NOT EXISTS idx_dashboard_daily_day ON dashboard_daily(day);
       CREATE INDEX IF NOT EXISTS idx_dashboard_daily_store ON dashboard_daily(store_id);
       CREATE INDEX IF NOT EXISTS idx_dashboard_daily_day_store ON dashboard_daily(day, store_id);
-    `);
-    
-    // Índices para dashboard_hourly
-    await pool.query(`
+      
       CREATE INDEX IF NOT EXISTS idx_dashboard_hourly_day ON dashboard_hourly(day);
       CREATE INDEX IF NOT EXISTS idx_dashboard_hourly_store ON dashboard_hourly(store_id);
       CREATE INDEX IF NOT EXISTS idx_dashboard_hourly_hour ON dashboard_hourly(hour);
@@ -1445,4 +1401,25 @@ async function ensureIndexes(req, res) {
       error: error.message
     });
   }
+}
+
+function getDayOfWeek(timestamp) {
+  if (!timestamp) return '';
+  const DAYS = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+  const date = new Date(timestamp);
+  return DAYS[date.getDay()] || '';
+}
+
+function getHourFromTimestamp(timestamp) {
+  if (!timestamp) return 0;
+  const date = new Date(timestamp);
+  const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
+  const localDate = new Date(date.getTime() + (tz * 3600000));
+  return localDate.getHours();
+}
+
+function getSmileStatus(attributes) {
+  if (!Array.isArray(attributes) || attributes.length === 0) return false;
+  const lastAttr = attributes[attributes.length - 1];
+  return String(lastAttr?.smile || '').toLowerCase() === 'yes';
 }

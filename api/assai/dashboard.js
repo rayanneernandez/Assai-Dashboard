@@ -210,22 +210,26 @@ async function getVisitorsFromDisplayForce(res, start_date, end_date, store_id) 
   const DAYS = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
   const visitors = all.map((v) => {
     const ts = String(v.start ?? v.tracks?.[0]?.start ?? new Date().toISOString());
-    const base = new Date(ts);
-    const local = new Date(base.getTime() + tz * 3600000);
+    const d = new Date(ts);
+    const isoUTC = d.toISOString();
+    const local = new Date(d.getTime() + tz * 3600000);
     const di = local.getDay();
     const day_of_week = DAYS[di];
-    const attrs = Array.isArray(v.additional_atributes) ? v.additional_atributes : [];
+    const attrsA = Array.isArray(v.additional_attributes) ? v.additional_attributes : [];
+    const attrsB = Array.isArray(v.additional_atributes) ? v.additional_atributes : [];
+    const attrs = [...attrsA, ...attrsB];
     const last = attrs.length ? attrs[attrs.length - 1] : {};
     const smile = String(last?.smile ?? v.smile ?? '').toLowerCase() === 'yes';
+    const ageVal = v.age ?? last?.age ?? 0;
     const deviceId = String(v.tracks?.[0]?.device_id ?? (Array.isArray(v.devices) ? v.devices[0] : ''));
     return {
       id: String(v.visitor_id ?? v.session_id ?? v.id ?? ''),
       date: local.toISOString().slice(0,10),
       store_id: deviceId,
       store_name: `Loja ${deviceId}`,
-      timestamp: ts,
+      timestamp: isoUTC,
       gender: (v.sex === 1 ? 'Masculino' : 'Feminino'),
-      age: Number(v.age ?? 0),
+      age: Number(ageVal || 0),
       day_of_week,
       smile,
     };
@@ -625,8 +629,8 @@ async function refreshRange(req, res, start_date, end_date, store_id) {
       }
       const mapPt = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
       for (const v of payload) {
-        const ts = String(v.start || v.tracks?.[0]?.start || new Date().toISOString()); const base = new Date(ts); const local = new Date(base.getTime() + tz*3600000); const dstr = `${local.getFullYear()}-${String(local.getMonth()+1).padStart(2,'0')}-${String(local.getDate()).padStart(2,'0')}`; const dayOfWeek = mapPt[local.getDay()]; const deviceId = String(v.tracks?.[0]?.device_id ?? (Array.isArray(v.devices)? v.devices[0] : ''));
-        await pool.query(`INSERT INTO public.visitors (visitor_id, day, timestamp, store_id, store_name, gender, age, day_of_week, smile) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING`, [String(v.visitor_id ?? v.session_id ?? v.id ?? ''), dstr, ts, deviceId, String(v.store_name ?? ''), (v.sex===1?'M':'F'), Number(v.age||0), dayOfWeek, String(v.smile||'').toLowerCase()==='yes']);
+        const ts = String(v.start || v.tracks?.[0]?.start || new Date().toISOString()); const dUTC = new Date(ts); const isoUTC = dUTC.toISOString(); const local = new Date(dUTC.getTime() + tz*3600000); const dstr = `${local.getFullYear()}-${String(local.getMonth()+1).padStart(2,'0')}-${String(local.getDate()).padStart(2,'0')}`; const dayOfWeek = mapPt[local.getDay()]; const deviceId = String(v.tracks?.[0]?.device_id ?? (Array.isArray(v.devices)? v.devices[0] : '')); const attrsA = Array.isArray(v.additional_attributes) ? v.additional_attributes : []; const attrsB = Array.isArray(v.additional_atributes) ? v.additional_atributes : []; const attrs = [...attrsA, ...attrsB]; const last = attrs.length ? attrs[attrs.length-1] : {}; const ageVal = v.age ?? last?.age ?? 0; const smileVal = String(last?.smile ?? v.smile ?? '').toLowerCase()==='yes';
+        await pool.query(`INSERT INTO public.visitors (visitor_id, day, timestamp, store_id, store_name, gender, age, day_of_week, smile) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING`, [String(v.visitor_id ?? v.session_id ?? v.id ?? ''), dstr, isoUTC, deviceId, String(v.store_name ?? ''), (v.sex===1?'M':'F'), Number(ageVal||0), dayOfWeek, smileVal]);
       }
     }
     return res.status(200).json({ ok: true, days: days.length, store_id: store_id||'all' });
@@ -804,16 +808,23 @@ async function refreshAll(req, res, start_date, end_date) {
       for (const v of payload) {
         const ts = String(v.start || v.tracks?.[0]?.start || new Date().toISOString());
         const dd = new Date(ts);
+        const isoUTC = dd.toISOString();
         const dstrLocal = `${dd.getFullYear()}-${String(dd.getMonth()+1).padStart(2,'0')}-${String(dd.getDate()).padStart(2,'0')}`;
         if (dstrLocal !== day) continue;
         total++;
         const g = v.sex===1?'M':'F'; if (g==='M') male++; else female++;
-        const age = Number(v.age||0); if (age>0){ avgSum+=age; avgCount++; }
+        const attrsA = Array.isArray(v.additional_attributes) ? v.additional_attributes : [];
+        const attrsB = Array.isArray(v.additional_atributes) ? v.additional_atributes : [];
+        const attrs = [...attrsA, ...attrsB];
+        const last = attrs.length ? attrs[attrs.length - 1] : {};
+        const ageFromAttrs = last?.age ?? 0;
+        const age = Number(v.age ?? ageFromAttrs ?? 0); if (age>0){ avgSum+=age; avgCount++; }
         if (age>=18&&age<=25) byAge['18-25']++; else if (age>=26&&age<=35) byAge['26-35']++; else if (age>=36&&age<=45) byAge['36-45']++; else if (age>=46&&age<=60) byAge['46-60']++; else if (age>60) byAge['60+']++;
         const wd = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][dd.getDay()]; byWeek[wd] = (byWeek[wd]||0)+1;
         const h = dd.getHours(); byHour[h] = (byHour[h]||0)+1; if (g==='M') byGenderHour.male[h]=(byGenderHour.male[h]||0)+1; else byGenderHour.female[h]=(byGenderHour.female[h]||0)+1;
         const deviceId = String(v.tracks?.[0]?.device_id ?? (Array.isArray(v.devices)? v.devices[0] : ''));
-        await pool.query(`INSERT INTO public.visitors (visitor_id, day, timestamp, store_id, store_name, gender, age, day_of_week, smile) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING`, [String(v.visitor_id ?? v.session_id ?? v.id ?? ''), dstrLocal, ts, deviceId, String(v.store_name ?? ''), g, Number(v.age||0), mapPt[dd.getDay()], String(v.smile||'').toLowerCase()==='yes']);
+        const smileVal = String(last?.smile ?? v.smile ?? '').toLowerCase()==='yes';
+        await pool.query(`INSERT INTO public.visitors (visitor_id, day, timestamp, store_id, store_name, gender, age, day_of_week, smile) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING`, [String(v.visitor_id ?? v.session_id ?? v.id ?? ''), dstrLocal, isoUTC, deviceId, String(v.store_name ?? ''), g, Number(age||0), mapPt[dd.getDay()], smileVal]);
       }
       const avgAgeSum = avgSum; const avgAgeCount = avgCount;
       const exists = await pool.query("SELECT 1 FROM public.dashboard_daily WHERE day=$1 AND (store_id IS NOT DISTINCT FROM $2)", [day, storeId||'all']);

@@ -425,7 +425,7 @@ async function refreshData(res, startDate = getTodayDate(), endDate = startDate,
       const m = Number(totals.maleCount || 0);
       const f = Number(totals.femaleCount || 0);
       if (tot <= 0 && m <= 0 && f <= 0) return;
-      const byDay = generateDayDistribution(day, tot);
+      const wd = totals.weekday || {};
       const params = [
         day, sid,
         tot,
@@ -436,15 +436,15 @@ async function refreshData(res, startDate = getTodayDate(), endDate = startDate,
         Number((totals.ageData || {})['36-45'] || 0),
         Number((totals.ageData || {})['46-60'] || 0),
         Number((totals.ageData || {})['60+'] || 0),
-        Number(byDay.Sunday || 0),
-        Number(byDay.Monday || 0),
-        Number(byDay.Tuesday || 0),
-        Number(byDay.Wednesday || 0),
-        Number(byDay.Thursday || 0),
-        Number(byDay.Friday || 0),
-        Number(byDay.Saturday || 0),
-        0,
-        0
+        Number(wd.sunday || 0),
+        Number(wd.monday || 0),
+        Number(wd.tuesday || 0),
+        Number(wd.wednesday || 0),
+        Number(wd.thursday || 0),
+        Number(wd.friday || 0),
+        Number(wd.saturday || 0),
+        Number(totals.avgAgeSum || 0),
+        Number(totals.avgAgeCount || 0)
       ];
       const upd = await pool.query(
         'UPDATE public.dashboard_daily SET total_visitors=$3, male=$4, female=$5, age_18_25=$6, age_26_35=$7, age_36_45=$8, age_46_60=$9, age_60_plus=$10, sunday=$11, monday=$12, tuesday=$13, wednesday=$14, thursday=$15, friday=$16, saturday=$17, avg_age_sum=$18, avg_age_count=$19, updated_at=NOW() WHERE day=$1 AND store_id=$2',
@@ -471,19 +471,33 @@ async function refreshData(res, startDate = getTodayDate(), endDate = startDate,
       }
     };
     for (const day of days) {
-      const payload = await fetchDayAllPages(day, storeId === 'all' ? undefined : storeId);
-      const a = aggregateVisitors(payload);
-      console.log(`📦 Coleta ${day} store=${storeId} registros=${a.total}`);
-      const totals = {
-        totalVisitors: a.total,
-        maleCount: a.men,
-        femaleCount: a.women,
-        ageData: { '18-25': a.byAge['18-25']||0, '26-35': a.byAge['26-35']||0, '36-45': a.byAge['36-45']||0, '46-60': a.byAge['46-60']||0, '60+': a.byAge['60+']||0 },
-        hourlyData: a.byHour,
-        dayData: generateDayDistribution(day, a.total)
-      };
-      await saveDaily(day, storeId === 'all' ? 'all' : storeId, totals);
-      await saveHourly(day, storeId === 'all' ? 'all' : storeId, totals.hourlyData || {}, totals.maleCount || 0, totals.femaleCount || 0, totals.totalVisitors || 0);
+      if (storeId === 'all') {
+        const api = await fetchFromDisplayForce('/device/list');
+        const devices = Array.isArray(api?.data) ? api.data : [];
+        let aggTotal = 0, aggMale = 0, aggFemale = 0; const aggHourly = {}; const aggAge = { '18-25':0,'26-35':0,'36-45':0,'46-60':0,'60+':0 }; const aggWeek = { sunday:0, monday:0, tuesday:0, wednesday:0, thursday:0, friday:0, saturday:0 };
+        for (const dev of devices) {
+          const payload = await fetchDayAllPages(day, String(dev.id));
+          const a = aggregateVisitors(payload);
+          console.log(`📦 Coleta ${day} store=${dev.id} registros=${a.total}`);
+          const totals = { totalVisitors: a.total, maleCount: a.men, femaleCount: a.women, ageData: a.byAge, hourlyData: a.byHour, weekday: a.byWeekday, avgAgeSum: a.avgAgeSum, avgAgeCount: a.avgAgeCount };
+          await saveDaily(day, String(dev.id), totals);
+          await saveHourly(day, String(dev.id), totals.hourlyData || {}, totals.maleCount || 0, totals.femaleCount || 0, totals.totalVisitors || 0);
+          aggTotal += a.total; aggMale += a.men; aggFemale += a.women;
+          for (const h in a.byHour) aggHourly[h] = (aggHourly[h]||0) + Number(a.byHour[h]||0);
+          for (const g in a.byAge) aggAge[g] = (aggAge[g]||0) + Number(a.byAge[g]||0);
+          for (const k in a.byWeekday) aggWeek[k] = (aggWeek[k]||0) + Number(a.byWeekday[k]||0);
+        }
+        const totalsAll = { totalVisitors: aggTotal, maleCount: aggMale, femaleCount: aggFemale, ageData: aggAge, hourlyData: aggHourly, weekday: aggWeek, avgAgeSum: Object.values(aggAge).reduce((a,b)=>a+Number(b||0),0), avgAgeCount: Object.values(aggAge).reduce((a,b)=>a+Number(b||0),0) };
+        await saveDaily(day, 'all', totalsAll);
+        await saveHourly(day, 'all', totalsAll.hourlyData || {}, totalsAll.maleCount || 0, totalsAll.femaleCount || 0, totalsAll.totalVisitors || 0);
+      } else {
+        const payload = await fetchDayAllPages(day, storeId);
+        const a = aggregateVisitors(payload);
+        console.log(`📦 Coleta ${day} store=${storeId} registros=${a.total}`);
+        const totals = { totalVisitors: a.total, maleCount: a.men, femaleCount: a.women, ageData: a.byAge, hourlyData: a.byHour, weekday: a.byWeekday, avgAgeSum: a.avgAgeSum, avgAgeCount: a.avgAgeCount };
+        await saveDaily(day, storeId, totals);
+        await saveHourly(day, storeId, totals.hourlyData || {}, totals.maleCount || 0, totals.femaleCount || 0, totals.totalVisitors || 0);
+      }
     }
     cachedStores = null;
     lastFetch = null;
@@ -543,7 +557,7 @@ async function fetchDayAllPages(day, deviceId) {
   const tzStr = `${sign}${hh}:00`;
   while (true) {
     const body = { start: `${day}T00:00:00${tzStr}`, end: `${day}T23:59:59${tzStr}`, limit, offset, tracks: true, face_quality: true, glasses: true, facial_hair: true, hair_color: true, hair_type: true, headwear: true, additional_attributes: ['smile','pitch','yaw','x','y','height'] };
-    if (deviceId && deviceId !== 'all') body.device_id = deviceId;
+    if (deviceId && deviceId !== 'all') { body.device_id = deviceId; body.devices = [deviceId]; }
     const resp = await fetch(`${API_URL}/stats/visitor/list`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Token': API_TOKEN }, body: JSON.stringify(body), timeout: 25000 });
     if (!resp.ok) {
       const t = await resp.text().catch(() => '');
@@ -572,8 +586,9 @@ function aggregateVisitors(payload) {
   const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || '-3', 10);
   for (const v of payload) {
     total++;
-    const g = v.sex === 1 ? 'M' : 'F';
-    if (g === 'M') men++; else women++;
+    const gRaw = (v.sex ?? v.gender ?? '').toString().toLowerCase();
+    const g = typeof v.sex === 'number' ? (v.sex === 1 ? 'm' : 'f') : (gRaw.startsWith('m') ? 'm' : 'f');
+    if (g === 'm') men++; else women++;
     const age = Number(v.age || 0);
     if (age > 0) { avgAgeSum += age; avgAgeCount++; }
     if (age >= 18 && age <= 25) byAge['18-25']++; else if (age >= 26 && age <= 35) byAge['26-35']++; else if (age >= 36 && age <= 45) byAge['36-45']++; else if (age >= 46 && age <= 60) byAge['46-60']++; else if (age > 60) byAge['60+']++;

@@ -93,19 +93,16 @@ export default async function handler(req, res) {
 // ===========================================
 async function getVisitors(req, res, start_date, end_date, store_id) {
   try {
-    // Se pedirem explicitamente displayforce, mantém
+    // Se pedirem explicitamente displayforce, busca direto da API
     if (req.query.source === "displayforce") {
-      return await getVisitorsFromDisplayForce(
-        res,
-        start_date,
-        end_date,
-        store_id
-      );
+      console.log("📥 Buscando visitantes diretamente da DisplayForce...");
+      return await getVisitorsFromDisplayForce(res, start_date, end_date, store_id);
     }
 
+    // Busca do banco de dados local
     let query = `
       SELECT 
-        visitor_id AS id,
+        visitor_id,
         day,
         store_id,
         store_name,
@@ -148,7 +145,18 @@ async function getVisitors(req, res, start_date, end_date, store_id) {
 
     return res.status(200).json({
       success: true,
-      data: result.rows,
+      data: result.rows.map(row => ({
+        id: row.visitor_id,
+        date: row.day,
+        store_id: row.store_id,
+        store_name: row.store_name,
+        timestamp: row.timestamp,
+        gender: row.gender === 'M' ? 'Masculino' : 'Feminino',
+        age: row.age,
+        day_of_week: row.day_of_week,
+        smile: row.smile,
+        hour: row.hour
+      })),
       count: result.rows.length
     });
   } catch (error) {
@@ -164,140 +172,230 @@ async function getVisitors(req, res, start_date, end_date, store_id) {
 }
 
 async function getVisitorsFromDisplayForce(res, start_date, end_date, store_id) {
-  const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
-  const sign = tz >= 0 ? "+" : "-";
-  const hh = String(Math.abs(tz)).padStart(2, "0");
-  const tzStr = `${sign}${hh}:00`;
-  const startISO = `${(start_date || new Date().toISOString().split('T')[0])}T00:00:00${tzStr}`;
-  const endISO = `${(end_date || new Date().toISOString().split('T')[0])}T23:59:59${tzStr}`;
-  const LIMIT_REQ = 500;
-  let offset = 0;
-  const all = [];
-  
-  while (true) {
-    const bodyPayload = {
-      start: startISO,
-      end: endISO,
-      limit: LIMIT_REQ,
-      offset,
-      tracks: true,
-      face_quality: true,
-      glasses: true,
-      facial_hair: true,
-      hair_color: true,
-      hair_type: true,
-      headwear: true,
-    };
+  try {
+    const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
+    const sign = tz >= 0 ? "+" : "-";
+    const hh = String(Math.abs(tz)).padStart(2, "0");
+    const tzStr = `${sign}${hh}:00`;
+    const startISO = `${start_date || new Date().toISOString().split('T')[0]}T00:00:00${tzStr}`;
+    const endISO = `${end_date || new Date().toISOString().split('T')[0]}T23:59:59${tzStr}`;
     
-    if (store_id && store_id !== 'all') bodyPayload.devices = [store_id];
+    const LIMIT_REQ = 100; // A API retorna 100 por página
+    let offset = 0;
+    const allVisitors = [];
+    let totalPages = 1;
+    let currentPage = 0;
     
-    const response = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, {
-      method: 'POST',
-      headers: { 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type': 'application/json' },
-      body: JSON.stringify(bodyPayload)
-    });
+    console.log(`📥 Buscando visitantes da DisplayForce: ${startISO} até ${endISO}`);
     
-    if (!response.ok) {
-      const body = await response.text().catch(() => '');
-      throw new Error(`DisplayForce stats: ${response.status} ${response.statusText} ${body}`);
-    }
-    
-    const page = await response.json();
-    const payload = page.payload || page.data || [];
-    const arr = Array.isArray(payload) ? payload : [];
-    all.push(...arr);
-    
-    const pg = page.pagination;
-    const pageLimit = Number(pg?.limit ?? LIMIT_REQ);
-    if (pg?.total && all.length >= Number(pg.total)) break;
-    if (arr.length < pageLimit) break;
-    offset += pageLimit;
-  }
-  
-  const DAYS = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
-  const visitors = [];
-  
-  for (const v of all) {
-    try {
-      const ts = String(v.start ?? v.tracks?.[0]?.start ?? new Date().toISOString());
-      const d = new Date(ts);
-      const isoUTC = d.toISOString();
-      const local = new Date(d.getTime() + tz * 3600000);
-      const di = local.getDay();
-      const day_of_week = DAYS[di];
-      
-      const attrsA = Array.isArray(v.additional_attributes) ? v.additional_attributes : [];
-      const attrsB = Array.isArray(v.additional_atributes) ? v.additional_atributes : [];
-      const attrs = [...attrsA, ...attrsB];
-      const last = attrs.length ? attrs[attrs.length - 1] : {};
-      
-      const smile = String(last?.smile ?? v.smile ?? '').toLowerCase() === 'yes';
-      const ageVal = v.age ?? last?.age ?? 0;
-      const deviceId = String(v.tracks?.[0]?.device_id ?? (Array.isArray(v.devices) ? v.devices[0] : ''));
-      const hour = local.getHours();
-      const dateStr = local.toISOString().slice(0,10);
-      
-      const visitor = {
-        id: String(v.visitor_id ?? v.session_id ?? v.id ?? ''),
-        day: dateStr,
-        store_id: deviceId,
-        store_name: `Loja ${deviceId}`,
-        timestamp: isoUTC,
-        gender: (v.sex === 1 ? 'M' : 'F'),
-        age: Number(ageVal || 0),
-        day_of_week,
-        smile,
-        hour: hour
+    // Busca todas as páginas
+    while (true) {
+      const bodyPayload = {
+        start: startISO,
+        end: endISO,
+        limit: LIMIT_REQ,
+        offset: offset,
+        tracks: true
       };
       
-      visitors.push(visitor);
+      if (store_id && store_id !== 'all') {
+        bodyPayload.devices = [parseInt(store_id)];
+      }
       
-      // Insere no banco imediatamente
-      await pool.query(
-        `INSERT INTO public.visitors (visitor_id, day, store_id, store_name, timestamp, gender, age, day_of_week, smile, hour)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) 
-         ON CONFLICT (visitor_id, timestamp) DO UPDATE SET
-           day = EXCLUDED.day,
-           store_id = EXCLUDED.store_id,
-           store_name = EXCLUDED.store_name,
-           gender = EXCLUDED.gender,
-           age = EXCLUDED.age,
-           day_of_week = EXCLUDED.day_of_week,
-           smile = EXCLUDED.smile,
-           hour = EXCLUDED.hour`,
-        [
-          visitor.id, 
-          visitor.day, 
-          visitor.store_id, 
-          visitor.store_name, 
-          visitor.timestamp,
-          visitor.gender,
-          visitor.age,
-          visitor.day_of_week,
-          visitor.smile,
-          visitor.hour
-        ]
-      );
-    } catch (e) {
-      console.error('❌ Erro ao processar visitante:', e.message);
+      console.log(`📄 Buscando página ${currentPage + 1}, offset: ${offset}`);
+      
+      const response = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, {
+        method: 'POST',
+        headers: { 
+          'X-API-Token': DISPLAYFORCE_TOKEN, 
+          'Content-Type': 'application/json' 
+        },
+        body: JSON.stringify(bodyPayload)
+      });
+      
+      if (!response.ok) {
+        const body = await response.text().catch(() => '');
+        throw new Error(`DisplayForce API: ${response.status} ${response.statusText} - ${body}`);
+      }
+      
+      const data = await response.json();
+      
+      // Verifica a estrutura da resposta
+      console.log("📊 Resposta da API:", {
+        hasPayload: !!data.payload,
+        payloadLength: data.payload ? data.payload.length : 0,
+        pagination: data.pagination
+      });
+      
+      const visitors = data.payload || [];
+      allVisitors.push(...visitors);
+      
+      const pagination = data.pagination;
+      if (pagination) {
+        totalPages = Math.ceil(pagination.total / LIMIT_REQ);
+        console.log(`📊 Total: ${pagination.total}, Página ${currentPage + 1}/${totalPages}`);
+      }
+      
+      // Se não há mais dados ou atingimos o total
+      if (!visitors.length || visitors.length < LIMIT_REQ) {
+        break;
+      }
+      
+      offset += LIMIT_REQ;
+      currentPage++;
+      
+      // Limita para evitar muitas requisições
+      if (currentPage >= 10) { // Máximo 1000 visitantes
+        console.log("⚠️ Limite de páginas atingido (10 páginas)");
+        break;
+      }
     }
+    
+    console.log(`✅ Total de visitantes encontrados: ${allVisitors.length}`);
+    
+    // Processa os visitantes
+    const DAYS = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+    const processedVisitors = [];
+    
+    for (const visitor of allVisitors) {
+      try {
+        const ts = visitor.start || visitor.tracks?.[0]?.start || new Date().toISOString();
+        const d = new Date(ts);
+        const isoUTC = d.toISOString();
+        
+        // Ajusta para o fuso horário local
+        const local = new Date(d.getTime() + tz * 3600000);
+        const di = local.getDay();
+        const day_of_week = DAYS[di];
+        const hour = local.getHours();
+        const dateStr = local.toISOString().split('T')[0];
+        
+        // Extrai atributos adicionais
+        const attrs = visitor.additional_atributes || [];
+        const lastAttr = attrs.length > 0 ? attrs[attrs.length - 1] : {};
+        
+        const smile = String(lastAttr?.smile || '').toLowerCase() === 'yes';
+        const age = Number(visitor.age || 0);
+        
+        // Pega o device_id
+        let deviceId = 'unknown';
+        if (visitor.tracks && visitor.tracks.length > 0) {
+          deviceId = String(visitor.tracks[0].device_id || '');
+        } else if (visitor.devices && visitor.devices.length > 0) {
+          deviceId = String(visitor.devices[0] || '');
+        }
+        
+        const gender = visitor.sex === 1 ? 'M' : visitor.sex === 2 ? 'F' : 'U';
+        
+        const processedVisitor = {
+          id: visitor.visitor_id || visitor.session_id || `temp_${Date.now()}`,
+          date: dateStr,
+          store_id: deviceId,
+          store_name: `Loja ${deviceId}`,
+          timestamp: isoUTC,
+          gender: gender === 'M' ? 'Masculino' : gender === 'F' ? 'Feminino' : 'Desconhecido',
+          age: age,
+          day_of_week: day_of_week,
+          smile: smile,
+          hour: hour
+        };
+        
+        processedVisitors.push(processedVisitor);
+        
+        // Insere no banco de dados
+        try {
+          await pool.query(
+            `INSERT INTO visitors (
+              visitor_id, day, store_id, store_name, 
+              timestamp, gender, age, day_of_week, smile, hour
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            ON CONFLICT (visitor_id, timestamp) DO UPDATE SET
+              day = EXCLUDED.day,
+              store_id = EXCLUDED.store_id,
+              store_name = EXCLUDED.store_name,
+              gender = EXCLUDED.gender,
+              age = EXCLUDED.age,
+              day_of_week = EXCLUDED.day_of_week,
+              smile = EXCLUDED.smile,
+              hour = EXCLUDED.hour`,
+            [
+              processedVisitor.id,
+              processedVisitor.date,
+              processedVisitor.store_id,
+              processedVisitor.store_name,
+              processedVisitor.timestamp,
+              gender, // Salva como M/F/U no banco
+              processedVisitor.age,
+              processedVisitor.day_of_week,
+              processedVisitor.smile,
+              processedVisitor.hour
+            ]
+          );
+        } catch (dbError) {
+          console.error('❌ Erro ao inserir no banco:', dbError.message);
+        }
+        
+      } catch (visitorError) {
+        console.error('❌ Erro ao processar visitante:', visitorError.message);
+      }
+    }
+    
+    // Após processar todos os visitantes, atualiza as estatísticas agregadas
+    if (processedVisitors.length > 0) {
+      try {
+        await updateDashboardAggregates(start_date || dateStr, end_date || dateStr, store_id);
+      } catch (aggError) {
+        console.error('❌ Erro ao atualizar agregados:', aggError.message);
+      }
+    }
+    
+    return res.status(200).json({ 
+      success: true, 
+      data: processedVisitors, 
+      count: processedVisitors.length, 
+      source: 'displayforce',
+      query: { start_date, end_date, store_id } 
+    });
+    
+  } catch (error) {
+    console.error('❌ Erro ao buscar visitantes da DisplayForce:', error);
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+      message: 'Erro ao buscar dados da DisplayForce'
+    });
   }
-  
-  return res.status(200).json({ 
-    success: true, 
-    data: visitors, 
-    count: visitors.length, 
-    source: 'displayforce', 
-    query: { start_date, end_date, store_id } 
-  });
 }
 
 // ===========================================
-// 2. RESUMO DO DASHBOARD (CORRIGIDO)
+// 2. RESUMO DO DASHBOARD
 // ===========================================
 async function getSummary(req, res, start_date, end_date, store_id) {
   try {
-    // Primeiro, tenta buscar dos dados agregados (dashboard_daily)
+    // Primeiro tenta buscar dos dados agregados
+    const summary = await getSummaryFromAggregates(start_date, end_date, store_id);
+    
+    // Se encontrou dados nos agregados, retorna
+    if (summary.totalVisitors > 0) {
+      return res.status(200).json({
+        ...summary,
+        success: true,
+        source: 'dashboard_aggregates'
+      });
+    }
+    
+    // Se não encontrou dados nos agregados, busca direto dos visitantes
+    console.log("📊 Nenhum dado encontrado nos agregados, buscando de visitors...");
+    return await getSummaryFromVisitors(res, start_date, end_date, store_id);
+    
+  } catch (error) {
+    console.error("❌ Summary error:", error);
+    return await getSummaryFromVisitors(res, start_date, end_date, store_id);
+  }
+}
+
+async function getSummaryFromAggregates(start_date, end_date, store_id) {
+  try {
     let query = `
       SELECT 
         COALESCE(SUM(total_visitors), 0) AS total_visitors,
@@ -344,15 +442,14 @@ async function getSummary(req, res, start_date, end_date, store_id) {
       query += ` AND store_id = 'all'`;
     }
 
-    console.log("📊 Summary query:", query, params);
+    console.log("📊 Query agregados:", query, params);
     
     const result = await pool.query(query, params);
     const row = result.rows[0] || {};
     
-    // Se não houver dados nos agregados, busca dos dados brutos
+    // Se não tem dados, retorna zeros
     if (Number(row.total_visitors || 0) === 0) {
-      console.log("📊 Buscando dados diretamente da tabela visitors...");
-      return await getSummaryFromVisitors(res, start_date, end_date, store_id);
+      return createEmptySummary();
     }
     
     // Calcula idade média
@@ -360,12 +457,12 @@ async function getSummary(req, res, start_date, end_date, store_id) {
     const averageAge = avgAgeCount > 0 ? Math.round(Number(row.avg_age_sum || 0) / avgAgeCount) : 0;
     
     // Busca dados por hora
-    const hourlyData = await getHourlyData(start_date, end_date, store_id);
+    const hourlyData = await getHourlyDataFromAggregates(start_date, end_date, store_id);
     
     // Busca distribuição por idade e gênero
     const ageGenderData = await getAgeGenderData(start_date, end_date, store_id);
     
-    const response = {
+    return {
       success: true,
       totalVisitors: Number(row.total_visitors || 0),
       totalMale: Number(row.total_male || 0),
@@ -391,37 +488,26 @@ async function getSummary(req, res, start_date, end_date, store_id) {
       byHour: hourlyData.byHour,
       byGenderHour: hourlyData.byGenderHour,
       isFallback: false,
-      source: 'database'
+      source: 'dashboard_aggregates'
     };
-
-    return res.status(200).json(response);
+    
   } catch (error) {
-    console.error("❌ Summary error:", error);
-    return await getSummaryFromVisitors(res, start_date, end_date, store_id);
+    console.error("❌ Error getting summary from aggregates:", error);
+    return createEmptySummary();
   }
 }
 
 async function getSummaryFromVisitors(res, start_date, end_date, store_id) {
   try {
+    console.log("📊 Calculando resumo a partir da tabela visitors...");
+    
+    // Primeiro, busca todos os visitantes do período
     let query = `
       SELECT 
-        COUNT(*) AS total_visitors,
-        SUM(CASE WHEN gender = 'M' THEN 1 ELSE 0 END) AS total_male,
-        SUM(CASE WHEN gender = 'F' THEN 1 ELSE 0 END) AS total_female,
-        SUM(age) AS avg_age_sum,
-        SUM(CASE WHEN age > 0 THEN 1 ELSE 0 END) AS avg_age_count,
-        SUM(CASE WHEN age BETWEEN 18 AND 25 THEN 1 ELSE 0 END) AS age_18_25,
-        SUM(CASE WHEN age BETWEEN 26 AND 35 THEN 1 ELSE 0 END) AS age_26_35,
-        SUM(CASE WHEN age BETWEEN 36 AND 45 THEN 1 ELSE 0 END) AS age_36_45,
-        SUM(CASE WHEN age BETWEEN 46 AND 60 THEN 1 ELSE 0 END) AS age_46_60,
-        SUM(CASE WHEN age > 60 THEN 1 ELSE 0 END) AS age_60_plus,
-        SUM(CASE WHEN day_of_week = 'Dom' THEN 1 ELSE 0 END) AS sunday,
-        SUM(CASE WHEN day_of_week = 'Seg' THEN 1 ELSE 0 END) AS monday,
-        SUM(CASE WHEN day_of_week = 'Ter' THEN 1 ELSE 0 END) AS tuesday,
-        SUM(CASE WHEN day_of_week = 'Qua' THEN 1 ELSE 0 END) AS wednesday,
-        SUM(CASE WHEN day_of_week = 'Qui' THEN 1 ELSE 0 END) AS thursday,
-        SUM(CASE WHEN day_of_week = 'Sex' THEN 1 ELSE 0 END) AS friday,
-        SUM(CASE WHEN day_of_week = 'Sáb' THEN 1 ELSE 0 END) AS saturday
+        gender,
+        age,
+        day_of_week,
+        hour
       FROM visitors
       WHERE 1=1
     `;
@@ -447,109 +533,200 @@ async function getSummaryFromVisitors(res, start_date, end_date, store_id) {
       paramCount++;
     }
 
-    console.log("📊 Summary from visitors query:", query, params);
+    console.log("📊 Query visitors para resumo:", query, params);
     
     const result = await pool.query(query, params);
-    const row = result.rows[0] || {};
+    const visitors = result.rows || [];
     
-    // Calcula idade média
-    const avgAgeCount = Number(row.avg_age_count || 0);
-    const averageAge = avgAgeCount > 0 ? Math.round(Number(row.avg_age_sum || 0) / avgAgeCount) : 0;
+    console.log(`📊 Total de visitantes encontrados: ${visitors.length}`);
     
-    // Busca dados por hora
-    const hourlyData = await getHourlyData(start_date, end_date, store_id);
+    if (visitors.length === 0) {
+      console.log("📊 Nenhum visitante encontrado, retornando dados vazios");
+      return res.status(200).json({
+        ...createEmptySummary(),
+        success: true,
+        source: 'visitors_table_empty'
+      });
+    }
     
-    // Busca distribuição por idade e gênero
-    const ageGenderData = await getAgeGenderData(start_date, end_date, store_id);
+    // Calcula estatísticas
+    let totalVisitors = visitors.length;
+    let totalMale = 0;
+    let totalFemale = 0;
+    let ageSum = 0;
+    let ageCount = 0;
     
-    const response = {
-      success: true,
-      totalVisitors: Number(row.total_visitors || 0),
-      totalMale: Number(row.total_male || 0),
-      totalFemale: Number(row.total_female || 0),
-      averageAge: averageAge,
-      visitsByDay: {
-        Sunday: Number(row.sunday || 0),
-        Monday: Number(row.monday || 0),
-        Tuesday: Number(row.tuesday || 0),
-        Wednesday: Number(row.wednesday || 0),
-        Thursday: Number(row.thursday || 0),
-        Friday: Number(row.friday || 0),
-        Saturday: Number(row.saturday || 0),
-      },
-      byAgeGroup: {
-        "18-25": Number(row.age_18_25 || 0),
-        "26-35": Number(row.age_26_35 || 0),
-        "36-45": Number(row.age_36_45 || 0),
-        "46-60": Number(row.age_46_60 || 0),
-        "60+": Number(row.age_60_plus || 0),
-      },
-      byAgeGender: ageGenderData,
-      byHour: hourlyData.byHour,
-      byGenderHour: hourlyData.byGenderHour,
-      isFallback: true,
-      source: 'visitors_table'
+    const byAgeGroup = {
+      "18-25": 0,
+      "26-35": 0,
+      "36-45": 0,
+      "46-60": 0,
+      "60+": 0
     };
-
-    return res.status(200).json(response);
-  } catch (error) {
-    console.error("❌ Summary from visitors error:", error);
     
-    // Fallback completo
+    const visitsByDay = {
+      Sunday: 0,
+      Monday: 0,
+      Tuesday: 0,
+      Wednesday: 0,
+      Thursday: 0,
+      Friday: 0,
+      Saturday: 0
+    };
+    
+    const dayMap = {
+      'Dom': 'Sunday',
+      'Seg': 'Monday',
+      'Ter': 'Tuesday',
+      'Qua': 'Wednesday',
+      'Qui': 'Thursday',
+      'Sex': 'Friday',
+      'Sáb': 'Saturday'
+    };
+    
     const byHour = {};
     const byGenderHour = { male: {}, female: {} };
     
+    // Inicializa horas
     for (let h = 0; h < 24; h++) {
       byHour[h] = 0;
       byGenderHour.male[h] = 0;
       byGenderHour.female[h] = 0;
     }
     
-    return res.status(200).json({
+    // Processa cada visitante
+    for (const visitor of visitors) {
+      // Gênero
+      if (visitor.gender === 'M') {
+        totalMale++;
+      } else if (visitor.gender === 'F') {
+        totalFemale++;
+      }
+      
+      // Idade
+      const age = Number(visitor.age || 0);
+      if (age > 0) {
+        ageSum += age;
+        ageCount++;
+        
+        if (age >= 18 && age <= 25) byAgeGroup["18-25"]++;
+        else if (age >= 26 && age <= 35) byAgeGroup["26-35"]++;
+        else if (age >= 36 && age <= 45) byAgeGroup["36-45"]++;
+        else if (age >= 46 && age <= 60) byAgeGroup["46-60"]++;
+        else if (age > 60) byAgeGroup["60+"]++;
+      }
+      
+      // Dia da semana
+      const dayPt = visitor.day_of_week;
+      if (dayPt && dayMap[dayPt]) {
+        visitsByDay[dayMap[dayPt]]++;
+      }
+      
+      // Hora
+      const hour = Number(visitor.hour);
+      if (hour >= 0 && hour < 24) {
+        byHour[hour]++;
+        if (visitor.gender === 'M') {
+          byGenderHour.male[hour]++;
+        } else if (visitor.gender === 'F') {
+          byGenderHour.female[hour]++;
+        }
+      }
+    }
+    
+    // Calcula idade média
+    const averageAge = ageCount > 0 ? Math.round(ageSum / ageCount) : 0;
+    
+    // Calcula distribuição por idade e gênero
+    const byAgeGender = await getAgeGenderData(start_date, end_date, store_id);
+    
+    const summary = {
       success: true,
-      totalVisitors: 0,
-      totalMale: 0,
-      totalFemale: 0,
-      averageAge: 0,
-      visitsByDay: {
-        Sunday: 0,
-        Monday: 0,
-        Tuesday: 0,
-        Wednesday: 0,
-        Thursday: 0,
-        Friday: 0,
-        Saturday: 0,
-      },
-      byAgeGroup: {
-        "18-25": 0,
-        "26-35": 0,
-        "36-45": 0,
-        "46-60": 0,
-        "60+": 0,
-      },
-      byAgeGender: {
-        "<20": { male: 0, female: 0 },
-        "20-29": { male: 0, female: 0 },
-        "30-45": { male: 0, female: 0 },
-        ">45": { male: 0, female: 0 }
-      },
+      totalVisitors: totalVisitors,
+      totalMale: totalMale,
+      totalFemale: totalFemale,
+      averageAge: averageAge,
+      visitsByDay: visitsByDay,
+      byAgeGroup: byAgeGroup,
+      byAgeGender: byAgeGender,
       byHour: byHour,
       byGenderHour: byGenderHour,
       isFallback: true,
-      source: 'fallback'
+      source: 'visitors_table_calculated'
+    };
+    
+    // Atualiza os agregados para próxima vez
+    try {
+      await updateDashboardAggregates(start_date, end_date, store_id);
+    } catch (aggError) {
+      console.error('❌ Erro ao atualizar agregados após cálculo:', aggError.message);
+    }
+    
+    return res.status(200).json(summary);
+    
+  } catch (error) {
+    console.error("❌ Error getting summary from visitors:", error);
+    return res.status(200).json({
+      ...createEmptySummary(),
+      success: true,
+      source: 'error_fallback'
     });
   }
 }
 
-async function getHourlyData(start_date, end_date, store_id) {
+function createEmptySummary() {
+  const byHour = {};
+  const byGenderHour = { male: {}, female: {} };
+  
+  for (let h = 0; h < 24; h++) {
+    byHour[h] = 0;
+    byGenderHour.male[h] = 0;
+    byGenderHour.female[h] = 0;
+  }
+  
+  return {
+    success: true,
+    totalVisitors: 0,
+    totalMale: 0,
+    totalFemale: 0,
+    averageAge: 0,
+    visitsByDay: {
+      Sunday: 0,
+      Monday: 0,
+      Tuesday: 0,
+      Wednesday: 0,
+      Thursday: 0,
+      Friday: 0,
+      Saturday: 0,
+    },
+    byAgeGroup: {
+      "18-25": 0,
+      "26-35": 0,
+      "36-45": 0,
+      "46-60": 0,
+      "60+": 0,
+    },
+    byAgeGender: {
+      "<20": { male: 0, female: 0 },
+      "20-29": { male: 0, female: 0 },
+      "30-45": { male: 0, female: 0 },
+      ">45": { male: 0, female: 0 }
+    },
+    byHour: byHour,
+    byGenderHour: byGenderHour,
+    isFallback: true
+  };
+}
+
+async function getHourlyDataFromAggregates(start_date, end_date, store_id) {
   try {
     let query = `
       SELECT 
         hour,
-        COUNT(*) AS total,
-        SUM(CASE WHEN gender = 'M' THEN 1 ELSE 0 END) AS male,
-        SUM(CASE WHEN gender = 'F' THEN 1 ELSE 0 END) AS female
-      FROM visitors
+        COALESCE(SUM(total), 0) AS total,
+        COALESCE(SUM(male), 0) AS male,
+        COALESCE(SUM(female), 0) AS female
+      FROM dashboard_hourly
       WHERE 1=1
     `;
 
@@ -572,6 +749,8 @@ async function getHourlyData(start_date, end_date, store_id) {
       query += ` AND store_id = $${paramCount}`;
       params.push(store_id);
       paramCount++;
+    } else {
+      query += ` AND store_id = 'all'`;
     }
 
     query += ` GROUP BY hour ORDER BY hour ASC`;
@@ -598,7 +777,7 @@ async function getHourlyData(start_date, end_date, store_id) {
     
     return { byHour, byGenderHour };
   } catch (error) {
-    console.error("❌ Hourly data error:", error);
+    console.error("❌ Hourly data from aggregates error:", error);
     
     const byHour = {};
     const byGenderHour = { male: {}, female: {} };
@@ -681,294 +860,35 @@ async function getAgeGenderData(start_date, end_date, store_id) {
 }
 
 // ===========================================
-// 3. LOJAS
+// 3. ATUALIZAÇÃO DE AGREGADOS
 // ===========================================
-async function getStores(req, res) {
+async function updateDashboardAggregates(start_date, end_date, store_id) {
   try {
-    const query = `
-      SELECT DISTINCT 
-        store_id as id,
-        store_name as name,
-        COUNT(*) as visitor_count
-      FROM visitors
-      WHERE store_id IS NOT NULL AND store_id != 'all'
-      GROUP BY store_id, store_name
-      ORDER BY visitor_count DESC
-      LIMIT 10
-    `;
+    console.log(`🔄 Atualizando agregados para ${start_date} até ${end_date}, loja: ${store_id || 'all'}`);
     
-    const result = await pool.query(query);
-    
-    const stores = result.rows.map(row => ({
-      id: row.id,
-      name: row.name || `Loja ${row.id}`,
-      visitor_count: parseInt(row.visitor_count),
-      status: 'active'
-    }));
-    
-    return res.status(200).json({
-      success: true,
-      stores: stores,
-      count: stores.length
-    });
-    
-  } catch (error) {
-    console.error('❌ Stores error:', error);
-    
-    return res.status(200).json({
-      success: true,
-      stores: [
-        { id: 15287, name: 'Loja Principal', visitor_count: 5000, status: 'active' },
-        { id: 15288, name: 'Loja Norte', visitor_count: 1500, status: 'active' },
-        { id: 15289, name: 'Loja Sul', visitor_count: 966, status: 'active' }
-      ],
-      isFallback: true
-    });
-  }
-}
-
-// ===========================================
-// 4. DISPOSITIVOS (DisplayForce)
-// ===========================================
-async function getDevices(req, res) {
-  try {
-    console.log('🌐 Calling DisplayForce API...');
-    
-    let response = await fetch(`${DISPLAYFORCE_BASE}/device/list`, {
-      method: 'POST',
-      headers: {
-        'X-API-Token': DISPLAYFORCE_TOKEN,
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
-      },
-      body: JSON.stringify({})
-    });
-    
-    if (!response.ok && response.status === 405) {
-      response = await fetch(`${DISPLAYFORCE_BASE}/device/list`, {
-        method: 'GET',
-        headers: {
-          'X-API-Token': DISPLAYFORCE_TOKEN,
-          'Accept': 'application/json'
-        }
-      });
-    }
-    
-    if (!response.ok) {
-      throw new Error(`DisplayForce: ${response.status}`);
-    }
-    
-    const data = await response.json();
-    
-    return res.status(200).json({
-      success: true,
-      devices: data.devices || data.data || [],
-      source: 'displayforce'
-    });
-    
-  } catch (error) {
-    console.error('❌ Devices error:', error);
-    
-    return res.status(200).json({
-      success: true,
-      devices: [
-        {
-          id: 1,
-          name: "Sensor Entrada",
-          status: "active",
-          location: "Loja Principal",
-          last_seen: new Date().toISOString()
-        },
-        {
-          id: 2,
-          name: "Sensor Eletros",
-          status: "active",
-          location: "Loja Norte", 
-          last_seen: new Date().toISOString()
-        }
-      ],
-      isFallback: true,
-      error: error.message
-    });
-  }
-}
-
-// ===========================================
-// 5. REFRESH - ATUALIZAÇÃO DE DADOS
-// ===========================================
-async function refreshRange(req, res, start_date, end_date, store_id) {
-  try {
-    const s = start_date || new Date().toISOString().slice(0, 10);
-    const e = end_date || s;
+    // Para cada dia no intervalo
+    const start = new Date(start_date);
+    const end = new Date(end_date);
     const days = [];
-    let d = new Date(`${s}T00:00:00Z`);
-    const endD = new Date(`${e}T00:00:00Z`);
     
-    while (d <= endD) {
-      days.push(d.toISOString().slice(0, 10));
-      d = new Date(d.getTime() + 86400000);
+    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+      days.push(d.toISOString().split('T')[0]);
     }
-    
-    console.log(`🔄 Refresh: ${days.length} dias, loja: ${store_id || 'all'}`);
     
     for (const day of days) {
-      await refreshDayData(day, store_id);
+      await updateDailyAggregatesForDay(day, store_id);
     }
     
-    return res.status(200).json({
-      success: true,
-      message: `Dados atualizados para ${days.length} dia(s)`,
-      days: days.length,
-      store_id: store_id || 'all',
-      updated_at: new Date().toISOString()
-    });
+    console.log(`✅ Agregados atualizados para ${days.length} dias`);
     
   } catch (error) {
-    console.error('❌ Refresh error:', error);
-    return res.status(500).json({
-      success: false,
-      error: error.message
-    });
+    console.error('❌ Erro ao atualizar agregados:', error);
   }
 }
 
-async function refreshDayData(day, store_id) {
-  const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
-  const sign = tz >= 0 ? "+" : "-";
-  const hh = String(Math.abs(tz)).padStart(2, "0");
-  const tzStr = `${sign}${hh}:00`;
-  const startISO = `${day}T00:00:00${tzStr}`;
-  const endISO = `${day}T23:59:59${tzStr}`;
-  
-  const LIMIT_REQ = 500;
-  let offset = 0;
-  const allVisitors = [];
-  
-  console.log(`📥 Buscando dados da DisplayForce para ${day}...`);
-  
-  // Busca todos os visitantes do dia
-  while (true) {
-    const bodyPayload = {
-      start: startISO,
-      end: endISO,
-      limit: LIMIT_REQ,
-      offset,
-      tracks: true
-    };
-    
-    if (store_id && store_id !== 'all') {
-      bodyPayload.devices = [store_id];
-    }
-    
-    const response = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, {
-      method: 'POST',
-      headers: { 
-        'X-API-Token': DISPLAYFORCE_TOKEN, 
-        'Content-Type': 'application/json' 
-      },
-      body: JSON.stringify(bodyPayload)
-    });
-    
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`DisplayForce API error: ${response.status} - ${text}`);
-    }
-    
-    const data = await response.json();
-    const visitors = data.payload || data.data || [];
-    
-    allVisitors.push(...visitors);
-    
-    const pagination = data.pagination;
-    if (!pagination || visitors.length < LIMIT_REQ) {
-      break;
-    }
-    
-    offset += LIMIT_REQ;
-  }
-  
-  console.log(`📊 ${allVisitors.length} visitantes encontrados para ${day}`);
-  
-  if (allVisitors.length === 0) {
-    console.log(`⚠️ Nenhum visitante encontrado para ${day}`);
-    return;
-  }
-  
-  const DAYS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
-  
-  // Processa e insere visitantes
-  for (const visitor of allVisitors) {
-    try {
-      const ts = visitor.start || visitor.tracks?.[0]?.start || new Date().toISOString();
-      const date = new Date(ts);
-      const isoUTC = date.toISOString();
-      const localDate = new Date(date.getTime() + tz * 3600000);
-      
-      const dayOfWeek = DAYS[localDate.getDay()];
-      const hour = localDate.getHours();
-      const dateStr = localDate.toISOString().slice(0, 10);
-      
-      const deviceId = visitor.tracks?.[0]?.device_id || 
-                     (Array.isArray(visitor.devices) ? visitor.devices[0] : '') || 
-                     store_id || 
-                     'unknown';
-      
-      const gender = visitor.sex === 1 ? 'M' : 'F';
-      const age = Number(visitor.age || 0);
-      
-      const attrsA = Array.isArray(visitor.additional_attributes) ? visitor.additional_attributes : [];
-      const attrsB = Array.isArray(visitor.additional_atributes) ? visitor.additional_atributes : [];
-      const attrs = [...attrsA, ...attrsB];
-      const lastAttr = attrs.length ? attrs[attrs.length - 1] : {};
-      
-      const smile = String(lastAttr?.smile || visitor.smile || '').toLowerCase() === 'yes';
-      
-      await pool.query(
-        `INSERT INTO visitors (
-          visitor_id, day, store_id, store_name, 
-          timestamp, gender, age, day_of_week, smile, hour
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-        ON CONFLICT (visitor_id, timestamp) DO UPDATE SET
-          day = EXCLUDED.day,
-          store_id = EXCLUDED.store_id,
-          store_name = EXCLUDED.store_name,
-          gender = EXCLUDED.gender,
-          age = EXCLUDED.age,
-          day_of_week = EXCLUDED.day_of_week,
-          smile = EXCLUDED.smile,
-          hour = EXCLUDED.hour`,
-        [
-          visitor.visitor_id || visitor.session_id || visitor.id || `temp_${Date.now()}_${Math.random()}`,
-          dateStr,
-          deviceId,
-          `Loja ${deviceId}`,
-          isoUTC,
-          gender,
-          age,
-          dayOfWeek,
-          smile,
-          hour
-        ]
-      );
-    } catch (error) {
-      console.error('❌ Erro ao inserir visitante:', error.message);
-    }
-  }
-  
-  // Atualiza dashboard_daily para esta loja
-  await updateDailyDashboard(day, store_id);
-  
-  // Atualiza dashboard_daily para 'all' (agregado de todas as lojas)
-  if (store_id && store_id !== 'all') {
-    await updateDailyDashboard(day, 'all');
-  }
-  
-  console.log(`✅ Dados atualizados para ${day}`);
-}
-
-async function updateDailyDashboard(day, store_id) {
+async function updateDailyAggregatesForDay(day, store_id) {
   try {
-    // Calcula estatísticas para o dia
+    // Calcula estatísticas para o dia específico
     let query = `
       SELECT 
         COUNT(*) AS total_visitors,
@@ -991,16 +911,19 @@ async function updateDailyDashboard(day, store_id) {
       FROM visitors
       WHERE day = $1
     `;
-    
+
     const params = [day];
     
-    if (store_id !== 'all') {
+    if (store_id && store_id !== 'all') {
       query += ` AND store_id = $2`;
       params.push(store_id);
     }
-    
+
     const result = await pool.query(query, params);
     const stats = result.rows[0] || {};
+    
+    // Determina o store_id para salvar
+    const saveStoreId = store_id && store_id !== 'all' ? store_id : 'all';
     
     // Insere ou atualiza no dashboard_daily
     const upsertQuery = `
@@ -1034,7 +957,7 @@ async function updateDailyDashboard(day, store_id) {
     
     await pool.query(upsertQuery, [
       day,
-      store_id,
+      saveStoreId,
       Number(stats.total_visitors || 0),
       Number(stats.male || 0),
       Number(stats.female || 0),
@@ -1055,18 +978,21 @@ async function updateDailyDashboard(day, store_id) {
     ]);
     
     // Atualiza dados por hora
-    await updateHourlyDashboard(day, store_id);
+    await updateHourlyAggregatesForDay(day, store_id);
+    
+    console.log(`✅ Agregados atualizados para ${day}, loja: ${saveStoreId}`);
     
   } catch (error) {
-    console.error('❌ Erro ao atualizar dashboard_daily:', error);
+    console.error(`❌ Erro ao atualizar agregados para ${day}:`, error);
   }
 }
 
-async function updateHourlyDashboard(day, store_id) {
+async function updateHourlyAggregatesForDay(day, store_id) {
   try {
     // Primeiro, deleta dados existentes para este dia/loja
     const deleteQuery = `DELETE FROM dashboard_hourly WHERE day = $1 AND store_id = $2`;
-    await pool.query(deleteQuery, [day, store_id]);
+    const saveStoreId = store_id && store_id !== 'all' ? store_id : 'all';
+    await pool.query(deleteQuery, [day, saveStoreId]);
     
     // Calcula estatísticas por hora
     let query = `
@@ -1078,16 +1004,16 @@ async function updateHourlyDashboard(day, store_id) {
       FROM visitors
       WHERE day = $1
     `;
-    
+
     const params = [day];
     
-    if (store_id !== 'all') {
+    if (store_id && store_id !== 'all') {
       query += ` AND store_id = $2`;
       params.push(store_id);
     }
     
     query += ` GROUP BY hour ORDER BY hour`;
-    
+
     const result = await pool.query(query, params);
     
     // Insere dados por hora
@@ -1099,7 +1025,7 @@ async function updateHourlyDashboard(day, store_id) {
       
       await pool.query(insertQuery, [
         day,
-        store_id,
+        saveStoreId,
         Number(row.hour),
         Number(row.total || 0),
         Number(row.male || 0),
@@ -1108,40 +1034,377 @@ async function updateHourlyDashboard(day, store_id) {
     }
     
   } catch (error) {
-    console.error('❌ Erro ao atualizar dashboard_hourly:', error);
+    console.error(`❌ Erro ao atualizar dados por hora para ${day}:`, error);
   }
 }
 
 // ===========================================
-// 6. REFRESH ALL - TODAS AS LOJAS
+// 4. LOJAS
+// ===========================================
+async function getStores(req, res) {
+  try {
+    // Primeiro tenta buscar dispositivos da DisplayForce
+    try {
+      const response = await fetch(`${DISPLAYFORCE_BASE}/device/list`, {
+        method: 'POST',
+        headers: {
+          'X-API-Token': DISPLAYFORCE_TOKEN,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({})
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        const devices = data.devices || data.data || [];
+        
+        const stores = devices.map(device => ({
+          id: device.id || device.device_id,
+          name: device.name || `Dispositivo ${device.id || device.device_id}`,
+          location: device.location || 'Local desconhecido',
+          status: device.status || 'active',
+          visitor_count: 0
+        }));
+        
+        return res.status(200).json({
+          success: true,
+          stores: stores,
+          count: stores.length,
+          source: 'displayforce'
+        });
+      }
+    } catch (error) {
+      console.log('⚠️ Não foi possível buscar dispositivos da DisplayForce, usando banco local');
+    }
+    
+    // Fallback para banco local
+    const query = `
+      SELECT DISTINCT 
+        store_id as id,
+        store_name as name,
+        COUNT(*) as visitor_count
+      FROM visitors
+      WHERE store_id IS NOT NULL AND store_id != 'all'
+      GROUP BY store_id, store_name
+      ORDER BY visitor_count DESC
+      LIMIT 10
+    `;
+    
+    const result = await pool.query(query);
+    
+    const stores = result.rows.map(row => ({
+      id: row.id,
+      name: row.name || `Loja ${row.id}`,
+      visitor_count: parseInt(row.visitor_count),
+      status: 'active'
+    }));
+    
+    return res.status(200).json({
+      success: true,
+      stores: stores,
+      count: stores.length,
+      source: 'database'
+    });
+    
+  } catch (error) {
+    console.error('❌ Stores error:', error);
+    
+    return res.status(200).json({
+      success: true,
+      stores: [
+        { id: 15267, name: 'Loja Principal', visitor_count: 5000, status: 'active' },
+        { id: 15268, name: 'Loja Norte', visitor_count: 1500, status: 'active' },
+        { id: 15269, name: 'Loja Sul', visitor_count: 966, status: 'active' }
+      ],
+      isFallback: true
+    });
+  }
+}
+
+// ===========================================
+// 5. DISPOSITIVOS (DisplayForce)
+// ===========================================
+async function getDevices(req, res) {
+  try {
+    console.log('🌐 Buscando dispositivos da DisplayForce...');
+    
+    let response = await fetch(`${DISPLAYFORCE_BASE}/device/list`, {
+      method: 'POST',
+      headers: {
+        'X-API-Token': DISPLAYFORCE_TOKEN,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({})
+    });
+    
+    if (!response.ok && response.status === 405) {
+      response = await fetch(`${DISPLAYFORCE_BASE}/device/list`, {
+        method: 'GET',
+        headers: {
+          'X-API-Token': DISPLAYFORCE_TOKEN
+        }
+      });
+    }
+    
+    if (!response.ok) {
+      throw new Error(`DisplayForce: ${response.status} ${response.statusText}`);
+    }
+    
+    const data = await response.json();
+    
+    const devices = data.devices || data.data || [];
+    
+    console.log(`✅ ${devices.length} dispositivos encontrados`);
+    
+    return res.status(200).json({
+      success: true,
+      devices: devices,
+      count: devices.length,
+      source: 'displayforce'
+    });
+    
+  } catch (error) {
+    console.error('❌ Devices error:', error);
+    
+    return res.status(200).json({
+      success: true,
+      devices: [
+        {
+          id: 15267,
+          name: "Sensor Entrada",
+          status: "active",
+          location: "Loja Principal",
+          last_seen: new Date().toISOString()
+        },
+        {
+          id: 15268,
+          name: "Sensor Eletros",
+          status: "active",
+          location: "Loja Norte", 
+          last_seen: new Date().toISOString()
+        }
+      ],
+      isFallback: true,
+      error: error.message
+    });
+  }
+}
+
+// ===========================================
+// 6. REFRESH - ATUALIZAÇÃO DE DADOS
+// ===========================================
+async function refreshRange(req, res, start_date, end_date, store_id) {
+  try {
+    const s = start_date || new Date().toISOString().slice(0, 10);
+    const e = end_date || s;
+    
+    console.log(`🔄 Iniciando refresh: ${s} até ${e}, loja: ${store_id || 'all'}`);
+    
+    // Busca dados da DisplayForce
+    await getVisitorsFromDisplayForceForRefresh(s, e, store_id);
+    
+    // Atualiza agregados
+    await updateDashboardAggregates(s, e, store_id);
+    
+    return res.status(200).json({
+      success: true,
+      message: `Dados atualizados com sucesso`,
+      period: `${s} até ${e}`,
+      store_id: store_id || 'all',
+      updated_at: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('❌ Refresh error:', error);
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+}
+
+async function getVisitorsFromDisplayForceForRefresh(start_date, end_date, store_id) {
+  const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
+  const sign = tz >= 0 ? "+" : "-";
+  const hh = String(Math.abs(tz)).padStart(2, "0");
+  const tzStr = `${sign}${hh}:00`;
+  const startISO = `${start_date}T00:00:00${tzStr}`;
+  const endISO = `${end_date}T23:59:59${tzStr}`;
+  
+  const LIMIT_REQ = 100;
+  let offset = 0;
+  const allVisitors = [];
+  let totalVisitors = 0;
+  
+  console.log(`📥 Buscando visitantes para refresh: ${startISO} até ${endISO}`);
+  
+  // Busca todas as páginas
+  while (true) {
+    const bodyPayload = {
+      start: startISO,
+      end: endISO,
+      limit: LIMIT_REQ,
+      offset: offset,
+      tracks: true
+    };
+    
+    if (store_id && store_id !== 'all') {
+      bodyPayload.devices = [parseInt(store_id)];
+    }
+    
+    console.log(`📄 Buscando página, offset: ${offset}`);
+    
+    const response = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, {
+      method: 'POST',
+      headers: { 
+        'X-API-Token': DISPLAYFORCE_TOKEN, 
+        'Content-Type': 'application/json' 
+      },
+      body: JSON.stringify(bodyPayload)
+    });
+    
+    if (!response.ok) {
+      const body = await response.text().catch(() => '');
+      throw new Error(`DisplayForce API: ${response.status} ${response.statusText} - ${body}`);
+    }
+    
+    const data = await response.json();
+    const visitors = data.payload || [];
+    
+    allVisitors.push(...visitors);
+    
+    const pagination = data.pagination;
+    if (pagination) {
+      totalVisitors = pagination.total;
+      console.log(`📊 Total na API: ${totalVisitors}, Obtidos: ${allVisitors.length}`);
+    }
+    
+    // Se não há mais dados ou atingimos o total
+    if (!visitors.length || visitors.length < LIMIT_REQ || allVisitors.length >= totalVisitors) {
+      break;
+    }
+    
+    offset += LIMIT_REQ;
+    
+    // Limita para evitar muitas requisições
+    if (offset >= 1000) { // Máximo 1000 visitantes
+      console.log("⚠️ Limite de visitantes atingido (1000)");
+      break;
+    }
+  }
+  
+  console.log(`✅ ${allVisitors.length} visitantes obtidos da DisplayForce`);
+  
+  // Processa e salva no banco
+  const DAYS = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+  let savedCount = 0;
+  
+  for (const visitor of allVisitors) {
+    try {
+      const ts = visitor.start || visitor.tracks?.[0]?.start || new Date().toISOString();
+      const d = new Date(ts);
+      const isoUTC = d.toISOString();
+      
+      // Ajusta para o fuso horário local
+      const local = new Date(d.getTime() + tz * 3600000);
+      const di = local.getDay();
+      const day_of_week = DAYS[di];
+      const hour = local.getHours();
+      const dateStr = local.toISOString().split('T')[0];
+      
+      // Extrai atributos adicionais
+      const attrs = visitor.additional_atributes || [];
+      const lastAttr = attrs.length > 0 ? attrs[attrs.length - 1] : {};
+      
+      const smile = String(lastAttr?.smile || '').toLowerCase() === 'yes';
+      const age = Number(visitor.age || 0);
+      
+      // Pega o device_id
+      let deviceId = 'unknown';
+      if (visitor.tracks && visitor.tracks.length > 0) {
+        deviceId = String(visitor.tracks[0].device_id || '');
+      } else if (visitor.devices && visitor.devices.length > 0) {
+        deviceId = String(visitor.devices[0] || '');
+      }
+      
+      const gender = visitor.sex === 1 ? 'M' : visitor.sex === 2 ? 'F' : 'U';
+      
+      // Insere no banco
+      await pool.query(
+        `INSERT INTO visitors (
+          visitor_id, day, store_id, store_name, 
+          timestamp, gender, age, day_of_week, smile, hour
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        ON CONFLICT (visitor_id, timestamp) DO UPDATE SET
+          day = EXCLUDED.day,
+          store_id = EXCLUDED.store_id,
+          store_name = EXCLUDED.store_name,
+          gender = EXCLUDED.gender,
+          age = EXCLUDED.age,
+          day_of_week = EXCLUDED.day_of_week,
+          smile = EXCLUDED.smile,
+          hour = EXCLUDED.hour`,
+        [
+          visitor.visitor_id || visitor.session_id || `temp_${Date.now()}_${savedCount}`,
+          dateStr,
+          deviceId,
+          `Loja ${deviceId}`,
+          isoUTC,
+          gender,
+          age,
+          day_of_week,
+          smile,
+          hour
+        ]
+      );
+      
+      savedCount++;
+      
+    } catch (visitorError) {
+      console.error('❌ Erro ao salvar visitante:', visitorError.message);
+    }
+  }
+  
+  console.log(`💾 ${savedCount} visitantes salvos no banco de dados`);
+  return savedCount;
+}
+
+// ===========================================
+// 7. REFRESH ALL - TODAS AS LOJAS
 // ===========================================
 async function refreshAll(req, res, start_date, end_date) {
   try {
     const s = start_date || new Date().toISOString().slice(0, 10);
     const e = end_date || s;
     
-    // Primeiro, busca todas as lojas
-    const stores = await getStoreIds();
+    console.log(`🔄 Refresh All: período ${s} até ${e}`);
     
-    console.log(`🔄 Refresh All: ${stores.length} lojas, período: ${s} a ${e}`);
+    // Primeiro, busca todas as lojas/dispositivos
+    const devices = await getDeviceIds();
     
-    // Atualiza cada loja individualmente
-    for (const storeId of stores) {
+    console.log(`📱 ${devices.length} dispositivos encontrados`);
+    
+    // Atualiza cada dispositivo
+    for (const deviceId of devices) {
       try {
-        await refreshRange({}, res, s, e, storeId);
-      } catch (error) {
-        console.error(`❌ Erro ao atualizar loja ${storeId}:`, error.message);
+        console.log(`🔄 Atualizando dispositivo ${deviceId}...`);
+        await getVisitorsFromDisplayForceForRefresh(s, e, deviceId);
+        await updateDashboardAggregates(s, e, deviceId);
+        console.log(`✅ Dispositivo ${deviceId} atualizado`);
+      } catch (deviceError) {
+        console.error(`❌ Erro no dispositivo ${deviceId}:`, deviceError.message);
       }
     }
     
     // Atualiza agregado 'all'
-    await refreshRange({}, res, s, e, 'all');
+    console.log(`🔄 Atualizando agregado 'all'...`);
+    await updateDashboardAggregates(s, e, 'all');
     
     return res.status(200).json({
       success: true,
-      message: `Todas as ${stores.length} lojas atualizadas`,
-      stores: stores.length,
-      period: `${s} a ${e}`,
+      message: `Refresh All concluído`,
+      devices: devices.length,
+      period: `${s} até ${e}`,
       updated_at: new Date().toISOString()
     });
     
@@ -1154,9 +1417,8 @@ async function refreshAll(req, res, start_date, end_date) {
   }
 }
 
-async function getStoreIds() {
+async function getDeviceIds() {
   try {
-    // Busca lojas da DisplayForce
     const response = await fetch(`${DISPLAYFORCE_BASE}/device/list`, {
       method: 'POST',
       headers: {
@@ -1167,34 +1429,26 @@ async function getStoreIds() {
     });
     
     if (!response.ok) {
-      throw new Error(`DisplayForce API error: ${response.status}`);
+      throw new Error(`DisplayForce API: ${response.status}`);
     }
     
     const data = await response.json();
     const devices = data.devices || data.data || [];
     
-    // Extrai IDs dos dispositivos
     return devices
       .map(device => String(device.id || device.device_id || ''))
-      .filter(id => id && id !== 'all');
+      .filter(id => id && id !== 'all' && !isNaN(parseInt(id)));
       
   } catch (error) {
-    console.error('❌ Erro ao buscar lojas:', error);
+    console.error('❌ Erro ao buscar dispositivos:', error);
     
-    // Fallback: busca lojas do banco
-    const result = await pool.query(`
-      SELECT DISTINCT store_id 
-      FROM visitors 
-      WHERE store_id IS NOT NULL AND store_id != 'all'
-      LIMIT 10
-    `);
-    
-    return result.rows.map(row => row.store_id);
+    // Fallback
+    return ['15267', '15268', '15269'];
   }
 }
 
 // ===========================================
-// 7. AUTO REFRESH
+// 8. AUTO REFRESH
 // ===========================================
 async function autoRefresh(req, res) {
   try {
@@ -1205,13 +1459,28 @@ async function autoRefresh(req, res) {
     
     console.log(`🤖 Auto-refresh para ${dateStr}`);
     
-    // Chama refresh para ontem para todas as lojas
-    await refreshRange({}, res, dateStr, dateStr, 'all');
+    // Busca todos os dispositivos
+    const devices = await getDeviceIds();
+    
+    // Para cada dispositivo, atualiza dados de ontem
+    for (const deviceId of devices) {
+      try {
+        await getVisitorsFromDisplayForceForRefresh(dateStr, dateStr, deviceId);
+        await updateDashboardAggregates(dateStr, dateStr, deviceId);
+        console.log(`✅ Auto-refresh para dispositivo ${deviceId} concluído`);
+      } catch (deviceError) {
+        console.error(`❌ Erro no auto-refresh para ${deviceId}:`, deviceError.message);
+      }
+    }
+    
+    // Atualiza agregado 'all'
+    await updateDashboardAggregates(dateStr, dateStr, 'all');
     
     return res.status(200).json({
       success: true,
       message: `Auto-refresh executado para ${dateStr}`,
       date: dateStr,
+      devices: devices.length,
       triggered_at: new Date().toISOString()
     });
     
@@ -1225,7 +1494,7 @@ async function autoRefresh(req, res) {
 }
 
 // ===========================================
-// 8. OTIMIZAÇÃO DE ÍNDICES
+// 9. OTIMIZAÇÃO DE ÍNDICES
 // ===========================================
 async function ensureIndexes(req, res) {
   try {
@@ -1239,7 +1508,7 @@ async function ensureIndexes(req, res) {
       CREATE INDEX IF NOT EXISTS idx_visitors_gender ON visitors(gender);
       CREATE INDEX IF NOT EXISTS idx_visitors_age ON visitors(age);
       CREATE INDEX IF NOT EXISTS idx_visitors_hour ON visitors(hour);
-      CREATE INDEX IF NOT EXISTS idx_visitors_timestamp ON visitors(timestamp);
+      CREATE INDEX IF NOT EXISTS idx_visitors_timestamp ON visitors(timestamp DESC);
     `);
     
     // Índices para a tabela dashboard_daily
@@ -1257,7 +1526,7 @@ async function ensureIndexes(req, res) {
       CREATE INDEX IF NOT EXISTS idx_dashboard_hourly_day_store_hour ON dashboard_hourly(day, store_id, hour);
     `);
     
-    console.log('✅ Índices criados com sucesso');
+    console.log('✅ Índices criados/verificados com sucesso');
     
     return res.status(200).json({
       success: true,
@@ -1266,144 +1535,6 @@ async function ensureIndexes(req, res) {
     
   } catch (error) {
     console.error('❌ Erro ao criar índices:', error);
-    return res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-}
-
-// ===========================================
-// 9. FUNÇÃO AUXILIAR PARA RESUMO DA DISPLAYFORCE
-// ===========================================
-async function getSummaryFromDisplayForce(res, start_date, end_date, store_id) {
-  try {
-    // Esta função é mantida para compatibilidade
-    // Mas agora usamos principalmente os dados do banco
-    
-    const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
-    const sign = tz >= 0 ? "+" : "-";
-    const hh = String(Math.abs(tz)).padStart(2, "0");
-    const tzStr = `${sign}${hh}:00`;
-    const startISO = `${start_date}T00:00:00${tzStr}`;
-    const endISO = `${end_date}T23:59:59${tzStr}`;
-    
-    const LIMIT_REQ = 500;
-    let offset = 0;
-    const allVisitors = [];
-    
-    while (true) {
-      const bodyPayload = {
-        start: startISO,
-        end: endISO,
-        limit: LIMIT_REQ,
-        offset,
-        tracks: true
-      };
-      
-      if (store_id && store_id !== 'all') {
-        bodyPayload.devices = [store_id];
-      }
-      
-      const response = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, {
-        method: 'POST',
-        headers: { 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type': 'application/json' },
-        body: JSON.stringify(bodyPayload)
-      });
-      
-      if (!response.ok) break;
-      
-      const data = await response.json();
-      const visitors = data.payload || data.data || [];
-      allVisitors.push(...visitors);
-      
-      const pagination = data.pagination;
-      if (!pagination || visitors.length < LIMIT_REQ) break;
-      
-      offset += LIMIT_REQ;
-    }
-    
-    // Processa os dados
-    const stats = {
-      totalVisitors: allVisitors.length,
-      totalMale: 0,
-      totalFemale: 0,
-      ageSum: 0,
-      ageCount: 0,
-      byAgeGroup: { "18-25": 0, "26-35": 0, "36-45": 0, "46-60": 0, "60+": 0 },
-      visitsByDay: { Sunday: 0, Monday: 0, Tuesday: 0, Wednesday: 0, Thursday: 0, Friday: 0, Saturday: 0 },
-      byHour: {},
-      byGenderHour: { male: {}, female: {} }
-    };
-    
-    const DAYS_EN = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-    
-    for (const visitor of allVisitors) {
-      const ts = visitor.start || visitor.tracks?.[0]?.start || new Date().toISOString();
-      const date = new Date(ts);
-      const localDate = new Date(date.getTime() + tz * 3600000);
-      const hour = localDate.getHours();
-      const dayOfWeek = DAYS_EN[localDate.getDay()];
-      
-      // Gênero
-      if (visitor.sex === 1) {
-        stats.totalMale++;
-        stats.byGenderHour.male[hour] = (stats.byGenderHour.male[hour] || 0) + 1;
-      } else {
-        stats.totalFemale++;
-        stats.byGenderHour.female[hour] = (stats.byGenderHour.female[hour] || 0) + 1;
-      }
-      
-      // Idade
-      const age = Number(visitor.age || 0);
-      if (age > 0) {
-        stats.ageSum += age;
-        stats.ageCount++;
-        
-        if (age >= 18 && age <= 25) stats.byAgeGroup["18-25"]++;
-        else if (age >= 26 && age <= 35) stats.byAgeGroup["26-35"]++;
-        else if (age >= 36 && age <= 45) stats.byAgeGroup["36-45"]++;
-        else if (age >= 46 && age <= 60) stats.byAgeGroup["46-60"]++;
-        else if (age > 60) stats.byAgeGroup["60+"]++;
-      }
-      
-      // Dia da semana
-      stats.visitsByDay[dayOfWeek]++;
-      
-      // Hora
-      stats.byHour[hour] = (stats.byHour[hour] || 0) + 1;
-    }
-    
-    // Preenche horas vazias
-    for (let h = 0; h < 24; h++) {
-      stats.byHour[h] = stats.byHour[h] || 0;
-      stats.byGenderHour.male[h] = stats.byGenderHour.male[h] || 0;
-      stats.byGenderHour.female[h] = stats.byGenderHour.female[h] || 0;
-    }
-    
-    const response = {
-      success: true,
-      totalVisitors: stats.totalVisitors,
-      totalMale: stats.totalMale,
-      totalFemale: stats.totalFemale,
-      averageAge: stats.ageCount > 0 ? Math.round(stats.ageSum / stats.ageCount) : 0,
-      visitsByDay: stats.visitsByDay,
-      byAgeGroup: stats.byAgeGroup,
-      byAgeGender: {
-        "<20": { male: 0, female: 0 },
-        "20-29": { male: 0, female: 0 },
-        "30-45": { male: 0, female: 0 },
-        ">45": { male: 0, female: 0 }
-      },
-      byHour: stats.byHour,
-      byGenderHour: stats.byGenderHour,
-      source: 'displayforce_direct'
-    };
-    
-    return res.status(200).json(response);
-    
-  } catch (error) {
-    console.error('❌ DisplayForce summary error:', error);
     return res.status(500).json({
       success: false,
       error: error.message

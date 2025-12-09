@@ -381,23 +381,15 @@ async function getSummary(req, res, start_date, end_date, store_id) {
     console.log(`📊 Período: ${sDate} até ${eDate}`);
     
     // Se necessário, ingere da DisplayForce primeiro
-    let countQ = `SELECT COUNT(*)::int AS c FROM visitors WHERE day >= $1 AND day <= $2`;
-    const countParams = [sDate, eDate];
-    if (store_id && store_id !== 'all') { countQ += ` AND store_id = $3`; countParams.push(store_id); }
-    let cRes = await pool.query(countQ, countParams);
-    let c = Number(cRes.rows[0]?.c || 0);
-    if (c === 0 || req.query.source === 'displayforce') {
-      try {
-        const visitors = await fetchVisitorsFromDisplayForce(sDate, eDate, store_id && store_id !== 'all' ? store_id : null);
-        await saveVisitorsToDatabase(visitors);
-        const ds = new Date(sDate); const de = new Date(eDate);
-        for (let d = new Date(ds); d <= de; d.setDate(d.getDate() + 1)) {
-          const dateStr = d.toISOString().split('T')[0];
-          await updateAggregatesForDateAndDevice(dateStr, store_id || 'all');
-        }
-      } catch {}
-    }
-    // Sempre calcula a resposta a partir de visitors (tempo real)
+    try {
+      const visitors = await fetchVisitorsFromDisplayForce(sDate, eDate, store_id && store_id !== 'all' ? store_id : null);
+      await saveVisitorsToDatabase(visitors);
+      const ds = new Date(sDate); const de = new Date(eDate);
+      for (let d = new Date(ds); d <= de; d.setDate(d.getDate() + 1)) {
+        const dateStr = d.toISOString().split('T')[0];
+        await updateAggregatesForDateAndDevice(dateStr, store_id || 'all');
+      }
+    } catch {}
     return await calculateRealTimeSummary(res, sDate, eDate, store_id);
     
   } catch (error) {

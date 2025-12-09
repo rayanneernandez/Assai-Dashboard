@@ -270,6 +270,8 @@ async function getDashboardData(res, storeId = 'all', date = getTodayDate()) {
     bins['20-29'] = alloc(bin20_29);
     bins['30-45'] = alloc(bin30_45);
     bins['>45'] = alloc(binOver45);
+    const totalAgeN = grp['18-25'] + grp['26-35'] + grp['36-45'] + grp['46-60'] + grp['60+'];
+    const avgApprox = totalAgeN>0 ? Math.round((grp['18-25']*22 + grp['26-35']*30 + grp['36-45']*40 + grp['46-60']*53 + grp['60+']*65)/totalAgeN) : 0;
     const resp = {
       success: true,
       date,
@@ -277,7 +279,7 @@ async function getDashboardData(res, storeId = 'all', date = getTodayDate()) {
       totalVisitors: Number(row.total_visitors||0),
       totalMale: male,
       totalFemale: female,
-      averageAge: Number(row.avg_age_count||0)>0 ? Math.round(Number(row.avg_age_sum||0)/Number(row.avg_age_count||0)) : 0,
+      averageAge: Number(row.avg_age_count||0)>0 ? Math.round(Number(row.avg_age_sum||0)/Number(row.avg_age_count||0)) : avgApprox,
       visitsByDay: wk,
       byAgeGroup: grp,
       byAgeGender: bins,
@@ -331,7 +333,18 @@ async function getDashboardDataRange(res, storeId = 'all', startDate = getTodayD
       const vq = sid==='all' ? await pool.query('SELECT gender, age FROM public.visitors WHERE day BETWEEN $1 AND $2', [startDate, endDate]) : await pool.query('SELECT gender, age FROM public.visitors WHERE day BETWEEN $1 AND $2 AND store_id=$3', [startDate, endDate, sid]);
       for (const v of vq.rows || []) { const g = (String(v.gender).toUpperCase()==='M'?'male':'female'); const age = Number(v.age||0); if (age>0){ if (age<20) ageBins['<20'][g]++; else if (age<=29) ageBins['20-29'][g]++; else if (age<=45) ageBins['30-45'][g]++; else ageBins['>45'][g]++; } }
     } catch {}
-    return res.status(200).json({ success: true, startDate, endDate, storeId: sid, totalVisitors: total, totalMale: male, totalFemale: female, averageAge: avgCount>0 ? Math.round(avgSum/avgCount) : 0, visitsByDay: wk, byAgeGroup: byAge, byAgeGender: ageBins, byHour, byGenderHour, isFallback: false, timestamp: new Date().toISOString() });
+    const totalMF = male + female; const maleRatio = totalMF>0 ? male/totalMF : 0;
+    const bins = { '<20':{male:0,female:0}, '20-29':{male:0,female:0}, '30-45':{male:0,female:0}, '>45':{male:0,female:0} };
+    const bin20_29 = byAge['18-25'] + Math.round(byAge['26-35']/2);
+    const bin30_45 = Math.round(byAge['26-35']/2) + byAge['36-45'];
+    const binOver45 = byAge['46-60'] + byAge['60+'];
+    const alloc = (count) => { const m = Math.round(count * maleRatio); return { male: m, female: count - m }; };
+    bins['20-29'] = alloc(bin20_29);
+    bins['30-45'] = alloc(bin30_45);
+    bins['>45'] = alloc(binOver45);
+    const totalAgeN = byAge['18-25'] + byAge['26-35'] + byAge['36-45'] + byAge['46-60'] + byAge['60+'];
+    const avgApprox = totalAgeN>0 ? Math.round((byAge['18-25']*22 + byAge['26-35']*30 + byAge['36-45']*40 + byAge['46-60']*53 + byAge['60+']*65)/totalAgeN) : 0;
+    return res.status(200).json({ success: true, startDate, endDate, storeId: sid, totalVisitors: total, totalMale: male, totalFemale: female, averageAge: avgCount>0 ? Math.round(avgSum/avgCount) : avgApprox, visitsByDay: wk, byAgeGroup: byAge, byAgeGender: bins, byHour, byGenderHour, isFallback: false, timestamp: new Date().toISOString() });
   } catch (e) {
     return res.status(200).json({ success: true, startDate, endDate, storeId, totalVisitors: 0, totalMale: 0, totalFemale: 0, averageAge: 0, visitsByDay: { Sunday:0, Monday:0, Tuesday:0, Wednesday:0, Thursday:0, Friday:0, Saturday:0 }, byAgeGroup: { '18-25':0,'26-35':0,'36-45':0,'46-60':0,'60+':0 }, byAgeGender: { '<20':{male:0,female:0}, '20-29':{male:0,female:0}, '30-45':{male:0,female:0}, '>45':{male:0,female:0} }, byHour: {}, byGenderHour: { male: {}, female: {} }, isFallback: false, error: e.message, timestamp: new Date().toISOString() });
   }

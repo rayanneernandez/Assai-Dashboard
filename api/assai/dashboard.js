@@ -415,13 +415,28 @@ async function getSummary(req, res, start_date, end_date, store_id) {
     
     console.log("📊 Summary query:", query, params);
     
-    const result = await pool.query(query, params);
-    const row = result.rows[0] || {};
+    let result = await pool.query(query, params);
+    let row = result.rows[0] || {};
     
-    const totalFromAggregates = Number(row.total_visitors || 0);
+    let totalFromAggregates = Number(row.total_visitors || 0);
     console.log(`📊 Total nos agregados: ${totalFromAggregates}`);
     
-    // Se não tem dados nos agregados OU se o usuário quer forçar recálculo
+    if (totalFromAggregates === 0 || req.query.source === 'displayforce') {
+      try {
+        const visitors = await fetchVisitorsFromDisplayForce(sDate, eDate, store_id && store_id !== 'all' ? store_id : null);
+        await saveVisitorsToDatabase(visitors);
+        const ds = new Date(sDate);
+        const de = new Date(eDate);
+        for (let d = new Date(ds); d <= de; d.setDate(d.getDate() + 1)) {
+          const dateStr = d.toISOString().split('T')[0];
+          await updateAggregatesForDateAndDevice(dateStr, store_id || 'all');
+        }
+        result = await pool.query(query, params);
+        row = result.rows[0] || row;
+        totalFromAggregates = Number(row.total_visitors || 0);
+      } catch {}
+    }
+    
     if (totalFromAggregates === 0 || req.query.force_recalc === 'true') {
       console.log("📊 Calculando summary em tempo real...");
       return await calculateRealTimeSummary(res, sDate, eDate, store_id);

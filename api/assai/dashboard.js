@@ -685,6 +685,8 @@ async function saveVisitorsToDatabase(visitors) {
   let errorCount = 0;
   
   console.log(`💾 Salvando ${visitors.length} visitantes no banco...`);
+  const devList = await fetchDisplayForceDevices();
+  const nameMap = new Map(devList.map(d => [String(d.id), String(d.name || `Loja ${d.id}`)]));
   
   for (const visitor of visitors) {
     try {
@@ -713,6 +715,7 @@ async function saveVisitorsToDatabase(visitors) {
         const dev0 = visitor.devices[0];
         deviceId = typeof dev0 === 'object' ? String(dev0.id ?? dev0.device_id ?? '') : String(dev0 || '');
       }
+      const storeName = nameMap.get(deviceId) || `Loja ${deviceId}`;
       
       let gender = 'U';
       if (visitor.sex === 1) gender = 'M';
@@ -751,7 +754,7 @@ async function saveVisitorsToDatabase(visitors) {
         `INSERT INTO visitors (
           visitor_id, day, store_id, store_name, 
           timestamp, gender, age, day_of_week, smile, hour
-        ) VALUES ($1, $2, $3, (SELECT name FROM stores_catalog WHERE id=$3 LIMIT 1), $4, $5, $6, $7, $8, $9)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         ON CONFLICT (visitor_id, timestamp) 
         DO UPDATE SET
           day = EXCLUDED.day,
@@ -766,6 +769,7 @@ async function saveVisitorsToDatabase(visitors) {
           visitorId,
           dateStr,
           deviceId,
+          storeName,
           timestamp,
           gender,
           age,
@@ -1179,63 +1183,36 @@ async function fetchVisitorsFromDisplayForce(start_date, end_date, device_id = n
   console.log(`🔍 Buscando visitantes: ${startISO} até ${endISO}, Dispositivo: ${device_id || 'todos'}`);
   
   try {
-    while (true) {
-      const bodyPayload = {
-        start: startISO,
-        end: endISO,
-        limit: LIMIT,
-        offset: offset,
-        tracks: true
-      };
-      
-      if (device_id) {
-        bodyPayload.devices = [parseInt(device_id)];
-      }
-      
-      console.log(`📄 Buscando lote ${Math.floor(offset/LIMIT) + 1}, offset: ${offset}`);
-      
-      const response = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, {
-        method: 'POST',
-        headers: { 
-          'X-API-Token': DISPLAYFORCE_TOKEN, 
-          'Content-Type': 'application/json' 
-        },
-        body: JSON.stringify(bodyPayload)
+    // Primeira página para descobrir total e pageLimit
+    const firstBody = { start: startISO, end: endISO, limit: LIMIT, offset: 0, tracks: true };
+    if (device_id) firstBody.devices = [parseInt(device_id)];
+    const firstResp = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method: 'POST', headers: { 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type': 'application/json' }, body: JSON.stringify(firstBody) });
+    if (!firstResp.ok) throw new Error(`API Error ${firstResp.status}: ${await firstResp.text()}`);
+    const firstData = await firstResp.json();
+    const firstArr = firstData.payload || firstData || [];
+    allVisitors.push(...firstArr);
+    totalProcessed += firstArr.length;
+    const pageLimit = Number(firstData.pagination?.limit ?? LIMIT);
+    const totalFromAPI = Number(firstData.pagination?.total ?? firstArr.length);
+    console.log(`📊 Primeira página: ${firstArr.length} | total=${totalFromAPI} | pageLimit=${pageLimit}`);
+    // Gerar offsets restantes
+    const offsets = [];
+    for (let off = pageLimit; off < totalFromAPI; off += pageLimit) offsets.push(off);
+    const CONCURRENCY = 8;
+    let idx = 0;
+    while (idx < offsets.length) {
+      const batch = offsets.slice(idx, idx + CONCURRENCY);
+      console.log(`📄 Buscando offsets: ${batch.join(', ')}`);
+      const calls = batch.map(off => {
+        const bodyPayload = { start: startISO, end: endISO, limit: pageLimit, offset: off, tracks: true };
+        if (device_id) bodyPayload.devices = [parseInt(device_id)];
+        return fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method: 'POST', headers: { 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type': 'application/json' }, body: JSON.stringify(bodyPayload) })
+          .then(r => r.ok ? r.json() : r.text().then(t => { throw new Error(`API Error ${r.status}: ${t}`); }))
+          .then(d => { const arr = d.payload || d || []; allVisitors.push(...arr); totalProcessed += arr.length; });
       });
-      
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`API Error ${response.status}: ${errorText}`);
-      }
-      
-      const data = await response.json();
-      
-      const visitors = data.payload || data || [];
-      allVisitors.push(...visitors);
-      totalProcessed += visitors.length;
-      
-      const pageLimit = Number((data.pagination && data.pagination.limit) ?? LIMIT);
-      console.log(`📊 Lote ${Math.floor(offset/pageLimit) + 1}: ${visitors.length} visitantes, Total: ${totalProcessed}`);
-      
-      if (data.pagination && data.pagination.total) {
-        const totalFromAPI = Number(data.pagination.total || 0);
-        console.log(`📊 Total na API: ${totalFromAPI}, Obtidos: ${totalProcessed}`);
-        if (totalProcessed >= totalFromAPI) {
-          console.log(`✅ Todos os ${totalFromAPI} visitantes obtidos`);
-          break;
-        }
-      }
-      
-      if (visitors.length < pageLimit) {
-        console.log(`✅ Último lote obtido (${visitors.length} visitantes)`);
-        break;
-      }
-      
-      offset += pageLimit;
-      
-      await new Promise(resolve => setTimeout(resolve, 100));
+      await Promise.all(calls);
+      idx += CONCURRENCY;
     }
-    
     console.log(`✅ Total final: ${allVisitors.length} visitantes obtidos`);
     return allVisitors;
     

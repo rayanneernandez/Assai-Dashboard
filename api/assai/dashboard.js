@@ -269,66 +269,58 @@ async function getDevices(req, res) {
 async function getDashboardData(res, storeId = 'all', date = getTodayDate()) {
   try {
     const sid = storeId || 'all';
-    const r = await pool.query('SELECT * FROM public.dashboard_daily WHERE day=$1 AND store_id=$2', [date, sid]);
-    let row = r.rows[0];
-    if (!row || Number(row.total_visitors||0) === 0) {
-      try {
-        await refreshData({ status: () => ({ json: () => ({}) }) }, date, date, sid);
-        const r2 = await pool.query('SELECT * FROM public.dashboard_daily WHERE day=$1 AND store_id=$2', [date, sid]);
-        row = r2.rows[0] || row;
-      } catch {}
+    const where = sid === 'all' ? 'day=$1' : 'day=$1 AND store_id=$2';
+    const params = sid === 'all' ? [date] : [date, sid];
+    const q = await pool.query(`SELECT gender, age, hour FROM public.visitors WHERE ${where}`, params);
+    const rows = q.rows || [];
+    const total = rows.length;
+    const male = rows.filter(r => String(r.gender).toUpperCase() === 'M').length;
+    const female = total - male;
+    const ageVals = rows.map(r => Number(r.age || 0)).filter(n => n > 0);
+    const avgAge = ageVals.length ? Math.round(ageVals.reduce((a,b)=>a+b,0) / ageVals.length) : 0;
+    const byHour = {};
+    const byGenderHour = { male: {}, female: {} };
+    for (const r of rows) {
+      const h = Number(r.hour ?? NaN);
+      if (!isNaN(h)) {
+        byHour[h] = (byHour[h] || 0) + 1;
+        const g = String(r.gender).toUpperCase() === 'M' ? 'male' : 'female';
+        byGenderHour[g][h] = (byGenderHour[g][h] || 0) + 1;
+      }
     }
-    if (!row) {
-      return res.status(200).json({ success: true, date, storeId: sid, totalVisitors: 0, totalMale: 0, totalFemale: 0, averageAge: 0, visitsByDay: { Sunday:0, Monday:0, Tuesday:0, Wednesday:0, Thursday:0, Friday:0, Saturday:0 }, byAgeGroup: { '18-25':0,'26-35':0,'36-45':0,'46-60':0,'60+':0 }, byAgeGender: { '<20':{male:0,female:0}, '20-29':{male:0,female:0}, '30-45':{male:0,female:0}, '>45':{male:0,female:0} }, byHour: {}, byGenderHour: { male: {}, female: {} }, isFallback: true, timestamp: new Date().toISOString() });
-    }
-    const hrs = await pool.query('SELECT hour, total, male, female FROM public.dashboard_hourly WHERE day=$1 AND store_id=$2', [date, sid]);
-    const byHour = {}; const byGenderHour = { male:{}, female:{} };
-    for (const h of hrs.rows) { byHour[h.hour] = Number(h.total||0); byGenderHour.male[h.hour] = Number(h.male||0); byGenderHour.female[h.hour] = Number(h.female||0); }
     const isToday = date === getTodayDate();
     if (isToday) {
+      const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || '-3', 10);
+      const nowLocal = new Date(Date.now() + tz * 3600000);
+      const currentHour = nowLocal.getHours();
+      for (let h = currentHour + 1; h <= 23; h++) {
+        byHour[h] = 0;
+        byGenderHour.male[h] = 0;
+        byGenderHour.female[h] = 0;
+      }
     }
     const wk = { Sunday:0, Monday:0, Tuesday:0, Wednesday:0, Thursday:0, Friday:0, Saturday:0 };
-    try { const d = new Date(date+'T00:00:00Z'); const idx = d.getUTCDay(); const keys = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday']; wk[keys[idx]] = Number(row.total_visitors||0); } catch {}
-    const male = Number(row.male||0);
-    const female = Number(row.female||0);
-    const totalMF = male + female;
-    const maleRatio = totalMF>0 ? male/totalMF : 0;
-    const grp = { '18-25': Number(row.age_18_25||0), '26-35': Number(row.age_26_35||0), '36-45': Number(row.age_36_45||0), '46-60': Number(row.age_46_60||0), '60+': Number(row.age_60_plus||0) };
-    const binsApprox = { '<20':{male:0,female:0}, '20-29':{male:0,female:0}, '30-45':{male:0,female:0}, '>45':{male:0,female:0} };
-    const under20 = Math.round(grp['18-25'] * 0.25);
-    const bin20_29 = Math.round(grp['18-25'] * 0.75) + Math.round(grp['26-35'] * 0.4);
-    const bin30_45 = Math.round(grp['26-35'] * 0.6) + grp['36-45'];
-    const binOver45 = grp['46-60'] + grp['60+'];
-    const alloc = (count) => { const m = Math.round(count * maleRatio); return { male: m, female: count - m }; };
-    binsApprox['<20'] = alloc(under20);
-    binsApprox['20-29'] = alloc(bin20_29);
-    binsApprox['30-45'] = alloc(bin30_45);
-    binsApprox['>45'] = alloc(binOver45);
-    let binsUsed = binsApprox;
-    let avgFromVisitors = 0; let avgCountVisitors = 0;
-    try { } catch {}
-    const totalAgeN = grp['18-25'] + grp['26-35'] + grp['36-45'] + grp['46-60'] + grp['60+'];
-    const avgApprox = totalAgeN>0 ? Math.round((grp['18-25']*22 + grp['26-35']*30 + grp['36-45']*40 + grp['46-60']*53 + grp['60+']*65)/totalAgeN) : 0;
-    const resp = {
-      success: true,
-      date,
-      storeId: sid,
-      totalVisitors: Number(row.total_visitors||0),
-      totalMale: male,
-      totalFemale: female,
-      averageAge: Number(row.avg_age_count||0)>0 ? Math.round(Number(row.avg_age_sum||0)/Number(row.avg_age_count||0)) : (avgCountVisitors>0 ? Math.round(avgFromVisitors/avgCountVisitors) : avgApprox),
-      visitsByDay: wk,
-      byAgeGroup: grp,
-      byAgeGender: binsUsed,
-      age_bins_source: avgCountVisitors>0 ? 'api' : 'approx',
-      byHour,
-      byGenderHour,
-      isFallback: false,
-      timestamp: new Date().toISOString()
-    };
-    return res.status(200).json(resp);
+    try { const d = new Date(date+'T00:00:00Z'); const idx = d.getUTCDay(); const keys = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday']; wk[keys[idx]] = total; } catch {}
+    const byAgeGroup = { '18-25':0,'26-35':0,'36-45':0,'46-60':0,'60+':0 };
+    for (const a of ageVals) { if (a>=18 && a<=25) byAgeGroup['18-25']++; else if (a>=26 && a<=35) byAgeGroup['26-35']++; else if (a>=36 && a<=45) byAgeGroup['36-45']++; else if (a>=46 && a<=60) byAgeGroup['46-60']++; else if (a>60) byAgeGroup['60+']++; }
+    const maleRatio = total>0 ? male/total : 0;
+    const approx = { '<20':{male:0,female:0}, '20-29':{male:0,female:0}, '30-45':{male:0,female:0}, '>45':{male:0,female:0} };
+    const u20 = Math.round((byAgeGroup['18-25']||0) * 0.25);
+    const a20_29 = Math.round((byAgeGroup['18-25']||0) * 0.75) + Math.round((byAgeGroup['26-35']||0) * 0.4);
+    const a30_45 = Math.round((byAgeGroup['26-35']||0) * 0.6) + (byAgeGroup['36-45']||0);
+    const aOver45 = (byAgeGroup['46-60']||0) + (byAgeGroup['60+']||0);
+    const alloc = (c) => { const m = Math.round(c * maleRatio); return { male: m, female: c - m }; };
+    approx['<20'] = alloc(u20);
+    approx['20-29'] = alloc(a20_29);
+    approx['30-45'] = alloc(a30_45);
+    approx['>45'] = alloc(aOver45);
+    const direct = { '<20':{male:0,female:0}, '20-29':{male:0,female:0}, '30-45':{male:0,female:0}, '>45':{male:0,female:0} };
+    for (const r of rows) { const g = String(r.gender).toUpperCase() === 'M' ? 'male' : 'female'; const a = Number(r.age||0); if (a>0){ if (a<20) direct['<20'][g]++; else if (a<=29) direct['20-29'][g]++; else if (a<=45) direct['30-45'][g]++; else direct['>45'][g]++; } }
+    const sumDirect = Object.values(direct).reduce((s,x)=>s + x.male + x.female, 0);
+    const byAgeGender = sumDirect>0 ? direct : approx;
+    return res.status(200).json({ success: true, date, storeId: sid, totalVisitors: total, totalMale: male, totalFemale: female, averageAge: avgAge, visitsByDay: wk, byAgeGroup, byAgeGender, byHour, byGenderHour, isFallback: false, timestamp: new Date().toISOString() });
   } catch (e) {
-    return res.status(200).json({ success: true, date, storeId, totalVisitors: 0, totalMale: 0, totalFemale: 0, averageAge: 0, visitsByDay: { Sunday:0, Monday:0, Tuesday:0, Wednesday:0, Thursday:0, Friday:0, Saturday:0 }, byAgeGroup: { '18-25':0,'26-35':0,'36-45':0,'46-60':0,'60+':0 }, byAgeGender: { '<20':{male:0,female:0}, '20-29':{male:0,female:0}, '30-45':{male:0,female:0}, '>45':{male:0,female:0} }, byHour: {}, byGenderHour: { male: {}, female: {} }, isFallback: true, error: e.message, timestamp: new Date().toISOString() });
+    return res.status(200).json({ success: true, date, storeId, totalVisitors: 0, totalMale: 0, totalFemale: 0, averageAge: 0, visitsByDay: { Sunday:0, Monday:0, Tuesday:0, Wednesday:0, Thursday:0, Friday:0, Saturday:0 }, byAgeGroup: { '18-25':0,'26-35':0,'36-45':0,'46-60':0,'60+':0 }, byAgeGender: { '<20':{male:0,female:0}, '20-29':{male:0,female:0}, '30-45':{male:0,female:0}, '>45':{male:0,female:0} }, byHour: {}, byGenderHour: { male: {}, female: {} }, isFallback: false, error: e.message, timestamp: new Date().toISOString() });
   }
 }
 
@@ -336,57 +328,47 @@ async function getDashboardData(res, storeId = 'all', date = getTodayDate()) {
 async function getDashboardDataRange(res, storeId = 'all', startDate = getTodayDate(), endDate = startDate) {
   try {
     const sid = storeId || 'all';
-    const r = await pool.query('SELECT * FROM public.dashboard_daily WHERE day BETWEEN $1 AND $2 AND store_id=$3', [startDate, endDate, sid]);
-    const rows = r.rows || [];
-    if (!rows.length) {
-      return res.status(200).json({ success: true, startDate, endDate, storeId: sid, totalVisitors: 0, totalMale: 0, totalFemale: 0, averageAge: 0, visitsByDay: { Sunday:0, Monday:0, Tuesday:0, Wednesday:0, Thursday:0, Friday:0, Saturday:0 }, byAgeGroup: { '18-25':0,'26-35':0,'36-45':0,'46-60':0,'60+':0 }, byAgeGender: { '<20':{male:0,female:0}, '20-29':{male:0,female:0}, '30-45':{male:0,female:0}, '>45':{male:0,female:0} }, byHour: {}, byGenderHour: { male: {}, female: {} }, isFallback: false, timestamp: new Date().toISOString() });
-    }
-    let total = 0, male = 0, female = 0, avgSum = 0, avgCount = 0;
-    let byAge = { '18-25':0,'26-35':0,'36-45':0,'46-60':0,'60+':0 };
+    const where = sid === 'all' ? 'day BETWEEN $1 AND $2' : 'day BETWEEN $1 AND $2 AND store_id=$3';
+    const params = sid === 'all' ? [startDate, endDate] : [startDate, endDate, sid];
+    const q = await pool.query(`SELECT gender, age, hour, day FROM public.visitors WHERE ${where}`, params);
+    const rows = q.rows || [];
+    const total = rows.length;
+    const male = rows.filter(r => String(r.gender).toUpperCase() === 'M').length;
+    const female = total - male;
+    const ageVals = rows.map(r => Number(r.age || 0)).filter(n => n > 0);
+    const avgAge = ageVals.length ? Math.round(ageVals.reduce((a,b)=>a+b,0) / ageVals.length) : 0;
+    const byHour = {};
+    const byGenderHour = { male: {}, female: {} };
     const wk = { Sunday:0, Monday:0, Tuesday:0, Wednesday:0, Thursday:0, Friday:0, Saturday:0 };
-    for (const row of rows) {
-      total += Number(row.total_visitors||0);
-      male += Number(row.male||0);
-      female += Number(row.female||0);
-      avgSum += Number(row.avg_age_sum||0);
-      avgCount += Number(row.avg_age_count||0);
-      byAge['18-25'] += Number(row.age_18_25||0);
-      byAge['26-35'] += Number(row.age_26_35||0);
-      byAge['36-45'] += Number(row.age_36_45||0);
-      byAge['46-60'] += Number(row.age_46_60||0);
-      byAge['60+'] += Number(row.age_60_plus||0);
-      wk.Sunday += Number(row.sunday||0);
-      wk.Monday += Number(row.monday||0);
-      wk.Tuesday += Number(row.tuesday||0);
-      wk.Wednesday += Number(row.wednesday||0);
-      wk.Thursday += Number(row.thursday||0);
-      wk.Friday += Number(row.friday||0);
-      wk.Saturday += Number(row.saturday||0);
+    for (const r of rows) {
+      const h = Number(r.hour ?? NaN);
+      if (!isNaN(h)) {
+        byHour[h] = (byHour[h] || 0) + 1;
+        const g = String(r.gender).toUpperCase() === 'M' ? 'male' : 'female';
+        byGenderHour[g][h] = (byGenderHour[g][h] || 0) + 1;
+      }
+      const dv = r.day;
+      const ds = typeof dv === 'string' ? dv : new Date(dv).toISOString().slice(0,10);
+      try { const d = new Date(ds+'T00:00:00Z'); const idx = d.getUTCDay(); const keys = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday']; wk[keys[idx]] = (wk[keys[idx]]||0) + 1; } catch {}
     }
-    const hrs = await pool.query('SELECT hour, SUM(total) as total, SUM(male) as male, SUM(female) as female FROM public.dashboard_hourly WHERE day BETWEEN $1 AND $2 AND store_id=$3 GROUP BY hour', [startDate, endDate, sid]);
-    const byHour = {}; const byGenderHour = { male:{}, female:{} };
-    for (const h of hrs.rows || []) { byHour[h.hour] = Number(h.total||0); byGenderHour.male[h.hour] = Number(h.male||0); byGenderHour.female[h.hour] = Number(h.female||0); }
-    const ageBins = { '<20':{male:0,female:0}, '20-29':{male:0,female:0}, '30-45':{male:0,female:0}, '>45':{male:0,female:0} };
-    try {
-      const vq = sid==='all' ? await pool.query('SELECT gender, age FROM public.visitors WHERE day BETWEEN $1 AND $2', [startDate, endDate]) : await pool.query('SELECT gender, age FROM public.visitors WHERE day BETWEEN $1 AND $2 AND store_id=$3', [startDate, endDate, sid]);
-      for (const v of vq.rows || []) { const g = (String(v.gender).toUpperCase()==='M'?'male':'female'); const age = Number(v.age||0); if (age>0){ if (age<20) ageBins['<20'][g]++; else if (age<=29) ageBins['20-29'][g]++; else if (age<=45) ageBins['30-45'][g]++; else ageBins['>45'][g]++; } }
-    } catch {}
-    const totalMF = male + female; const maleRatio = totalMF>0 ? male/totalMF : 0;
-    const binsApprox = { '<20':{male:0,female:0}, '20-29':{male:0,female:0}, '30-45':{male:0,female:0}, '>45':{male:0,female:0} };
-    const under20 = Math.round(byAge['18-25'] * 0.25);
-    const bin20_29 = Math.round(byAge['18-25'] * 0.75) + Math.round(byAge['26-35'] * 0.4);
-    const bin30_45 = Math.round(byAge['26-35'] * 0.6) + byAge['36-45'];
-    const binOver45 = byAge['46-60'] + byAge['60+'];
-    const alloc = (count) => { const m = Math.round(count * maleRatio); return { male: m, female: count - m }; };
-    binsApprox['<20'] = alloc(under20);
-    binsApprox['20-29'] = alloc(bin20_29);
-    binsApprox['30-45'] = alloc(bin30_45);
-    binsApprox['>45'] = alloc(binOver45);
-    const sumDirect = Object.values(ageBins).reduce((s,x)=>s + x.male + x.female, 0);
-    const binsUsed = sumDirect>0 ? ageBins : binsApprox;
-    const totalAgeN = byAge['18-25'] + byAge['26-35'] + byAge['36-45'] + byAge['46-60'] + byAge['60+'];
-    const avgApprox = totalAgeN>0 ? Math.round((byAge['18-25']*22 + byAge['26-35']*30 + byAge['36-45']*40 + byAge['46-60']*53 + byAge['60+']*65)/totalAgeN) : 0;
-    return res.status(200).json({ success: true, startDate, endDate, storeId: sid, totalVisitors: total, totalMale: male, totalFemale: female, averageAge: avgCount>0 ? Math.round(avgSum/avgCount) : avgApprox, visitsByDay: wk, byAgeGroup: byAge, byAgeGender: binsUsed, byHour, byGenderHour, isFallback: false, timestamp: new Date().toISOString() });
+    const byAgeGroup = { '18-25':0,'26-35':0,'36-45':0,'46-60':0,'60+':0 };
+    for (const a of ageVals) { if (a>=18 && a<=25) byAgeGroup['18-25']++; else if (a>=26 && a<=35) byAgeGroup['26-35']++; else if (a>=36 && a<=45) byAgeGroup['36-45']++; else if (a>=46 && a<=60) byAgeGroup['46-60']++; else if (a>60) byAgeGroup['60+']++; }
+    const maleRatio = total>0 ? male/total : 0;
+    const approx = { '<20':{male:0,female:0}, '20-29':{male:0,female:0}, '30-45':{male:0,female:0}, '>45':{male:0,female:0} };
+    const u20 = Math.round((byAgeGroup['18-25']||0) * 0.25);
+    const a20_29 = Math.round((byAgeGroup['18-25']||0) * 0.75) + Math.round((byAgeGroup['26-35']||0) * 0.4);
+    const a30_45 = Math.round((byAgeGroup['26-35']||0) * 0.6) + (byAgeGroup['36-45']||0);
+    const aOver45 = (byAgeGroup['46-60']||0) + (byAgeGroup['60+']||0);
+    const alloc = (c) => { const m = Math.round(c * maleRatio); return { male: m, female: c - m }; };
+    approx['<20'] = alloc(u20);
+    approx['20-29'] = alloc(a20_29);
+    approx['30-45'] = alloc(a30_45);
+    approx['>45'] = alloc(aOver45);
+    const direct = { '<20':{male:0,female:0}, '20-29':{male:0,female:0}, '30-45':{male:0,female:0}, '>45':{male:0,female:0} };
+    for (const r of rows) { const g = String(r.gender).toUpperCase() === 'M' ? 'male' : 'female'; const a = Number(r.age||0); if (a>0){ if (a<20) direct['<20'][g]++; else if (a<=29) direct['20-29'][g]++; else if (a<=45) direct['30-45'][g]++; else direct['>45'][g]++; } }
+    const sumDirect = Object.values(direct).reduce((s,x)=>s + x.male + x.female, 0);
+    const byAgeGender = sumDirect>0 ? direct : approx;
+    return res.status(200).json({ success: true, startDate, endDate, storeId: sid, totalVisitors: total, totalMale: male, totalFemale: female, averageAge: avgAge, visitsByDay: wk, byAgeGroup, byAgeGender, byHour, byGenderHour, isFallback: false, timestamp: new Date().toISOString() });
   } catch (e) {
     return res.status(200).json({ success: true, startDate, endDate, storeId, totalVisitors: 0, totalMale: 0, totalFemale: 0, averageAge: 0, visitsByDay: { Sunday:0, Monday:0, Tuesday:0, Wednesday:0, Thursday:0, Friday:0, Saturday:0 }, byAgeGroup: { '18-25':0,'26-35':0,'36-45':0,'46-60':0,'60+':0 }, byAgeGender: { '<20':{male:0,female:0}, '20-29':{male:0,female:0}, '30-45':{male:0,female:0}, '>45':{male:0,female:0} }, byHour: {}, byGenderHour: { male: {}, female: {} }, isFallback: false, error: e.message, timestamp: new Date().toISOString() });
   }
@@ -545,49 +527,101 @@ async function refreshData(res, startDate = getTodayDate(), endDate = startDate,
     const saveHourly = async (day, sid, hourly, maleTotal, femaleTotal, totalDay, genderHourly) => {
       const t = Number(totalDay || 0) > 0 ? Number(totalDay || 0) : Object.values(hourly || {}).reduce((a, b) => a + Number(b || 0), 0);
       if (t <= 0) return;
-      await pool.query('DELETE FROM public.dashboard_hourly WHERE day=$1 AND store_id=$2', [day, sid]);
       const baseHourly = Object.keys(hourly || {}).length ? hourly : generateHourlyDataFromAPI(t);
       const mr = t > 0 ? Number(maleTotal || 0) / t : 0;
+      const existing = await pool.query('SELECT hour, total, male, female FROM public.dashboard_hourly WHERE day=$1 AND store_id=$2', [day, sid]);
+      const map = new Map((existing.rows||[]).map(r => [Number(r.hour), { total: Number(r.total||0), male: Number(r.male||0), female: Number(r.female||0) }]));
       for (let h = 0; h < 24; h++) {
         const totH = Number((baseHourly || {})[h] || 0);
         const gm = Number((genderHourly?.male || {})[h] || NaN);
         const gf = Number((genderHourly?.female || {})[h] || NaN);
         const mH = isNaN(gm) ? Math.round(totH * mr) : gm;
         const fH = isNaN(gf) ? (totH - mH) : gf;
-        await pool.query('INSERT INTO public.dashboard_hourly (day, store_id, hour, total, male, female) VALUES ($1,$2,$3,$4,$5,$6)', [day, sid, h, totH, mH, fH]);
+        const prev = map.get(h) || { total: 0, male: 0, female: 0 };
+        const finTot = Math.max(totH, prev.total);
+        const finM = Math.max(mH, prev.male);
+        const finF = Math.max(fH, prev.female);
+        const upd = await pool.query('UPDATE public.dashboard_hourly SET total=$4, male=$5, female=$6 WHERE day=$1 AND store_id=$2 AND hour=$3', [day, sid, h, finTot, finM, finF]);
+        if (!upd.rowCount) await pool.query('INSERT INTO public.dashboard_hourly (day, store_id, hour, total, male, female) VALUES ($1,$2,$3,$4,$5,$6)', [day, sid, h, finTot, finM, finF]);
       }
+    };
+    const saveVisitorsBulk = async (day, sid, payload) => {
+      try {
+        await pool.query('DELETE FROM public.visitors WHERE day=$1 AND store_id=$2', [day, sid]);
+        const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || '-3', 10);
+        for (const v of payload || []) {
+          const gRaw = (v.sex ?? v.gender ?? '').toString().toUpperCase();
+          const gender = gRaw.startsWith('M') || (typeof v.sex==='number' && v.sex===1) ? 'M' : 'F';
+          const a = v.age ?? v.age_years ?? v.face?.age ?? v.additional_attributes?.age; const age = Number(a||0);
+          const ts = v.start || (v.tracks && v.tracks[0] && v.tracks[0].start) || v.timestamp;
+          let hour = null, dow = null, iso = null;
+          if (ts) {
+            const d = new Date(ts);
+            const shifted = new Date(d.getTime() + tz * 3600000);
+            iso = shifted.toISOString();
+            hour = shifted.getHours();
+            const keys = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+            dow = keys[shifted.getDay()];
+          }
+          await pool.query('INSERT INTO public.visitors (day, store_id, store_name, timestamp, gender, age, day_of_week, hour) VALUES ($1,$2,(SELECT name FROM public.stores_catalog WHERE id=$2 LIMIT 1),$3,$4,$5,$6,$7)', [day, sid, iso, gender, age>0?age:0, dow, hour]);
+        }
+      } catch {}
+    };
+    const saveVisitorsBulkAll = async (day, payload) => {
+      try {
+        await pool.query('DELETE FROM public.visitors WHERE day=$1', [day]);
+        const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || '-3', 10);
+        for (const v of payload || []) {
+          const didRaw = Array.isArray(v.devices) ? (typeof v.devices[0] === 'object' ? (v.devices[0]?.id ?? v.devices[0]?.device_id) : v.devices[0]) : (v.tracks && v.tracks[0] && v.tracks[0].device_id) || v.device_id || (v.device && v.device.id);
+          const did = String(didRaw || '');
+          if (!did) continue;
+          const gRaw = (v.sex ?? v.gender ?? '').toString().toUpperCase();
+          const gender = gRaw.startsWith('M') || (typeof v.sex==='number' && v.sex===1) ? 'M' : 'F';
+          const a = v.age ?? v.age_years ?? v.face?.age ?? v.additional_attributes?.age; const age = Number(a||0);
+          const ts = v.start || (v.tracks && v.tracks[0] && v.tracks[0].start) || v.timestamp;
+          let hour = null, dow = null, iso = null;
+          if (ts) {
+            const d = new Date(ts);
+            const shifted = new Date(d.getTime() + tz * 3600000);
+            iso = shifted.toISOString();
+            hour = shifted.getHours();
+            const keys = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+            dow = keys[shifted.getDay()];
+          }
+          await pool.query('INSERT INTO public.visitors (day, store_id, store_name, timestamp, gender, age, day_of_week, hour) VALUES ($1,$2,(SELECT name FROM public.stores_catalog WHERE id=$2 LIMIT 1),$3,$4,$5,$6,$7)', [day, did, iso, gender, age>0?age:0, dow, hour]);
+        }
+      } catch {}
     };
     for (const day of days) {
       if (storeId === 'all') {
-        const api = await fetchFromDisplayForce('/device/list');
-        const devices = Array.isArray(api?.data) ? api.data : [];
-        let aggTotal = 0, aggMale = 0, aggFemale = 0; let aggAvgSum = 0, aggAvgCount = 0; const aggHourly = {}; const aggAge = { '18-25':0,'26-35':0,'36-45':0,'46-60':0,'60+':0 }; const aggWeek = { sunday:0, monday:0, tuesday:0, wednesday:0, thursday:0, friday:0, saturday:0 };
-        if (devices.length === 0) {
-          const payloadAll = await fetchDayAllPages(day, undefined);
-          const aAll = aggregateVisitors(payloadAll);
-          const totalsAll = { totalVisitors: aAll.total, maleCount: aAll.men, femaleCount: aAll.women, ageData: aAll.byAge, hourlyData: aAll.byHour, weekday: aAll.byWeekday, avgAgeSum: aAll.avgAgeSum, avgAgeCount: aAll.avgAgeCount, genderHourly: aAll.byGenderHour };
-          await saveDaily(day, 'all', totalsAll);
-          await saveHourly(day, 'all', totalsAll.hourlyData || {}, totalsAll.maleCount || 0, totalsAll.femaleCount || 0, totalsAll.totalVisitors || 0, totalsAll.genderHourly || {});
-        } else {
-          const aggGenderHour = { male: {}, female: {} };
-          for (const dev of devices) {
-            const payload = await fetchDayAllPages(day, String(dev.id));
-            const a = aggregateVisitors(payload);
-            console.log(`📦 Coleta ${day} store=${dev.id} registros=${a.total}`);
-            const totals = { totalVisitors: a.total, maleCount: a.men, femaleCount: a.women, ageData: a.byAge, hourlyData: a.byHour, weekday: a.byWeekday, avgAgeSum: a.avgAgeSum, avgAgeCount: a.avgAgeCount, genderHourly: a.byGenderHour };
-            await saveDaily(day, String(dev.id), totals);
-            await saveHourly(day, String(dev.id), totals.hourlyData || {}, totals.maleCount || 0, totals.femaleCount || 0, totals.totalVisitors || 0, totals.genderHourly || {});
-            aggTotal += a.total; aggMale += a.men; aggFemale += a.women; aggAvgSum += a.avgAgeSum; aggAvgCount += a.avgAgeCount;
-            for (const h in a.byHour) aggHourly[h] = (aggHourly[h]||0) + Number(a.byHour[h]||0);
-            for (const g in a.byAge) aggAge[g] = (aggAge[g]||0) + Number(a.byAge[g]||0);
-            for (const k in a.byWeekday) aggWeek[k] = (aggWeek[k]||0) + Number(a.byWeekday[k]||0);
-            for (const hh in (a.byGenderHour?.male||{})) aggGenderHour.male[hh] = (aggGenderHour.male[hh]||0) + Number(a.byGenderHour.male[hh]||0);
-            for (const hh in (a.byGenderHour?.female||{})) aggGenderHour.female[hh] = (aggGenderHour.female[hh]||0) + Number(a.byGenderHour.female[hh]||0);
-          }
-          const totalsAll = { totalVisitors: aggTotal, maleCount: aggMale, femaleCount: aggFemale, ageData: aggAge, hourlyData: aggHourly, weekday: aggWeek, avgAgeSum: aggAvgSum, avgAgeCount: aggAvgCount, genderHourly: aggGenderHour };
-          await saveDaily(day, 'all', totalsAll);
-          await saveHourly(day, 'all', totalsAll.hourlyData || {}, totalsAll.maleCount || 0, totalsAll.femaleCount || 0, totalsAll.totalVisitors || 0, totalsAll.genderHourly || {});
+        const payloadAll = await fetchDayAllPages(day, undefined);
+        const byDevice = new Map();
+        for (const v of payloadAll) {
+          const didRaw = Array.isArray(v.devices) ? (typeof v.devices[0] === 'object' ? (v.devices[0]?.id ?? v.devices[0]?.device_id) : v.devices[0]) : (v.tracks && v.tracks[0] && v.tracks[0].device_id) || v.device_id || (v.device && v.device.id);
+          const did = String(didRaw || '');
+          if (!did) continue;
+          if (!byDevice.has(did)) byDevice.set(did, []);
+          byDevice.get(did).push(v);
         }
+        let aggTotal = 0, aggMale = 0, aggFemale = 0; let aggAvgSum = 0, aggAvgCount = 0; const aggHourly = {}; const aggAge = { '18-25':0,'26-35':0,'36-45':0,'46-60':0,'60+':0 }; const aggWeek = { sunday:0, monday:0, tuesday:0, wednesday:0, thursday:0, friday:0, saturday:0 }; const aggGenderHour = { male: {}, female: {} };
+        for (const [did, arr] of byDevice.entries()) {
+          const a = aggregateVisitors(arr);
+          console.log(`📦 Coleta ${day} store=${did} registros=${a.total}`);
+          const totals = { totalVisitors: a.total, maleCount: a.men, femaleCount: a.women, ageData: a.byAge, hourlyData: a.byHour, weekday: a.byWeekday, avgAgeSum: a.avgAgeSum, avgAgeCount: a.avgAgeCount, genderHourly: a.byGenderHour };
+          await saveDaily(day, String(did), totals);
+          await saveHourly(day, String(did), totals.hourlyData || {}, totals.maleCount || 0, totals.femaleCount || 0, totals.totalVisitors || 0, totals.genderHourly || {});
+          await saveVisitorsBulk(day, String(did), arr);
+          aggTotal += a.total; aggMale += a.men; aggFemale += a.women; aggAvgSum += a.avgAgeSum; aggAvgCount += a.avgAgeCount;
+          for (const h in a.byHour) aggHourly[h] = (aggHourly[h]||0) + Number(a.byHour[h]||0);
+          for (const g in a.byAge) aggAge[g] = (aggAge[g]||0) + Number(a.byAge[g]||0);
+          for (const k in a.byWeekday) aggWeek[k] = (aggWeek[k]||0) + Number(a.byWeekday[k]||0);
+          for (const hh in (a.byGenderHour?.male||{})) aggGenderHour.male[hh] = (aggGenderHour.male[hh]||0) + Number(a.byGenderHour.male[hh]||0);
+          for (const hh in (a.byGenderHour?.female||{})) aggGenderHour.female[hh] = (aggGenderHour.female[hh]||0) + Number(a.byGenderHour.female[hh]||0);
+        }
+        const totalsAll = { totalVisitors: aggTotal, maleCount: aggMale, femaleCount: aggFemale, ageData: aggAge, hourlyData: aggHourly, weekday: aggWeek, avgAgeSum: aggAvgSum, avgAgeCount: aggAvgCount, genderHourly: aggGenderHour };
+        await saveDaily(day, 'all', totalsAll);
+        await saveHourly(day, 'all', totalsAll.hourlyData || {}, totalsAll.maleCount || 0, totalsAll.femaleCount || 0, totalsAll.totalVisitors || 0, totalsAll.genderHourly || {});
+        try { await saveVisitorsBulkAll(day, payloadAll); } catch {}
       } else {
         const payload = await fetchDayAllPages(day, storeId);
         const a = aggregateVisitors(payload);
@@ -595,6 +629,7 @@ async function refreshData(res, startDate = getTodayDate(), endDate = startDate,
         const totals = { totalVisitors: a.total, maleCount: a.men, femaleCount: a.women, ageData: a.byAge, hourlyData: a.byHour, weekday: a.byWeekday, avgAgeSum: a.avgAgeSum, avgAgeCount: a.avgAgeCount, genderHourly: a.byGenderHour };
         await saveDaily(day, storeId, totals);
         await saveHourly(day, storeId, totals.hourlyData || {}, totals.maleCount || 0, totals.femaleCount || 0, totals.totalVisitors || 0, totals.genderHourly || {});
+        await saveVisitorsBulk(day, storeId, payload);
       }
     }
     cachedStores = null;

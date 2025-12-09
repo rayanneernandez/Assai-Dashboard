@@ -756,7 +756,7 @@ async function saveVisitorsToDatabase(visitors) {
   for (const visitor of visitors) {
     try {
       // Usa o timestamp de START (que é o momento real da visita)
-      const timestamp = visitor.start || visitor.tracks?.[0]?.start || new Date().toISOString();
+      const timestamp = String(visitor.start ?? visitor.tracks?.[0]?.start ?? visitor.timestamp ?? new Date().toISOString());
       const dateObj = new Date(timestamp);
       
       if (isNaN(dateObj.getTime())) {
@@ -764,32 +764,46 @@ async function saveVisitorsToDatabase(visitors) {
         continue;
       }
       
-      // Converte para horário local (Brasil)
       const localDate = new Date(dateObj.getTime() + (tz * 3600000));
       const hour = localDate.getHours();
-      const dateStr = localDate.toISOString().split('T')[0];
+      const y = localDate.getFullYear();
+      const m = String(localDate.getMonth() + 1).padStart(2, '0');
+      const d = String(localDate.getDate()).padStart(2, '0');
+      const dateStr = `${y}-${m}-${d}`;
       const dayOfWeek = DAYS[localDate.getDay()];
       
-      // Extrai device_id dos tracks
       let deviceId = 'unknown';
       if (visitor.tracks && visitor.tracks.length > 0) {
-        deviceId = String(visitor.tracks[0].device_id || '');
+        const dev = visitor.tracks[0];
+        deviceId = String(dev.device_id ?? dev.id ?? '');
       } else if (visitor.devices && visitor.devices.length > 0) {
-        deviceId = String(visitor.devices[0] || '');
+        const dev0 = visitor.devices[0];
+        deviceId = typeof dev0 === 'object' ? String(dev0.id ?? dev0.device_id ?? '') : String(dev0 || '');
       }
       
-      // Processa gênero (sex: 1 = Masculino, 2 = Feminino)
       let gender = 'U';
       if (visitor.sex === 1) gender = 'M';
       else if (visitor.sex === 2) gender = 'F';
+      else {
+        const gRaw = String(visitor.gender || '').toUpperCase();
+        if (gRaw.startsWith('M')) gender = 'M';
+        else if (gRaw.startsWith('F')) gender = 'F';
+      }
       
-      // Processa idade
       let age = 0;
       if (typeof visitor.age === 'number') {
         age = Math.max(0, visitor.age);
+      } else {
+        const attrsA = Array.isArray(visitor.additional_attributes) ? visitor.additional_attributes : [];
+        const attrsB = Array.isArray(visitor.additional_atributes) ? visitor.additional_atributes : [];
+        const attrsAll = [...attrsA, ...attrsB];
+        if (attrsAll.length) {
+          const lastAttr = attrsAll[attrsAll.length - 1];
+          const a = lastAttr?.age;
+          if (typeof a === 'number') age = Math.max(0, a);
+        }
       }
       
-      // Processa smile dos atributos adicionais
       let smile = false;
       const attrs = visitor.additional_atributes || visitor.additional_attributes || [];
       if (attrs.length > 0) {
@@ -1376,6 +1390,7 @@ async function ensureIndexes(req, res) {
       CREATE INDEX IF NOT EXISTS idx_visitors_gender ON visitors(gender);
       CREATE INDEX IF NOT EXISTS idx_visitors_age ON visitors(age);
       CREATE INDEX IF NOT EXISTS idx_visitors_hour ON visitors(hour);
+      CREATE UNIQUE INDEX IF NOT EXISTS uniq_visitors_id_ts ON visitors(visitor_id, timestamp);
       
       CREATE INDEX IF NOT EXISTS idx_dashboard_daily_day ON dashboard_daily(day);
       CREATE INDEX IF NOT EXISTS idx_dashboard_daily_store ON dashboard_daily(store_id);

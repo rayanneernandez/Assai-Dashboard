@@ -4,7 +4,7 @@ import { Pool } from 'pg';
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
 
-const API_TOKEN = process.env.DISPLAYFORCE_API_TOKEN || '4MJH-BX6H-G2RJ-G7PB';
+const API_TOKEN = process.env.DISPLAYFORCE_API_TOKEN || process.env.DISPLAYFORCE_TOKEN || process.env.VITE_DISPLAYFORCE_API_TOKEN || '4MJH-BX6H-G2RJ-G7PB';
 const API_URL = 'https://api.displayforce.ai/public/v1';
 
 // Cache
@@ -421,12 +421,16 @@ async function refreshData(res, startDate = getTodayDate(), endDate = startDate,
       days.push(d.toISOString().slice(0,10));
     }
     const saveDaily = async (day, sid, totals) => {
-      const byDay = generateDayDistribution(day, Number(totals.totalVisitors || 0));
+      const tot = Number(totals.totalVisitors || 0);
+      const m = Number(totals.maleCount || 0);
+      const f = Number(totals.femaleCount || 0);
+      if (tot <= 0 && m <= 0 && f <= 0) return;
+      const byDay = generateDayDistribution(day, tot);
       const params = [
         day, sid,
-        Number(totals.totalVisitors || 0),
-        Number(totals.maleCount || 0),
-        Number(totals.femaleCount || 0),
+        tot,
+        m,
+        f,
         Number((totals.ageData || {})['18-25'] || 0),
         Number((totals.ageData || {})['26-35'] || 0),
         Number((totals.ageData || {})['36-45'] || 0),
@@ -454,26 +458,32 @@ async function refreshData(res, startDate = getTodayDate(), endDate = startDate,
       }
     };
     const saveHourly = async (day, sid, hourly, maleTotal, femaleTotal, totalDay) => {
-      await pool.query('DELETE FROM public.dashboard_hourly WHERE day=$1 AND store_id=$2', [day, sid]);
       const t = Number(totalDay || 0) > 0 ? Number(totalDay || 0) : Object.values(hourly || {}).reduce((a, b) => a + Number(b || 0), 0);
+      if (t <= 0) return;
+      await pool.query('DELETE FROM public.dashboard_hourly WHERE day=$1 AND store_id=$2', [day, sid]);
+      const baseHourly = Object.keys(hourly || {}).length ? hourly : generateHourlyDataFromAPI(t);
       const mr = t > 0 ? Number(maleTotal || 0) / t : 0;
       for (let h = 0; h < 24; h++) {
-        const totH = Number((hourly || {})[h] || 0);
+        const totH = Number((baseHourly || {})[h] || 0);
         const mH = Math.round(totH * mr);
         const fH = totH - mH;
         await pool.query('INSERT INTO public.dashboard_hourly (day, store_id, hour, total, male, female) VALUES ($1,$2,$3,$4,$5,$6)', [day, sid, h, totH, mH, fH]);
       }
     };
     for (const day of days) {
-      if (storeId === 'all') {
-        const agg = await fetchAggregatedData(day);
-        await saveDaily(day, 'all', agg);
-        await saveHourly(day, 'all', agg.hourlyData || {}, agg.maleCount || 0, agg.femaleCount || 0, agg.totalVisitors || 0);
-      } else {
-        const st = await fetchStoreData(storeId, day);
-        await saveDaily(day, storeId, st);
-        await saveHourly(day, storeId, st.hourlyData || {}, st.maleCount || 0, st.femaleCount || 0, st.totalVisitors || 0);
-      }
+      const payload = await fetchDayAllPages(day, storeId === 'all' ? undefined : storeId);
+      const a = aggregateVisitors(payload);
+      console.log(`📦 Coleta ${day} store=${storeId} registros=${a.total}`);
+      const totals = {
+        totalVisitors: a.total,
+        maleCount: a.men,
+        femaleCount: a.women,
+        ageData: { '18-25': a.byAge['18-25']||0, '26-35': a.byAge['26-35']||0, '36-45': a.byAge['36-45']||0, '46-60': a.byAge['46-60']||0, '60+': a.byAge['60+']||0 },
+        hourlyData: a.byHour,
+        dayData: generateDayDistribution(day, a.total)
+      };
+      await saveDaily(day, storeId === 'all' ? 'all' : storeId, totals);
+      await saveHourly(day, storeId === 'all' ? 'all' : storeId, totals.hourlyData || {}, totals.maleCount || 0, totals.femaleCount || 0, totals.totalVisitors || 0);
     }
     cachedStores = null;
     lastFetch = null;
@@ -487,7 +497,9 @@ async function refreshData(res, startDate = getTodayDate(), endDate = startDate,
 async function testApiConnection(res) {
   try {
     console.log('🧪 Testando conexão com API DisplayForce...');
-    
+    const tokenSource = process.env.DISPLAYFORCE_API_TOKEN ? 'DISPLAYFORCE_API_TOKEN' :
+      (process.env.DISPLAYFORCE_TOKEN ? 'DISPLAYFORCE_TOKEN' :
+      (process.env.VITE_DISPLAYFORCE_API_TOKEN ? 'VITE_DISPLAYFORCE_API_TOKEN' : 'none'));
     const testResponse = await fetchFromDisplayForce('/device/list');
     
     if (testResponse) {
@@ -496,6 +508,7 @@ async function testApiConnection(res) {
         message: 'Conexão com API estabelecida com sucesso',
         devices_count: testResponse.data?.length || 0,
         api_status: 'online',
+        token_source: tokenSource,
         timestamp: new Date().toISOString()
       });
     } else {
@@ -503,6 +516,7 @@ async function testApiConnection(res) {
         success: false,
         message: 'Não foi possível conectar à API',
         api_status: 'offline',
+        token_source: tokenSource,
         timestamp: new Date().toISOString()
       });
     }
@@ -512,9 +526,70 @@ async function testApiConnection(res) {
       message: 'Erro ao testar conexão',
       error: error.message,
       api_status: 'error',
+      token_source: tokenSource,
       timestamp: new Date().toISOString()
     });
   }
+}
+
+// =========== FUNÇÕES DE BUSCA DE DADOS REAIS ==========
+async function fetchDayAllPages(day, deviceId) {
+  const limit = 500;
+  let offset = 0;
+  const all = [];
+  const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || '-3', 10);
+  const sign = tz >= 0 ? '+' : '-';
+  const hh = String(Math.abs(tz)).padStart(2, '0');
+  const tzStr = `${sign}${hh}:00`;
+  while (true) {
+    const body = { start: `${day}T00:00:00${tzStr}`, end: `${day}T23:59:59${tzStr}`, limit, offset, tracks: true, face_quality: true, glasses: true, facial_hair: true, hair_color: true, hair_type: true, headwear: true, additional_attributes: ['smile','pitch','yaw','x','y','height'] };
+    if (deviceId && deviceId !== 'all') body.device_id = deviceId;
+    const resp = await fetch(`${API_URL}/stats/visitor/list`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Token': API_TOKEN }, body: JSON.stringify(body), timeout: 25000 });
+    if (!resp.ok) {
+      const t = await resp.text().catch(() => '');
+      console.error(`❌ API stats/visitor/list error [${resp.status}] ${resp.statusText} ${t.slice(0,200)}`);
+      break;
+    }
+    const json = await resp.json();
+    const payload = json.payload || json.data || [];
+    const arr = Array.isArray(payload) ? payload : [];
+    all.push(...arr);
+    const pg = json.pagination || {};
+    const pageLimit = Number(pg.limit || limit);
+    if (pg.total && all.length >= Number(pg.total)) break;
+    if (arr.length < pageLimit) break;
+    offset += pageLimit;
+  }
+  return all;
+}
+
+function aggregateVisitors(payload) {
+  const byAge = { '18-25':0, '26-35':0, '36-45':0, '46-60':0, '60+':0 };
+  const byWeekday = { sunday:0, monday:0, tuesday:0, wednesday:0, thursday:0, friday:0, saturday:0 };
+  const byHour = {};
+  const byGenderHour = { male: {}, female: {} };
+  let total=0, men=0, women=0, avgAgeSum=0, avgAgeCount=0;
+  const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || '-3', 10);
+  for (const v of payload) {
+    total++;
+    const g = v.sex === 1 ? 'M' : 'F';
+    if (g === 'M') men++; else women++;
+    const age = Number(v.age || 0);
+    if (age > 0) { avgAgeSum += age; avgAgeCount++; }
+    if (age >= 18 && age <= 25) byAge['18-25']++; else if (age >= 26 && age <= 35) byAge['26-35']++; else if (age >= 36 && age <= 45) byAge['36-45']++; else if (age >= 46 && age <= 60) byAge['46-60']++; else if (age > 60) byAge['60+']++;
+    const ts = v.start || (v.tracks && v.tracks[0] && v.tracks[0].start);
+    if (ts) {
+      const base = new Date(ts);
+      const local = new Date(base.getTime() + tz * 3600000);
+      const map = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+      const key = map[local.getUTCDay()];
+      byWeekday[key] = (byWeekday[key] || 0) + 1;
+      const h = local.getUTCHours();
+      byHour[h] = (byHour[h] || 0) + 1;
+      if (g === 'M') byGenderHour.male[h] = (byGenderHour.male[h] || 0) + 1; else byGenderHour.female[h] = (byGenderHour.female[h] || 0) + 1;
+    }
+  }
+  return { total, men, women, avgAgeSum, avgAgeCount, byAge, byWeekday, byHour, byGenderHour };
 }
 
 // =========== FUNÇÕES DE BUSCA DE DADOS REAIS ===========

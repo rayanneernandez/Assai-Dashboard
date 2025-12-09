@@ -231,7 +231,25 @@ async function getDevices(req, res) {
       location: String(device.address?.description || device.location || device.place || ''),
       status: String(device.connection_state || (device.enabled ? 'active' : 'inactive') || 'unknown')
     }));
-    const devices = q ? devicesRaw.filter(d => d.name.toLowerCase().includes(q)) : devicesRaw;
+    let devices = q ? devicesRaw.filter(d => d.name.toLowerCase().includes(q)) : devicesRaw;
+    if (!devices.length) {
+      try {
+        const cat = await pool.query('SELECT id, name FROM public.stores_catalog');
+        const cats = Array.isArray(cat.rows) ? cat.rows : [];
+        if (cats.length) {
+          const mapped = cats.map((c) => ({ id: String(c.id), name: String(c.name || c.id), location: '', status: 'unknown' }));
+          devices = q ? mapped.filter(d => d.name.toLowerCase().includes(q)) : mapped;
+        }
+      } catch {}
+    }
+    if (!devices.length) {
+      try {
+        const qres = await pool.query('SELECT DISTINCT store_id FROM public.dashboard_daily WHERE store_id IS NOT NULL ORDER BY store_id');
+        const ids = qres.rows.map((r) => String(r.store_id)).filter(Boolean);
+        const mapped = ids.map((id) => ({ id, name: id, location: '', status: 'unknown' }));
+        devices = q ? mapped.filter(d => d.name.toLowerCase().includes(q)) : mapped;
+      } catch {}
+    }
     return res.status(200).json({ success: true, devices, count: devices.length, timestamp: new Date().toISOString() });
   } catch (error) {
     try {
@@ -257,10 +275,17 @@ async function getDashboardData(res, storeId = 'all', date = getTodayDate()) {
   try {
     const sid = storeId || 'all';
     const r = await pool.query('SELECT * FROM public.dashboard_daily WHERE day=$1 AND store_id=$2', [date, sid]);
-    if (!r.rows.length) {
+    let row = r.rows[0];
+    if (!row || Number(row.total_visitors||0) === 0) {
+      try {
+        await refreshData({ status: () => ({ json: () => ({}) }) }, date, date, sid);
+        const r2 = await pool.query('SELECT * FROM public.dashboard_daily WHERE day=$1 AND store_id=$2', [date, sid]);
+        row = r2.rows[0] || row;
+      } catch {}
+    }
+    if (!row) {
       return res.status(200).json({ success: true, date, storeId: sid, totalVisitors: 0, totalMale: 0, totalFemale: 0, averageAge: 0, visitsByDay: { Sunday:0, Monday:0, Tuesday:0, Wednesday:0, Thursday:0, Friday:0, Saturday:0 }, byAgeGroup: { '18-25':0,'26-35':0,'36-45':0,'46-60':0,'60+':0 }, byAgeGender: { '<20':{male:0,female:0}, '20-29':{male:0,female:0}, '30-45':{male:0,female:0}, '>45':{male:0,female:0} }, byHour: {}, byGenderHour: { male: {}, female: {} }, isFallback: true, timestamp: new Date().toISOString() });
     }
-    const row = r.rows[0];
     const hrs = await pool.query('SELECT hour, total, male, female FROM public.dashboard_hourly WHERE day=$1 AND store_id=$2', [date, sid]);
     const byHour = {}; const byGenderHour = { male:{}, female:{} };
     for (const h of hrs.rows) { byHour[h.hour] = Number(h.total||0); byGenderHour.male[h.hour] = Number(h.male||0); byGenderHour.female[h.hour] = Number(h.female||0); }
@@ -527,21 +552,29 @@ async function refreshData(res, startDate = getTodayDate(), endDate = startDate,
         const api = await fetchFromDisplayForce('/device/list');
         const devices = Array.isArray(api?.data) ? api.data : [];
         let aggTotal = 0, aggMale = 0, aggFemale = 0; let aggAvgSum = 0, aggAvgCount = 0; const aggHourly = {}; const aggAge = { '18-25':0,'26-35':0,'36-45':0,'46-60':0,'60+':0 }; const aggWeek = { sunday:0, monday:0, tuesday:0, wednesday:0, thursday:0, friday:0, saturday:0 };
-        for (const dev of devices) {
-          const payload = await fetchDayAllPages(day, String(dev.id));
-          const a = aggregateVisitors(payload);
-          console.log(`📦 Coleta ${day} store=${dev.id} registros=${a.total}`);
-          const totals = { totalVisitors: a.total, maleCount: a.men, femaleCount: a.women, ageData: a.byAge, hourlyData: a.byHour, weekday: a.byWeekday, avgAgeSum: a.avgAgeSum, avgAgeCount: a.avgAgeCount };
-          await saveDaily(day, String(dev.id), totals);
-          await saveHourly(day, String(dev.id), totals.hourlyData || {}, totals.maleCount || 0, totals.femaleCount || 0, totals.totalVisitors || 0);
-          aggTotal += a.total; aggMale += a.men; aggFemale += a.women; aggAvgSum += a.avgAgeSum; aggAvgCount += a.avgAgeCount;
-          for (const h in a.byHour) aggHourly[h] = (aggHourly[h]||0) + Number(a.byHour[h]||0);
-          for (const g in a.byAge) aggAge[g] = (aggAge[g]||0) + Number(a.byAge[g]||0);
-          for (const k in a.byWeekday) aggWeek[k] = (aggWeek[k]||0) + Number(a.byWeekday[k]||0);
+        if (devices.length === 0) {
+          const payloadAll = await fetchDayAllPages(day, undefined);
+          const aAll = aggregateVisitors(payloadAll);
+          const totalsAll = { totalVisitors: aAll.total, maleCount: aAll.men, femaleCount: aAll.women, ageData: aAll.byAge, hourlyData: aAll.byHour, weekday: aAll.byWeekday, avgAgeSum: aAll.avgAgeSum, avgAgeCount: aAll.avgAgeCount };
+          await saveDaily(day, 'all', totalsAll);
+          await saveHourly(day, 'all', totalsAll.hourlyData || {}, totalsAll.maleCount || 0, totalsAll.femaleCount || 0, totalsAll.totalVisitors || 0);
+        } else {
+          for (const dev of devices) {
+            const payload = await fetchDayAllPages(day, String(dev.id));
+            const a = aggregateVisitors(payload);
+            console.log(`📦 Coleta ${day} store=${dev.id} registros=${a.total}`);
+            const totals = { totalVisitors: a.total, maleCount: a.men, femaleCount: a.women, ageData: a.byAge, hourlyData: a.byHour, weekday: a.byWeekday, avgAgeSum: a.avgAgeSum, avgAgeCount: a.avgAgeCount };
+            await saveDaily(day, String(dev.id), totals);
+            await saveHourly(day, String(dev.id), totals.hourlyData || {}, totals.maleCount || 0, totals.femaleCount || 0, totals.totalVisitors || 0);
+            aggTotal += a.total; aggMale += a.men; aggFemale += a.women; aggAvgSum += a.avgAgeSum; aggAvgCount += a.avgAgeCount;
+            for (const h in a.byHour) aggHourly[h] = (aggHourly[h]||0) + Number(a.byHour[h]||0);
+            for (const g in a.byAge) aggAge[g] = (aggAge[g]||0) + Number(a.byAge[g]||0);
+            for (const k in a.byWeekday) aggWeek[k] = (aggWeek[k]||0) + Number(a.byWeekday[k]||0);
+          }
+          const totalsAll = { totalVisitors: aggTotal, maleCount: aggMale, femaleCount: aggFemale, ageData: aggAge, hourlyData: aggHourly, weekday: aggWeek, avgAgeSum: aggAvgSum, avgAgeCount: aggAvgCount };
+          await saveDaily(day, 'all', totalsAll);
+          await saveHourly(day, 'all', totalsAll.hourlyData || {}, totalsAll.maleCount || 0, totalsAll.femaleCount || 0, totalsAll.totalVisitors || 0);
         }
-        const totalsAll = { totalVisitors: aggTotal, maleCount: aggMale, femaleCount: aggFemale, ageData: aggAge, hourlyData: aggHourly, weekday: aggWeek, avgAgeSum: aggAvgSum, avgAgeCount: aggAvgCount };
-        await saveDaily(day, 'all', totalsAll);
-        await saveHourly(day, 'all', totalsAll.hourlyData || {}, totalsAll.maleCount || 0, totalsAll.femaleCount || 0, totalsAll.totalVisitors || 0);
       } else {
         const payload = await fetchDayAllPages(day, storeId);
         const a = aggregateVisitors(payload);

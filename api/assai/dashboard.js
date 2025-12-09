@@ -28,7 +28,7 @@ export default async function handler(req, res) {
     
     switch (endpoint) {
       case 'devices':
-        return await getDevices(res);
+        return await getDevices(req, res);
       case 'stores':
         return await getStores(res);
         
@@ -42,6 +42,14 @@ export default async function handler(req, res) {
           return await getDashboardDataLive(res, store, effStart);
         }
         if (effStart !== effEnd) {
+          const today = getTodayDate();
+          const s = new Date(effStart + 'T00:00:00Z');
+          const e = new Date(effEnd + 'T00:00:00Z');
+          const t = new Date(today + 'T00:00:00Z');
+          const includesToday = t.getTime() >= s.getTime() && t.getTime() <= e.getTime();
+          if (includesToday) {
+            try { await refreshData({ status: () => ({ json: () => ({}) }) }, today, today, store); } catch {}
+          }
           return await getDashboardDataRange(res, store, effStart, effEnd);
         }
         try {
@@ -203,29 +211,35 @@ async function getStores(res) {
   }
 }
 
-async function getDevices(res) {
+async function getDevices(req, res) {
   try {
+    const q = String((req?.query?.q || req?.query?.name || req?.query?.search || '')).toLowerCase();
     const apiData = await fetchFromDisplayForce('/device/list');
     const list = Array.isArray(apiData?.data) ? apiData.data : [];
-    const devices = list.map((device) => ({
-      id: device.id ? device.id.toString() : '',
-      name: String(device.name || 'Dispositivo'),
-      location: getDeviceLocation(device),
-      status: getDeviceStatus(device)
-    }));
-    return res.status(200).json({
-      success: true,
-      devices,
-      count: devices.length,
-      timestamp: new Date().toISOString()
+    const devicesRaw = list.map((device) => {
+      const name = String(device.name || device.device_name || 'Dispositivo');
+      const status = device.connection_state === 'online' ? 'active' : 'inactive';
+      let location = '';
+      if (device.address?.description) location = device.address.description;
+      else {
+        const nm = name.toLowerCase();
+        if (nm.includes('aricanduva')) location = 'Assaí Atacadista Aricanduva';
+        else if (nm.includes('ayrton') || nm.includes('sena')) location = 'Assaí Atacadista Ayrton Senna';
+        else if (nm.includes('barueri')) location = 'Assaí Atacadista Barueri';
+        else if (nm.includes('americas')) location = 'Assaí Atacadista Av. das Américas';
+        else location = 'Assaí Atacadista';
+      }
+      return {
+        id: device.id ? String(device.id) : '',
+        name,
+        location,
+        status
+      };
     });
+    const devices = q ? devicesRaw.filter(d => d.name.toLowerCase().includes(q)) : devicesRaw;
+    return res.status(200).json({ success: true, devices, count: devices.length, timestamp: new Date().toISOString() });
   } catch (error) {
-    return res.status(200).json({
-      success: true,
-      devices: [],
-      count: 0,
-      timestamp: new Date().toISOString()
-    });
+    return res.status(200).json({ success: true, devices: [], count: 0, timestamp: new Date().toISOString() });
   }
 }
 
@@ -606,15 +620,20 @@ function aggregateVisitors(payload) {
   const byGenderHour = { male: {}, female: {} };
   let total=0, men=0, women=0, avgAgeSum=0, avgAgeCount=0;
   const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || '-3', 10);
+  const getAge = (v) => {
+    const a = v.age ?? v.age_years ?? v.face?.age ?? v.additional_attributes?.age;
+    const n = Number(a || 0);
+    return isNaN(n) ? 0 : n;
+  };
   for (const v of payload) {
     total++;
     const gRaw = (v.sex ?? v.gender ?? '').toString().toLowerCase();
     const g = typeof v.sex === 'number' ? (v.sex === 1 ? 'm' : 'f') : (gRaw.startsWith('m') ? 'm' : 'f');
     if (g === 'm') men++; else women++;
-    const age = Number(v.age || 0);
+    const age = getAge(v);
     if (age > 0) { avgAgeSum += age; avgAgeCount++; }
     if (age >= 18 && age <= 25) byAge['18-25']++; else if (age >= 26 && age <= 35) byAge['26-35']++; else if (age >= 36 && age <= 45) byAge['36-45']++; else if (age >= 46 && age <= 60) byAge['46-60']++; else if (age > 60) byAge['60+']++;
-    const ts = v.start || (v.tracks && v.tracks[0] && v.tracks[0].start);
+    const ts = v.start || (v.tracks && v.tracks[0] && v.tracks[0].start) || v.timestamp;
     if (ts) {
       const base = new Date(ts);
       const local = new Date(base.getTime() + tz * 3600000);
@@ -623,7 +642,7 @@ function aggregateVisitors(payload) {
       byWeekday[key] = (byWeekday[key] || 0) + 1;
       const h = local.getUTCHours();
       byHour[h] = (byHour[h] || 0) + 1;
-      if (g === 'M') byGenderHour.male[h] = (byGenderHour.male[h] || 0) + 1; else byGenderHour.female[h] = (byGenderHour.female[h] || 0) + 1;
+      if (g === 'm') byGenderHour.male[h] = (byGenderHour.male[h] || 0) + 1; else byGenderHour.female[h] = (byGenderHour.female[h] || 0) + 1;
     }
   }
   return { total, men, women, avgAgeSum, avgAgeCount, byAge, byWeekday, byHour, byGenderHour };

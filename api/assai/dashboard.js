@@ -1411,17 +1411,19 @@ async function rebuildHourlyFromVisitors(req, res, start_date, end_date, store_i
   try {
     const s = start_date || new Date().toISOString().slice(0,10);
     const e = end_date || s;
+    const tzOffset = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
+    const adj = `EXTRACT(HOUR FROM (timestamp + INTERVAL '${tzOffset} hour'))`;
     const start = new Date(s); const end = new Date(e);
     for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
       const dayStr = d.toISOString().split('T')[0];
-      let q = `SELECT COALESCE(hour, EXTRACT(HOUR FROM timestamp)) AS hour,
+      let q = `SELECT COALESCE(hour, ${adj}) AS hour,
                        SUM(CASE WHEN gender IN ('M','F') THEN 1 ELSE 0 END) AS total,
                        SUM(CASE WHEN gender='M' THEN 1 ELSE 0 END) AS male,
                        SUM(CASE WHEN gender='F' THEN 1 ELSE 0 END) AS female
                 FROM visitors WHERE day=$1`;
       const params = [dayStr];
       if (store_id && store_id !== 'all') { q += ` AND store_id=$2`; params.push(store_id); }
-      q += ` GROUP BY COALESCE(hour, EXTRACT(HOUR FROM timestamp)) ORDER BY 1`;
+      q += ` GROUP BY COALESCE(hour, ${adj}) ORDER BY 1`;
       const { rows } = await pool.query(q, params);
       for (const r of rows) {
         await pool.query(`INSERT INTO dashboard_hourly (day, store_id, hour, total, male, female) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (day, store_id, hour) DO UPDATE SET total=EXCLUDED.total, male=EXCLUDED.male, female=EXCLUDED.female`, [dayStr, store_id && store_id !== 'all' ? store_id : 'all', Number(r.hour), Number(r.total||0), Number(r.male||0), Number(r.female||0)]);
@@ -1430,12 +1432,12 @@ async function rebuildHourlyFromVisitors(req, res, start_date, end_date, store_i
         const distinct = await pool.query(`SELECT DISTINCT store_id FROM visitors WHERE day=$1`, [dayStr]);
         for (const st of distinct.rows) {
           const sid = String(st.store_id);
-          const r2 = await pool.query(`SELECT COALESCE(hour, EXTRACT(HOUR FROM timestamp)) AS hour,
+          const r2 = await pool.query(`SELECT COALESCE(hour, ${adj}) AS hour,
                                        SUM(CASE WHEN gender IN ('M','F') THEN 1 ELSE 0 END) AS total,
                                        SUM(CASE WHEN gender='M' THEN 1 ELSE 0 END) AS male,
                                        SUM(CASE WHEN gender='F' THEN 1 ELSE 0 END) AS female
                                        FROM visitors WHERE day=$1 AND store_id=$2
-                                       GROUP BY COALESCE(hour, EXTRACT(HOUR FROM timestamp)) ORDER BY 1`, [dayStr, sid]);
+                                       GROUP BY COALESCE(hour, ${adj}) ORDER BY 1`, [dayStr, sid]);
           for (const rr of r2.rows) {
             await pool.query(`INSERT INTO dashboard_hourly (day, store_id, hour, total, male, female) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (day, store_id, hour) DO UPDATE SET total=EXCLUDED.total, male=EXCLUDED.male, female=EXCLUDED.female`, [dayStr, sid, Number(rr.hour), Number(rr.total||0), Number(rr.male||0), Number(rr.female||0)]);
           }
@@ -1462,16 +1464,17 @@ async function refreshRecent(req, res, start_date, store_id) {
     const limit = Number(j.pagination?.limit ?? 100);
     const total = Number(j.pagination?.total ?? (Array.isArray(j.payload)? j.payload.length:0));
     const offsets = []; for (let off=0; off<total; off+=limit) offsets.push(off);
-    const recentCount = Math.max(1, Number(req.query.count || 6));
+    const recentCount = Math.max(1, Number(req.query.count || 24));
     const slice = offsets.slice(0, recentCount);
-    let saved = 0; let processed = 0;
-    for (const off of slice) {
+    const results = await Promise.all(slice.map(async (off) => {
       const jr = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method:'POST', headers:{ 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type':'application/json' }, body: JSON.stringify({ start:startISO, end:endISO, limit, offset:off, tracks:true, ...(store_id&&store_id!=='all'?{devices:[parseInt(store_id)]}:{}) }) });
-      if (!jr.ok) continue;
+      if (!jr.ok) return { saved: 0, processed: 0 };
       const jj = await jr.json(); const arr = jj.payload || jj || [];
-      saved += await saveVisitorsToDatabase(arr, day);
-      processed += arr.length;
-    }
+      const saved = await saveVisitorsToDatabase(arr, day);
+      return { saved, processed: arr.length };
+    }));
+    const saved = results.reduce((a,b)=>a+b.saved,0);
+    const processed = results.reduce((a,b)=>a+b.processed,0);
     await updateAggregatesForDateAndDevice(day, store_id || 'all');
     const { rows } = await pool.query(`SELECT DISTINCT store_id FROM visitors WHERE day=$1`, [day]);
     for (const r of rows) { await updateAggregatesForDateAndDevice(day, String(r.store_id)); }

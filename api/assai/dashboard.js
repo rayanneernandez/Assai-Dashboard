@@ -538,7 +538,7 @@ async function getHourlyAggregatesFromAggregates(start_date, end_date, store_id)
         WHERE day >= $1 AND day <= $2`;
       const params = [start_date, end_date];
       if (store_id && store_id !== 'all') { vq += ` AND store_id = $3`; params.push(store_id); }
-      vq += ` GROUP BY hour ORDER BY hour`;
+      vq += ` GROUP BY COALESCE(hour, EXTRACT(HOUR FROM timestamp)) ORDER BY 1`;
       const r2 = await pool.query(vq, params);
       rows = r2.rows;
     }
@@ -1463,7 +1463,7 @@ async function rebuildHourlyFromVisitors(req, res, start_date, end_date, store_i
       let q = `SELECT COALESCE(hour, EXTRACT(HOUR FROM timestamp)) AS hour, COUNT(*) AS total, SUM(CASE WHEN gender='M' THEN 1 ELSE 0 END) AS male, SUM(CASE WHEN gender='F' THEN 1 ELSE 0 END) AS female FROM visitors WHERE day=$1`;
       const params = [dayStr];
       if (store_id && store_id !== 'all') { q += ` AND store_id=$2`; params.push(store_id); }
-      q += ` GROUP BY hour ORDER BY hour`;
+      q += ` GROUP BY COALESCE(hour, EXTRACT(HOUR FROM timestamp)) ORDER BY 1`;
       const { rows } = await pool.query(q, params);
       for (const r of rows) {
         await pool.query(`INSERT INTO dashboard_hourly (day, store_id, hour, total, male, female) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (day, store_id, hour) DO UPDATE SET total=EXCLUDED.total, male=EXCLUDED.male, female=EXCLUDED.female`, [dayStr, store_id && store_id !== 'all' ? store_id : 'all', Number(r.hour), Number(r.total||0), Number(r.male||0), Number(r.female||0)]);
@@ -1472,7 +1472,7 @@ async function rebuildHourlyFromVisitors(req, res, start_date, end_date, store_i
         const distinct = await pool.query(`SELECT DISTINCT store_id FROM visitors WHERE day=$1`, [dayStr]);
         for (const st of distinct.rows) {
           const sid = String(st.store_id);
-          const r2 = await pool.query(`SELECT COALESCE(hour, EXTRACT(HOUR FROM timestamp)) AS hour, COUNT(*) AS total, SUM(CASE WHEN gender='M' THEN 1 ELSE 0 END) AS male, SUM(CASE WHEN gender='F' THEN 1 ELSE 0 END) AS female FROM visitors WHERE day=$1 AND store_id=$2 GROUP BY hour ORDER BY hour`, [dayStr, sid]);
+          const r2 = await pool.query(`SELECT COALESCE(hour, EXTRACT(HOUR FROM timestamp)) AS hour, COUNT(*) AS total, SUM(CASE WHEN gender='M' THEN 1 ELSE 0 END) AS male, SUM(CASE WHEN gender='F' THEN 1 ELSE 0 END) AS female FROM visitors WHERE day=$1 AND store_id=$2 GROUP BY COALESCE(hour, EXTRACT(HOUR FROM timestamp)) ORDER BY 1`, [dayStr, sid]);
           for (const rr of r2.rows) {
             await pool.query(`INSERT INTO dashboard_hourly (day, store_id, hour, total, male, female) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (day, store_id, hour) DO UPDATE SET total=EXCLUDED.total, male=EXCLUDED.male, female=EXCLUDED.female`, [dayStr, sid, Number(rr.hour), Number(rr.total||0), Number(rr.male||0), Number(rr.female||0)]);
           }

@@ -399,75 +399,8 @@ async function getSummary(req, res, start_date, end_date, store_id) {
     
     console.log(`📊 Período: ${sDate} até ${eDate}`);
     
-    // Se necessário, ingere da DisplayForce primeiro
-    if (!store_id || store_id === 'all') {
-      let q = `
-        SELECT 
-          COALESCE(SUM(total_visitors), 0) AS total_visitors,
-          COALESCE(SUM(male), 0) AS total_male,
-          COALESCE(SUM(female), 0) AS total_female,
-          COALESCE(SUM(avg_age_sum), 0) AS avg_age_sum,
-          COALESCE(SUM(avg_age_count), 0) AS avg_age_count,
-          COALESCE(SUM(sunday), 0) AS sunday,
-          COALESCE(SUM(monday), 0) AS monday,
-          COALESCE(SUM(tuesday), 0) AS tuesday,
-          COALESCE(SUM(wednesday), 0) AS wednesday,
-          COALESCE(SUM(thursday), 0) AS thursday,
-          COALESCE(SUM(friday), 0) AS friday,
-          COALESCE(SUM(saturday), 0) AS saturday,
-          COALESCE(SUM(age_18_25), 0) AS age_18_25,
-          COALESCE(SUM(age_26_35), 0) AS age_26_35,
-          COALESCE(SUM(age_36_45), 0) AS age_36_45,
-          COALESCE(SUM(age_46_60), 0) AS age_46_60,
-          COALESCE(SUM(age_60_plus), 0) AS age_60_plus
-        FROM dashboard_daily WHERE day >= $1 AND day <= $2 AND store_id = 'all'
-      `;
-      const r = await pool.query(q, [sDate, eDate]);
-      const row = r.rows[0] || {};
-      const avgCount = Number(row.avg_age_count || 0);
-      const averageAge = avgCount > 0 ? Math.round(Number(row.avg_age_sum || 0) / avgCount) : 0;
-      const hourlyData = await getHourlyAggregatesFromAggregates(sDate, eDate, 'all');
-      const ageGenderData = await getAgeGenderDistribution(sDate, eDate, 'all');
-      const { rows: upd } = await pool.query(`SELECT MAX(updated_at) AS u FROM dashboard_daily WHERE day BETWEEN $1 AND $2 AND store_id='all'`, [sDate, eDate]);
-      const lastUpd = upd[0]?.u ? new Date(upd[0].u) : null;
-      const stale = !lastUpd || (Date.now() - lastUpd.getTime() > 60 * 1000);
-      const today = new Date().toISOString().slice(0,10);
-      const isTodayOnly = sDate === today && eDate === today;
-      const forceRealtime = String((req.query||{}).source || '').toLowerCase() === 'displayforce' || String((req.query||{}).realtime || '').toLowerCase() === '1';
-      if (stale || isTodayOnly || forceRealtime) {
-        return await calculateRealTimeSummary(res, sDate, eDate, 'all');
-      }
-      return res.status(200).json({
-        success: true,
-        totalVisitors: Number(row.total_visitors || 0),
-        totalMale: Number(row.total_male || 0),
-        totalFemale: Number(row.total_female || 0),
-        averageAge,
-        visitsByDay: {
-          Sunday: Number(row.sunday || 0),
-          Monday: Number(row.monday || 0),
-          Tuesday: Number(row.tuesday || 0),
-          Wednesday: Number(row.wednesday || 0),
-          Thursday: Number(row.thursday || 0),
-          Friday: Number(row.friday || 0),
-          Saturday: Number(row.saturday || 0),
-        },
-        byAgeGroup: {
-          "18-25": Number(row.age_18_25 || 0),
-          "26-35": Number(row.age_26_35 || 0),
-          "36-45": Number(row.age_36_45 || 0),
-          "46-60": Number(row.age_46_60 || 0),
-          "60+": Number(row.age_60_plus || 0),
-        },
-        byAgeGender: ageGenderData,
-        byHour: hourlyData.byHour,
-        byGenderHour: hourlyData.byGenderHour,
-        source: 'dashboard_daily_all',
-        period: `${sDate} - ${eDate}`
-      });
-    } else {
-      return await calculateRealTimeSummary(res, sDate, eDate, store_id);
-    }
+    // Sempre calcular do visitors para dados precisos e imediatos (inclui horário local)
+    return await calculateRealTimeSummary(res, sDate, eDate, store_id || 'all');
     
   } catch (error) {
     console.error("❌ Summary error:", error);

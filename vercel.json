@@ -17,5 +17,10 @@
         { "key": "Access-Control-Allow-Headers", "value": "X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version" }
       ]
     }
+  ],
+  "crons": [
+    { "path": "/api/assai/dashboard?endpoint=auto_refresh", "schedule": "0 6 * * *" },
+    { "path": "/api/assai/dashboard?endpoint=refresh_all", "schedule": "*/10 * * * *" },
+    { "path": "/api/assai/dashboard?endpoint=rebuild_hourly&store_id=all", "schedule": "*/15 * * * *" }
   ]
 }

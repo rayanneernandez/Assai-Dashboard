@@ -554,23 +554,39 @@ async function calculateRealTimeSummary(res, start_date, end_date, store_id) {
     let row = result.rows[0] || {};
     
     let totalRealTime = Number(row.total_visitors || 0);
-    console.log(`🧮 Total em tempo real: ${totalRealTime}`);
-    
-    if (totalRealTime === 0) {
-      try {
-        const visitors = await fetchVisitorsFromDisplayForce(sDate, eDate, store_id && store_id !== 'all' ? store_id : null);
-        await saveVisitorsToDatabase(visitors);
-        const ds = new Date(sDate);
-        const de = new Date(eDate);
-        for (let d = new Date(ds); d <= de; d.setDate(d.getDate() + 1)) {
-          const dateStr = d.toISOString().split('T')[0];
-          await updateAggregatesForDateAndDevice(dateStr, store_id || 'all');
+    console.log(`🧮 Total em tempo real (DB): ${totalRealTime}`);
+
+    try {
+      const firstBody = { start: startISO, end: endISO, limit: 500, offset: 0, tracks: true };
+      if (store_id && store_id !== 'all') firstBody.devices = [parseInt(store_id)];
+      const firstResp = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method:'POST', headers:{ 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type':'application/json' }, body: JSON.stringify(firstBody) });
+      if (firstResp.ok) {
+        const firstData = await firstResp.json();
+        const limit = Number(firstData.pagination?.limit ?? 500);
+        const apiTotal = Number(firstData.pagination?.total ?? (Array.isArray(firstData.payload)? firstData.payload.length:0));
+        const missing = Math.max(0, apiTotal - totalRealTime);
+        console.log(`📡 API total=${apiTotal}, DB total=${totalRealTime}, faltando=${missing}`);
+        if (missing > 0) {
+          const offsets = []; for (let off=0; off<apiTotal; off+=limit) offsets.push(off);
+          const pagesNeeded = Math.min(24, Math.ceil(missing / limit));
+          const latestOffsets = offsets.slice(-pagesNeeded);
+          console.log(`🔄 Ingerindo offsets recentes: ${latestOffsets.join(', ')}`);
+          await Promise.all(latestOffsets.map(async (off) => {
+            const r = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method:'POST', headers:{ 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type':'application/json' }, body: JSON.stringify({ start:startISO, end:endISO, limit, offset:off, tracks:true, ...(store_id&&store_id!=='all'?{devices:[parseInt(store_id)]}:{}) }) });
+            if (!r.ok) return;
+            const j = await r.json(); const arr = j.payload || j || [];
+            await saveVisitorsToDatabase(arr, sDate);
+          }));
+          await updateAggregatesForDateAndDevice(sDate, store_id || 'all');
+          const { rows } = await pool.query(`SELECT DISTINCT store_id FROM visitors WHERE day=$1`, [sDate]);
+          for (const rr of rows) { await updateAggregatesForDateAndDevice(sDate, String(rr.store_id)); }
+          const re = await pool.query(query, params);
+          row = re.rows[0] || row;
+          totalRealTime = Number(row.total_visitors || 0);
         }
-        const re = await pool.query(query, params);
-        row = re.rows[0] || row;
-        totalRealTime = Number(row.total_visitors || 0);
-      } catch {}
-    }
+      }
+    } catch {}
+
     
     const avgAgeCount = Number(row.avg_age_count || 0);
     const averageAge = avgAgeCount > 0 ? Math.round(Number(row.avg_age_sum || 0) / avgAgeCount) : 0;

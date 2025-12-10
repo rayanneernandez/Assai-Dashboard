@@ -66,6 +66,9 @@ export default async function handler(req, res) {
       case 'rebuild_hourly':
         return await rebuildHourlyFromVisitors(req, res, start_date, end_date, store_id);
       
+      case 'refresh_recent':
+        return await refreshRecent(req, res, start_date, store_id);
+      
       case 'optimize':
         return await ensureIndexes(req, res);
       
@@ -1493,6 +1496,37 @@ async function rebuildHourlyFromVisitors(req, res, start_date, end_date, store_i
     return res.status(200).json({ success:true, period:`${s} - ${e}` });
   } catch (error) {
     return res.status(500).json({ success:false, error: error.message });
+  }
+}
+
+async function refreshRecent(req, res, start_date, store_id) {
+  try {
+    const day = start_date || new Date().toISOString().slice(0,10);
+    const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
+    const sign = tz >= 0 ? "+" : "-"; const hh = String(Math.abs(tz)).padStart(2,'0'); const tzStr = `${sign}${hh}:00`;
+    const startISO = `${day}T00:00:00${tzStr}`; const endISO = `${day}T23:59:59${tzStr}`;
+    const body = { start: startISO, end: endISO, limit: 500, offset: 0, tracks: true };
+    if (store_id && store_id !== 'all') body.devices = [parseInt(store_id)];
+    const r = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method:'POST', headers:{ 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type':'application/json' }, body: JSON.stringify(body) });
+    if (!r.ok) return res.status(r.status).json({ error: await r.text() });
+    const j = await r.json();
+    const limit = Number(j.pagination?.limit ?? 100);
+    const total = Number(j.pagination?.total ?? (Array.isArray(j.payload)? j.payload.length:0));
+    const offsets = []; for (let off=0; off<total; off+=limit) offsets.push(off);
+    const recentCount = Math.max(1, Number(req.query.count || 6));
+    const slice = offsets.slice(Math.max(0, offsets.length - recentCount));
+    let saved = 0; let processed = 0;
+    for (const off of slice) {
+      const jr = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method:'POST', headers:{ 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type':'application/json' }, body: JSON.stringify({ start:startISO, end:endISO, limit, offset:off, tracks:true, ...(store_id&&store_id!=='all'?{devices:[parseInt(store_id)]}:{}) }) });
+      if (!jr.ok) continue;
+      const jj = await jr.json(); const arr = jj.payload || jj || [];
+      saved += await saveVisitorsToDatabase(arr, day);
+      processed += arr.length;
+    }
+    await updateAggregatesForDateAndDevice(day, store_id || 'all');
+    return res.status(200).json({ success:true, day, recent_offsets:slice, processed, saved });
+  } catch (e) {
+    return res.status(500).json({ success:false, error:e.message });
   }
 }
 

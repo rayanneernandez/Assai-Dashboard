@@ -416,7 +416,6 @@ async function getHourlyAggregatesWithRealTime(start_date, end_date, store_id) {
     console.log(`⏰ Calculando fluxo horário REAL para ${start_date} - ${end_date}`);
     
     const tzOffset = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
-    const adj = `EXTRACT(HOUR FROM (timestamp + INTERVAL '${tzOffset} hour'))`;
     const sign = tzOffset >= 0 ? "+" : "-";
     const hh = String(Math.abs(tzOffset)).padStart(2, "0");
     const tzStr = `${sign}${hh}:00`;
@@ -424,7 +423,7 @@ async function getHourlyAggregatesWithRealTime(start_date, end_date, store_id) {
     const endISO = `${end_date}T23:59:59${tzStr}`;
     let query = `
       SELECT 
-        ${adj} AS hour,
+        hour AS hour,
         COUNT(*) AS total,
         SUM(CASE WHEN gender = 'M' THEN 1 ELSE 0 END) AS male,
         SUM(CASE WHEN gender = 'F' THEN 1 ELSE 0 END) AS female
@@ -439,7 +438,7 @@ async function getHourlyAggregatesWithRealTime(start_date, end_date, store_id) {
       params.push(store_id);
     }
     
-    query += ` GROUP BY ${adj} ORDER BY ${adj}`;
+    query += ` GROUP BY hour ORDER BY hour`;
     
     const result = await pool.query(query, params);
     
@@ -702,10 +701,9 @@ async function updateHourlyStatsForDate(date, device_id) {
     );
     
     const tzOffset = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
-    const adj = `EXTRACT(HOUR FROM (timestamp + INTERVAL '${tzOffset} hour'))`;
     let query = `
       SELECT 
-        ${adj} AS hour,
+        hour AS hour,
         COUNT(*) AS total,
         SUM(CASE WHEN gender = 'M' THEN 1 ELSE 0 END) AS male,
         SUM(CASE WHEN gender = 'F' THEN 1 ELSE 0 END) AS female
@@ -720,7 +718,7 @@ async function updateHourlyStatsForDate(date, device_id) {
       params.push(device_id);
     }
     
-    query += ` GROUP BY ${adj} ORDER BY ${adj}`;
+    query += ` GROUP BY hour ORDER BY hour`;
     
     const result = await pool.query(query, params);
     
@@ -778,6 +776,7 @@ async function saveVisitorsToDatabase(visitors, forcedDay) {
       
       const localDate = new Date(dateObj.getTime() + (tz * 3600000));
       const hour = localDate.getHours();
+      const localTime = `${String(hour).padStart(2,'0')}:${String(localDate.getMinutes()).padStart(2,'0')}:${String(localDate.getSeconds()).padStart(2,'0')}`;
       const y = localDate.getFullYear();
       const m = String(localDate.getMonth() + 1).padStart(2, '0');
       const d = String(localDate.getDate()).padStart(2, '0');
@@ -844,8 +843,8 @@ async function saveVisitorsToDatabase(visitors, forcedDay) {
       await pool.query(
         `INSERT INTO visitors (
           visitor_id, day, store_id, store_name, 
-          timestamp, gender, age, day_of_week, smile, hour
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+          timestamp, gender, age, day_of_week, smile, hour, local_time
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         ON CONFLICT (visitor_id, timestamp) 
         DO UPDATE SET
           day = EXCLUDED.day,
@@ -855,7 +854,8 @@ async function saveVisitorsToDatabase(visitors, forcedDay) {
           age = EXCLUDED.age,
           day_of_week = EXCLUDED.day_of_week,
           smile = EXCLUDED.smile,
-          hour = EXCLUDED.hour`,
+          hour = EXCLUDED.hour,
+          local_time = EXCLUDED.local_time`,
         [
           visitorId,
           dateStr,
@@ -866,7 +866,8 @@ async function saveVisitorsToDatabase(visitors, forcedDay) {
           age,
           dayOfWeek,
           smile,
-          hour
+          hour,
+          localTime
         ]
       );
       
@@ -1059,7 +1060,8 @@ async function getVisitors(req, res, start_date, end_date, store_id) {
         age,
         day_of_week,
         smile,
-        hour
+        hour,
+        local_time
       FROM visitors
       WHERE 1=1
     `;
@@ -1108,7 +1110,8 @@ async function getVisitors(req, res, start_date, end_date, store_id) {
         age: row.age,
         day_of_week: row.day_of_week,
         smile: row.smile,
-        hour: row.hour
+        hour: row.hour,
+        local_time: row.local_time
       })),
       count: result.rows.length,
       source: 'database'
@@ -1526,6 +1529,7 @@ async function ensureIndexes(req, res) {
       CREATE INDEX IF NOT EXISTS idx_visitors_gender ON visitors(gender);
       CREATE INDEX IF NOT EXISTS idx_visitors_age ON visitors(age);
       CREATE INDEX IF NOT EXISTS idx_visitors_hour ON visitors(hour);
+      CREATE INDEX IF NOT EXISTS idx_visitors_local_time ON visitors(local_time);
       CREATE UNIQUE INDEX IF NOT EXISTS uniq_visitors_id_ts ON visitors(visitor_id, timestamp);
       
       CREATE INDEX IF NOT EXISTS idx_dashboard_daily_day ON dashboard_daily(day);

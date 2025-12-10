@@ -48,8 +48,17 @@ export default async function handler(req, res) {
       case 'sync_all_data':
         return await syncAllHistoricalData(req, res);
       
+      case 'plan_ingest':
+        return await planIngestDay(req, res, start_date, end_date, store_id);
+      
+      case 'ingest_day':
+        return await ingestDay(req, res, start_date, end_date, store_id);
+      
       case 'auto_refresh':
         return await autoRefresh(req, res);
+      
+      case 'wipe_range':
+        return await wipeRange(req, res, start_date, end_date);
       
       case 'optimize':
         return await ensureIndexes(req, res);
@@ -381,14 +390,65 @@ async function getSummary(req, res, start_date, end_date, store_id) {
     console.log(`📊 Período: ${sDate} até ${eDate}`);
     
     // Se necessário, ingere da DisplayForce primeiro
-    const visitors = await fetchVisitorsFromDisplayForce(sDate, eDate, store_id && store_id !== 'all' ? store_id : null);
-    await saveVisitorsToDatabase(visitors);
-    const ds = new Date(sDate); const de = new Date(eDate);
-    for (let d = new Date(ds); d <= de; d.setDate(d.getDate() + 1)) {
-      const dateStr = d.toISOString().split('T')[0];
-      await updateAggregatesForDateAndDevice(dateStr, store_id || 'all');
+    if (!store_id || store_id === 'all') {
+      let q = `
+        SELECT 
+          COALESCE(SUM(total_visitors), 0) AS total_visitors,
+          COALESCE(SUM(male), 0) AS total_male,
+          COALESCE(SUM(female), 0) AS total_female,
+          COALESCE(SUM(avg_age_sum), 0) AS avg_age_sum,
+          COALESCE(SUM(avg_age_count), 0) AS avg_age_count,
+          COALESCE(SUM(sunday), 0) AS sunday,
+          COALESCE(SUM(monday), 0) AS monday,
+          COALESCE(SUM(tuesday), 0) AS tuesday,
+          COALESCE(SUM(wednesday), 0) AS wednesday,
+          COALESCE(SUM(thursday), 0) AS thursday,
+          COALESCE(SUM(friday), 0) AS friday,
+          COALESCE(SUM(saturday), 0) AS saturday,
+          COALESCE(SUM(age_18_25), 0) AS age_18_25,
+          COALESCE(SUM(age_26_35), 0) AS age_26_35,
+          COALESCE(SUM(age_36_45), 0) AS age_36_45,
+          COALESCE(SUM(age_46_60), 0) AS age_46_60,
+          COALESCE(SUM(age_60_plus), 0) AS age_60_plus
+        FROM dashboard_daily WHERE day >= $1 AND day <= $2 AND store_id = 'all'
+      `;
+      const r = await pool.query(q, [sDate, eDate]);
+      const row = r.rows[0] || {};
+      const avgCount = Number(row.avg_age_count || 0);
+      const averageAge = avgCount > 0 ? Math.round(Number(row.avg_age_sum || 0) / avgCount) : 0;
+      const hourlyData = await getHourlyAggregatesFromAggregates(sDate, eDate, 'all');
+      const ageGenderData = await getAgeGenderDistribution(sDate, eDate, 'all');
+      return res.status(200).json({
+        success: true,
+        totalVisitors: Number(row.total_visitors || 0),
+        totalMale: Number(row.total_male || 0),
+        totalFemale: Number(row.total_female || 0),
+        averageAge,
+        visitsByDay: {
+          Sunday: Number(row.sunday || 0),
+          Monday: Number(row.monday || 0),
+          Tuesday: Number(row.tuesday || 0),
+          Wednesday: Number(row.wednesday || 0),
+          Thursday: Number(row.thursday || 0),
+          Friday: Number(row.friday || 0),
+          Saturday: Number(row.saturday || 0),
+        },
+        byAgeGroup: {
+          "18-25": Number(row.age_18_25 || 0),
+          "26-35": Number(row.age_26_35 || 0),
+          "36-45": Number(row.age_36_45 || 0),
+          "46-60": Number(row.age_46_60 || 0),
+          "60+": Number(row.age_60_plus || 0),
+        },
+        byAgeGender: ageGenderData,
+        byHour: hourlyData.byHour,
+        byGenderHour: hourlyData.byGenderHour,
+        source: 'dashboard_daily_all',
+        period: `${sDate} - ${eDate}`
+      });
+    } else {
+      return await calculateRealTimeSummary(res, sDate, eDate, store_id);
     }
-    return await calculateRealTimeSummary(res, sDate, eDate, store_id);
     
   } catch (error) {
     console.error("❌ Summary error:", error);
@@ -452,6 +512,21 @@ async function getHourlyAggregatesWithRealTime(start_date, end_date, store_id) {
     console.error("❌ Hourly aggregates with real time error:", error);
     return createEmptyHourlyData();
   }
+}
+
+async function getHourlyAggregatesFromAggregates(start_date, end_date, store_id) {
+  try {
+    let q = `
+      SELECT hour, COALESCE(SUM(total),0) AS total, COALESCE(SUM(male),0) AS male, COALESCE(SUM(female),0) AS female
+      FROM dashboard_hourly
+      WHERE day >= $1 AND day <= $2 AND (store_id IS NOT DISTINCT FROM $3)
+      GROUP BY hour ORDER BY hour`;
+    const { rows } = await pool.query(q, [start_date, end_date, store_id]);
+    const byHour = {}; const byGenderHour = { male:{}, female:{} };
+    for (let h=0; h<24; h++){ byHour[h]=0; byGenderHour.male[h]=0; byGenderHour.female[h]=0; }
+    for (const r of rows){ const h = Number(r.hour); if (h>=0 && h<24){ byHour[h]=Number(r.total||0); byGenderHour.male[h]=Number(r.male||0); byGenderHour.female[h]=Number(r.female||0); } }
+    return { byHour, byGenderHour };
+  } catch { return createEmptyHourlyData(); }
 }
 
 // ===========================================
@@ -673,7 +748,7 @@ async function updateHourlyStatsForDate(date, device_id) {
 // ===========================================
 // 6. SALVAR VISITANTES CORRETAMENTE (USANDO START TIME)
 // ===========================================
-async function saveVisitorsToDatabase(visitors) {
+async function saveVisitorsToDatabase(visitors, forcedDay) {
   if (!visitors || !Array.isArray(visitors) || visitors.length === 0) {
     console.log('ℹ️ Nenhum visitante para salvar');
     return 0;
@@ -704,22 +779,32 @@ async function saveVisitorsToDatabase(visitors) {
       const y = localDate.getFullYear();
       const m = String(localDate.getMonth() + 1).padStart(2, '0');
       const d = String(localDate.getDate()).padStart(2, '0');
-      const dateStr = `${y}-${m}-${d}`;
+      const dateStr = String(forcedDay || `${y}-${m}-${d}`);
       const dayOfWeek = DAYS[localDate.getDay()];
       
-      let deviceId = 'unknown';
-      if (visitor.tracks && visitor.tracks.length > 0) {
-        const dev = visitor.tracks[0];
-        deviceId = String(dev.device_id ?? dev.id ?? '');
-      } else if (visitor.devices && visitor.devices.length > 0) {
-        const dev0 = visitor.devices[0];
-        deviceId = typeof dev0 === 'object' ? String(dev0.id ?? dev0.device_id ?? '') : String(dev0 || '');
+      let deviceId = '';
+      let storeName = '';
+      const t0 = visitor.tracks && visitor.tracks.length > 0 ? visitor.tracks[0] : null;
+      if (t0) {
+        deviceId = String(t0.device_id ?? t0.id ?? '');
+        storeName = String(t0.device_name ?? t0.name ?? '');
       }
-      const storeName = nameMap.get(deviceId) || `Loja ${deviceId}`;
+      if (!deviceId && visitor.devices && visitor.devices.length > 0) {
+        const dev0 = visitor.devices[0];
+        if (typeof dev0 === 'object' && dev0) {
+          deviceId = String(dev0.id ?? dev0.device_id ?? '');
+          storeName = String(dev0.name ?? storeName);
+        } else {
+          deviceId = String(dev0 || '');
+        }
+      }
+      if (!deviceId) deviceId = 'unknown';
+      if (!storeName) storeName = nameMap.get(deviceId) || `Loja ${deviceId}`;
       
       let gender = 'U';
-      if (visitor.sex === 1) gender = 'M';
-      else if (visitor.sex === 2) gender = 'F';
+      const sexNum = typeof visitor.sex === 'number' ? visitor.sex : (typeof visitor.gender === 'number' ? visitor.gender : null);
+      if (sexNum === 1) gender = 'M';
+      else if (sexNum === 2) gender = 'F';
       else {
         const gRaw = String(visitor.gender || '').toUpperCase();
         if (gRaw.startsWith('M')) gender = 'M';
@@ -730,20 +815,22 @@ async function saveVisitorsToDatabase(visitors) {
       if (typeof visitor.age === 'number') {
         age = Math.max(0, visitor.age);
       } else {
-        const attrsA = Array.isArray(visitor.additional_attributes) ? visitor.additional_attributes : [];
-        const attrsB = Array.isArray(visitor.additional_atributes) ? visitor.additional_atributes : [];
+        const attrsA = Array.isArray(visitor.additional_attributes)
+          ? visitor.additional_attributes
+          : (visitor.additional_attributes && typeof visitor.additional_attributes === 'object' ? [visitor.additional_attributes] : []);
+        const attrsB = Array.isArray(visitor.additional_atributes)
+          ? visitor.additional_atributes
+          : (visitor.additional_atributes && typeof visitor.additional_atributes === 'object' ? [visitor.additional_atributes] : []);
         const attrsAll = [...attrsA, ...attrsB];
-        if (attrsAll.length) {
-          const lastAttr = attrsAll[attrsAll.length - 1];
-          const a = lastAttr?.age;
-          if (typeof a === 'number') age = Math.max(0, a);
-        }
+        const lastAttr = attrsAll.length ? attrsAll[attrsAll.length - 1] : null;
+        const ageCandidate = (lastAttr?.age ?? visitor.face?.age ?? visitor.age_years);
+        if (typeof ageCandidate === 'number') age = Math.max(0, ageCandidate);
       }
       
       let smile = false;
       const attrs = visitor.additional_atributes || visitor.additional_attributes || [];
-      if (attrs.length > 0) {
-        const lastAttr = attrs[attrs.length - 1];
+      if (Array.isArray(attrs) ? attrs.length > 0 : typeof attrs === 'object') {
+        const lastAttr = Array.isArray(attrs) ? attrs[attrs.length - 1] : attrs;
         smile = String(lastAttr?.smile || '').toLowerCase() === 'yes';
       }
       
@@ -1226,92 +1313,103 @@ async function refreshAll(req, res, start_date, end_date) {
   try {
     const s = start_date || new Date().toISOString().split('T')[0];
     const e = end_date || s;
-    
-    console.log(`🔄 Refresh all: ${s} - ${e}`);
-    
-    const devices = await fetchDisplayForceDevices();
-    const results = [];
-    
-    for (const device of devices) {
-      try {
-        const visitors = await fetchVisitorsFromDisplayForce(s, e, device.id);
-        const saved = await saveVisitorsToDatabase(visitors);
-        
-        // Atualiza agregados para este dispositivo
-        const start = new Date(s);
-        const end = new Date(e);
-        
-        for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-          const dateStr = d.toISOString().split('T')[0];
-          await updateAggregatesForDateAndDevice(dateStr, device.id);
-        }
-        
-        results.push({
-          device_id: device.id,
-          visitors_found: visitors.length,
-          visitors_saved: saved,
-          success: true
-        });
-        
-      } catch (deviceError) {
-        console.error(`❌ Erro no dispositivo ${device.id}:`, deviceError.message);
-        results.push({
-          device_id: device.id,
-          error: deviceError.message,
-          success: false
-        });
-      }
-    }
-    
-    // Atualiza agregado geral
-    const start = new Date(s);
-    const end = new Date(e);
-    
+    console.log(`🔄 Refresh all (fast): ${s} - ${e}`);
+    // Busca todos os visitantes de todas as lojas em uma chamada paginada paralela
+    const visitors = await fetchVisitorsFromDisplayForce(s, e, null);
+    const saved = await saveVisitorsToDatabase(visitors, s);
+    const start = new Date(s); const end = new Date(e);
     for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
       const dateStr = d.toISOString().split('T')[0];
+      // Atualiza agregado geral
       await updateAggregatesForDateAndDevice(dateStr, 'all');
+      // Atualiza por loja (device) distinta no período
+      const { rows } = await pool.query(`SELECT DISTINCT store_id FROM visitors WHERE day=$1`, [dateStr]);
+      for (const r of rows) {
+        await updateAggregatesForDateAndDevice(dateStr, String(r.store_id));
+      }
     }
-    
-    return res.status(200).json({
-      success: true,
-      message: 'Refresh all concluído',
-      period: `${s} - ${e}`,
-      devices: devices.length,
-      results: results
-    });
-    
+    return res.status(200).json({ success: true, period: `${s} - ${e}`, visitors_found: visitors.length, visitors_saved: saved });
   } catch (error) {
     console.error('❌ Refresh all error:', error);
-    return res.status(500).json({
-      success: false,
-      error: error.message
-    });
+    return res.status(500).json({ success: false, error: error.message });
   }
 }
 
 async function autoRefresh(req, res) {
   try {
-    const yesterday = new Date();
-    yesterday.setDate(yesterday.getDate() - 1);
-    const dateStr = yesterday.toISOString().split('T')[0];
-    
-    console.log(`🤖 Auto-refresh para ${dateStr}`);
-    
-    // Chama refresh para ontem
-    await refreshRange({}, res, dateStr, dateStr, 'all');
-    
-    return res.status(202).json({
-      success: true,
-      message: 'Auto-refresh iniciado',
-      date: dateStr
-    });
-    
+    const s = String(req.query.start_date || '');
+    const e = String(req.query.end_date || '');
+    const start = s || new Date(Date.now() - 86400000).toISOString().slice(0,10);
+    const end = e || start;
+    const proto = String(req.headers['x-forwarded-proto'] || 'https');
+    const host = String(req.headers['host'] || '');
+    const base = host ? `${proto}://${host}` : '';
+    const days = []; let d = new Date(start + 'T00:00:00Z'); const de = new Date(end + 'T00:00:00Z');
+    while (d <= de) { days.push(d.toISOString().slice(0,10)); d = new Date(d.getTime() + 86400000); }
+    const calls = [];
+    for (const day of days) {
+      if (base) calls.push(fetch(`${base}/api/assai/dashboard?endpoint=refresh_all&start_date=${day}&end_date=${day}`).catch(()=>{}));
+    }
+    return res.status(202).json({ success:true, triggered:calls.length, start, end });
   } catch (error) {
     console.error('❌ Auto-refresh error:', error);
-    return res.status(500).json({
-      success: false,
-      error: error.message
-    });
+    return res.status(500).json({ success:false, error:error.message });
+  }
+}
+
+async function planIngestDay(req, res, start_date, end_date, store_id) {
+  try {
+    const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
+    const sign = tz >= 0 ? "+" : "-"; const hh = String(Math.abs(tz)).padStart(2, '0'); const tzStr = `${sign}${hh}:00`;
+    const day = start_date || new Date().toISOString().slice(0,10);
+    const startISO = `${day}T00:00:00${tzStr}`; const endISO = `${day}T23:59:59${tzStr}`;
+    const body = { start: startISO, end: endISO, limit: 500, offset: 0, tracks: true };
+    if (store_id && store_id !== 'all') body.devices = [parseInt(store_id)];
+    const r = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method: 'POST', headers: { 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (!r.ok) return res.status(r.status).json({ error: await r.text() });
+    const j = await r.json();
+    const limit = Number(j.pagination?.limit ?? 100);
+    const total = Number(j.pagination?.total ?? (Array.isArray(j.payload) ? j.payload.length : 0));
+    const offsets = []; for (let off = 0; off < total; off += limit) offsets.push(off);
+    return res.status(200).json({ day, limit, total, offsets });
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+}
+
+async function ingestDay(req, res, start_date, end_date, store_id) {
+  try {
+    const day = start_date || new Date().toISOString().slice(0,10);
+    const offset = Number(req.query.offset || 0);
+    const limit = Number(req.query.limit || 100);
+    const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
+    const sign = tz >= 0 ? "+" : "-"; const hh = String(Math.abs(tz)).padStart(2, '0'); const tzStr = `${sign}${hh}:00`;
+    const startISO = `${day}T00:00:00${tzStr}`; const endISO = `${day}T23:59:59${tzStr}`;
+    const body = { start: startISO, end: endISO, limit, offset, tracks: true };
+    if (store_id && store_id !== 'all') body.devices = [parseInt(store_id)];
+    const r = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method: 'POST', headers: { 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (!r.ok) return res.status(r.status).json({ error: await r.text() });
+    const j = await r.json(); const arr = j.payload || j || [];
+    const saved = await saveVisitorsToDatabase(arr, day);
+    await updateAggregatesForDateAndDevice(day, store_id || 'all');
+    const { rows } = await pool.query(`SELECT DISTINCT store_id FROM visitors WHERE day=$1`, [day]);
+    for (const r2 of rows) { await updateAggregatesForDateAndDevice(day, String(r2.store_id)); }
+    return res.status(200).json({ day, offset, limit, saved, count: arr.length });
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+}
+
+async function wipeRange(req, res, start_date, end_date) {
+  try {
+    const s = start_date || new Date().toISOString().slice(0,10);
+    const e = end_date || s;
+    const delH = await pool.query(`DELETE FROM public.dashboard_hourly WHERE day BETWEEN $1 AND $2`, [s, e]);
+    const delD = await pool.query(`DELETE FROM public.dashboard_daily  WHERE day BETWEEN $1 AND $2`, [s, e]);
+    const delV = await pool.query(`DELETE FROM public.visitors        WHERE day BETWEEN $1 AND $2`, [s, e]);
+    return res.status(200).json({ success:true, period:`${s} - ${e}`, deleted:{ hourly: delH.rowCount, daily: delD.rowCount, visitors: delV.rowCount } });
+  } catch (error) {
+    return res.status(500).json({ success:false, error: error.message });
   }
 }
 

@@ -427,6 +427,13 @@ async function getSummary(req, res, start_date, end_date, store_id) {
       const averageAge = avgCount > 0 ? Math.round(Number(row.avg_age_sum || 0) / avgCount) : 0;
       const hourlyData = await getHourlyAggregatesFromAggregates(sDate, eDate, 'all');
       const ageGenderData = await getAgeGenderDistribution(sDate, eDate, 'all');
+      const { rows: upd } = await pool.query(`SELECT MAX(updated_at) AS u FROM dashboard_daily WHERE day BETWEEN $1 AND $2 AND store_id='all'`, [sDate, eDate]);
+      const lastUpd = upd[0]?.u ? new Date(upd[0].u) : null;
+      const stale = !lastUpd || (Date.now() - lastUpd.getTime() > 2 * 60 * 1000);
+      if (stale) {
+        const rt = await calculateRealTimeSummary({ status:()=>({ json:x=>x }) }, sDate, eDate, 'all');
+        return res.status(200).json(rt);
+      }
       return res.status(200).json({
         success: true,
         totalVisitors: Number(row.total_visitors || 0),
@@ -472,9 +479,11 @@ async function getHourlyAggregatesWithRealTime(start_date, end_date, store_id) {
   try {
     console.log(`⏰ Calculando fluxo horário REAL para ${start_date} - ${end_date}`);
     
+    const tzOffset = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
+    const adj = `EXTRACT(HOUR FROM (timestamp + INTERVAL '${tzOffset} hour'))`;
     let query = `
       SELECT 
-        COALESCE(hour, EXTRACT(HOUR FROM timestamp)) AS hour,
+        ${adj} AS hour,
         COUNT(*) AS total,
         SUM(CASE WHEN gender = 'M' THEN 1 ELSE 0 END) AS male,
         SUM(CASE WHEN gender = 'F' THEN 1 ELSE 0 END) AS female
@@ -489,7 +498,7 @@ async function getHourlyAggregatesWithRealTime(start_date, end_date, store_id) {
       params.push(store_id);
     }
     
-    query += ` GROUP BY hour ORDER BY hour`;
+    query += ` GROUP BY ${adj} ORDER BY ${adj}`;
     
     const result = await pool.query(query, params);
     
@@ -1514,7 +1523,7 @@ async function refreshRecent(req, res, start_date, store_id) {
     const total = Number(j.pagination?.total ?? (Array.isArray(j.payload)? j.payload.length:0));
     const offsets = []; for (let off=0; off<total; off+=limit) offsets.push(off);
     const recentCount = Math.max(1, Number(req.query.count || 6));
-    const slice = offsets.slice(Math.max(0, offsets.length - recentCount));
+    const slice = offsets.slice(0, recentCount);
     let saved = 0; let processed = 0;
     for (const off of slice) {
       const jr = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method:'POST', headers:{ 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type':'application/json' }, body: JSON.stringify({ start:startISO, end:endISO, limit, offset:off, tracks:true, ...(store_id&&store_id!=='all'?{devices:[parseInt(store_id)]}:{}) }) });
@@ -1524,6 +1533,8 @@ async function refreshRecent(req, res, start_date, store_id) {
       processed += arr.length;
     }
     await updateAggregatesForDateAndDevice(day, store_id || 'all');
+    const { rows } = await pool.query(`SELECT DISTINCT store_id FROM visitors WHERE day=$1`, [day]);
+    for (const r of rows) { await updateAggregatesForDateAndDevice(day, String(r.store_id)); }
     return res.status(200).json({ success:true, day, recent_offsets:slice, processed, saved });
   } catch (e) {
     return res.status(500).json({ success:false, error:e.message });

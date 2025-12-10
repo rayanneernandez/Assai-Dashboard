@@ -58,6 +58,9 @@ export default async function handler(req, res) {
       case 'auto_refresh':
         return await autoRefresh(req, res);
       
+      case 'force_sync_today':
+        return await forceSyncToday(req, res);
+      
       case 'wipe_range':
         return await wipeRange(req, res, start_date, end_date);
       
@@ -1405,6 +1408,35 @@ async function ingestDay(req, res, start_date, end_date, store_id) {
   } catch (e) {
     return res.status(500).json({ error: e.message });
   }
+}
+
+async function forceSyncToday(req, res) {
+  try {
+    const day = new Date().toISOString().slice(0,10);
+    const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
+    const sign = tz >= 0 ? "+" : "-"; const hh = String(Math.abs(tz)).padStart(2,'0'); const tzStr = `${sign}${hh}:00`;
+    const startISO = `${day}T00:00:00${tzStr}`; const endISO = `${day}T23:59:59${tzStr}`;
+    const firstBody = { start:startISO, end:endISO, limit:500, offset:0, tracks:true };
+    const firstResp = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method:'POST', headers:{ 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type':'application/json' }, body: JSON.stringify(firstBody) });
+    if (!firstResp.ok) return res.status(firstResp.status).json({ error: await firstResp.text() });
+    const firstData = await firstResp.json(); const limit = Number(firstData.pagination?.limit ?? 500); const apiTotal = Number(firstData.pagination?.total ?? 0);
+    const { rows } = await pool.query(`SELECT COUNT(*)::int AS c FROM visitors WHERE day=$1`, [day]); const dbTotal = Number(rows[0]?.c || 0);
+    if (dbTotal >= apiTotal) return res.status(200).json({ success:true, day, apiTotal, dbTotal, synced:true });
+    const startOffset = Math.floor(dbTotal/limit)*limit; const endOffset = Math.floor((apiTotal-1)/limit)*limit;
+    const offsets = []; for (let off=startOffset; off<=endOffset; off+=limit) offsets.push(off);
+    const CONCURRENCY = 8; const MAX_PAGES = 64; const slice = offsets.slice(0, MAX_PAGES);
+    let processed = 0; while (processed < slice.length) {
+      const batch = slice.slice(processed, processed+CONCURRENCY);
+      await Promise.all(batch.map(async (off) => {
+        const r = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method:'POST', headers:{ 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type':'application/json' }, body: JSON.stringify({ start:startISO, end:endISO, limit, offset:off, tracks:true }) });
+        if (!r.ok) return; const j = await r.json(); const arr = j.payload || j || []; await saveVisitorsToDatabase(arr, day);
+      }));
+      processed += CONCURRENCY;
+    }
+    await updateAggregatesForDateAndDevice(day, 'all'); const ds = await pool.query(`SELECT DISTINCT store_id FROM visitors WHERE day=$1`, [day]); for (const r of ds.rows) { await updateAggregatesForDateAndDevice(day, String(r.store_id)); }
+    const vr = await pool.query(`SELECT COUNT(*)::int AS c FROM visitors WHERE day=$1`, [day]);
+    return res.status(200).json({ success:true, day, apiTotal, dbTotal_before: dbTotal, dbTotal_after: Number(vr.rows[0]?.c||0), processed_pages: slice.length });
+  } catch (e) { return res.status(500).json({ success:false, error:e.message }); }
 }
 
 async function wipeRange(req, res, start_date, end_date) {

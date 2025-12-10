@@ -417,6 +417,11 @@ async function getHourlyAggregatesWithRealTime(start_date, end_date, store_id) {
     
     const tzOffset = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
     const adj = `EXTRACT(HOUR FROM (timestamp + INTERVAL '${tzOffset} hour'))`;
+    const sign = tzOffset >= 0 ? "+" : "-";
+    const hh = String(Math.abs(tzOffset)).padStart(2, "0");
+    const tzStr = `${sign}${hh}:00`;
+    const startISO = `${start_date}T00:00:00${tzStr}`;
+    const endISO = `${end_date}T23:59:59${tzStr}`;
     let query = `
       SELECT 
         ${adj} AS hour,
@@ -424,10 +429,10 @@ async function getHourlyAggregatesWithRealTime(start_date, end_date, store_id) {
         SUM(CASE WHEN gender = 'M' THEN 1 ELSE 0 END) AS male,
         SUM(CASE WHEN gender = 'F' THEN 1 ELSE 0 END) AS female
       FROM visitors
-      WHERE day >= $1 AND day <= $2
+      WHERE timestamp >= $1 AND timestamp <= $2
     `;
     
-    const params = [start_date, end_date];
+    const params = [startISO, endISO];
     
     if (store_id && store_id !== "all") {
       query += ` AND store_id = $3`;
@@ -509,6 +514,12 @@ async function calculateRealTimeSummary(res, start_date, end_date, store_id) {
     
     console.log(`🧮 Calculando summary em tempo real para ${sDate} - ${eDate}`);
     
+    const tzOffset = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
+    const sign = tzOffset >= 0 ? "+" : "-";
+    const hh = String(Math.abs(tzOffset)).padStart(2, "0");
+    const tzStr = `${sign}${hh}:00`;
+    const startISO = `${sDate}T00:00:00${tzStr}`;
+    const endISO = `${eDate}T23:59:59${tzStr}`;
     let query = `
       SELECT 
         COUNT(*) AS total_visitors,
@@ -529,10 +540,10 @@ async function calculateRealTimeSummary(res, start_date, end_date, store_id) {
         SUM(CASE WHEN day_of_week = 'Sex' THEN 1 ELSE 0 END) AS friday,
         SUM(CASE WHEN day_of_week = 'Sáb' THEN 1 ELSE 0 END) AS saturday
       FROM visitors
-      WHERE day >= $1 AND day <= $2
+      WHERE timestamp >= $1 AND timestamp <= $2
     `;
     
-    const params = [sDate, eDate];
+    const params = [startISO, endISO];
     
     if (store_id && store_id !== "all") {
       query += ` AND store_id = $3`;
@@ -675,7 +686,7 @@ async function updateHourlyStatsForDate(date, device_id) {
     const adj = `EXTRACT(HOUR FROM (timestamp + INTERVAL '${tzOffset} hour'))`;
     let query = `
       SELECT 
-        COALESCE(hour, ${adj}) AS hour,
+        ${adj} AS hour,
         COUNT(*) AS total,
         SUM(CASE WHEN gender = 'M' THEN 1 ELSE 0 END) AS male,
         SUM(CASE WHEN gender = 'F' THEN 1 ELSE 0 END) AS female
@@ -690,7 +701,7 @@ async function updateHourlyStatsForDate(date, device_id) {
       params.push(device_id);
     }
     
-    query += ` GROUP BY COALESCE(hour, ${adj}) ORDER BY COALESCE(hour, ${adj})`;
+    query += ` GROUP BY ${adj} ORDER BY ${adj}`;
     
     const result = await pool.query(query, params);
     

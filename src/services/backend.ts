@@ -38,8 +38,9 @@ export async function fetchVisitorStats(deviceId?: string, start?: string, end?:
         rf.set("endpoint", "refresh_recent");
         rf.set("start_date", effStart);
         rf.set("store_id", deviceId && deviceId !== "all" ? deviceId : "all");
-        rf.set("count", "12");
+        rf.set("count", "48");
         fetch(`${base}/api/assai/dashboard?${rf.toString()}`).catch(() => {});
+        fetch(`${base}/api/assai/dashboard?endpoint=force_sync_today&t=${Date.now()}`).catch(() => {});
       }
     } catch {}
     let resp = await fetch(`${base}/api/assai/dashboard?${params.toString()}`, { signal: controller.signal });

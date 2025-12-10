@@ -13,11 +13,11 @@ jobs:
   refresh:
     runs-on: ubuntu-latest
     steps:
-      - name: Ingest recent pages (count=24)
+      - name: Ingest recent pages (count=48)
         run: |
           DAY=$(TZ=America/Sao_Paulo date +%F)
           BASE="https://visitor-insights-dashboard-five.vercel.app/api/assai/dashboard"
-          curl -sS "$BASE?endpoint=refresh_recent&start_date=$DAY&store_id=all&count=24&t=$(date +%s)" || true
+          curl -sS "$BASE?endpoint=refresh_recent&start_date=$DAY&store_id=all&count=48&t=$(date +%s)" || true
 
       - name: Rebuild hourly for the day
         run: |

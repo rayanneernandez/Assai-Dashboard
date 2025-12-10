@@ -16,6 +16,7 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Cache-Control', 'no-store, max-age=0, s-maxage=0');
   
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
@@ -429,10 +430,12 @@ async function getSummary(req, res, start_date, end_date, store_id) {
       const ageGenderData = await getAgeGenderDistribution(sDate, eDate, 'all');
       const { rows: upd } = await pool.query(`SELECT MAX(updated_at) AS u FROM dashboard_daily WHERE day BETWEEN $1 AND $2 AND store_id='all'`, [sDate, eDate]);
       const lastUpd = upd[0]?.u ? new Date(upd[0].u) : null;
-      const stale = !lastUpd || (Date.now() - lastUpd.getTime() > 2 * 60 * 1000);
-      if (stale) {
-        const rt = await calculateRealTimeSummary({ status:()=>({ json:x=>x }) }, sDate, eDate, 'all');
-        return res.status(200).json(rt);
+      const stale = !lastUpd || (Date.now() - lastUpd.getTime() > 60 * 1000);
+      const today = new Date().toISOString().slice(0,10);
+      const isTodayOnly = sDate === today && eDate === today;
+      const forceRealtime = String((req.query||{}).source || '').toLowerCase() === 'displayforce' || String((req.query||{}).realtime || '').toLowerCase() === '1';
+      if (stale || isTodayOnly || forceRealtime) {
+        return await calculateRealTimeSummary(res, sDate, eDate, 'all');
       }
       return res.status(200).json({
         success: true,
@@ -541,8 +544,10 @@ async function getHourlyAggregatesFromAggregates(start_date, end_date, store_id)
       GROUP BY hour ORDER BY hour`;
     let { rows } = await pool.query(q, [start_date, end_date, store_id]);
     if (!rows || rows.length === 0) {
+      const tzOffset = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
+      const adj = `EXTRACT(HOUR FROM (timestamp + INTERVAL '${tzOffset} hour'))`;
       let vq = `
-        SELECT COALESCE(hour, EXTRACT(HOUR FROM timestamp)) AS hour,
+        SELECT COALESCE(hour, ${adj}) AS hour,
                SUM(CASE WHEN gender IN ('M','F') THEN 1 ELSE 0 END) AS total,
                SUM(CASE WHEN gender='M' THEN 1 ELSE 0 END) AS male,
                SUM(CASE WHEN gender='F' THEN 1 ELSE 0 END) AS female
@@ -550,7 +555,7 @@ async function getHourlyAggregatesFromAggregates(start_date, end_date, store_id)
         WHERE day >= $1 AND day <= $2`;
       const params = [start_date, end_date];
       if (store_id && store_id !== 'all') { vq += ` AND store_id = $3`; params.push(store_id); }
-      vq += ` GROUP BY COALESCE(hour, EXTRACT(HOUR FROM timestamp)) ORDER BY 1`;
+      vq += ` GROUP BY COALESCE(hour, ${adj}) ORDER BY 1`;
       const r2 = await pool.query(vq, params);
       rows = r2.rows;
     }
@@ -733,9 +738,11 @@ async function updateHourlyStatsForDate(date, device_id) {
       [date, device_id]
     );
     
+    const tzOffset = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
+    const adj = `EXTRACT(HOUR FROM (timestamp + INTERVAL '${tzOffset} hour'))`;
     let query = `
       SELECT 
-        COALESCE(hour, EXTRACT(HOUR FROM timestamp)) AS hour,
+        COALESCE(hour, ${adj}) AS hour,
         COUNT(*) AS total,
         SUM(CASE WHEN gender = 'M' THEN 1 ELSE 0 END) AS male,
         SUM(CASE WHEN gender = 'F' THEN 1 ELSE 0 END) AS female
@@ -750,7 +757,7 @@ async function updateHourlyStatsForDate(date, device_id) {
       params.push(device_id);
     }
     
-    query += ` GROUP BY hour ORDER BY hour`;
+    query += ` GROUP BY COALESCE(hour, ${adj}) ORDER BY COALESCE(hour, ${adj})`;
     
     const result = await pool.query(query, params);
     

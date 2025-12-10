@@ -567,11 +567,14 @@ async function calculateRealTimeSummary(res, start_date, end_date, store_id) {
         const missing = Math.max(0, apiTotal - totalRealTime);
         console.log(`📡 API total=${apiTotal}, DB total=${totalRealTime}, faltando=${missing}`);
         if (missing > 0) {
-          const offsets = []; for (let off=0; off<apiTotal; off+=limit) offsets.push(off);
-          const pagesNeeded = Math.min(24, Math.ceil(missing / limit));
-          const latestOffsets = offsets.slice(-pagesNeeded);
-          console.log(`🔄 Ingerindo offsets recentes: ${latestOffsets.join(', ')}`);
-          await Promise.all(latestOffsets.map(async (off) => {
+          const startOffset = Math.floor(totalRealTime / limit) * limit;
+          const endOffset = Math.floor((apiTotal - 1) / limit) * limit;
+          const offsetsToFetch = [];
+          for (let off = startOffset; off <= endOffset; off += limit) offsetsToFetch.push(off);
+          const MAX_PAGES = 48;
+          const slice = offsetsToFetch.slice(0, MAX_PAGES);
+          console.log(`🔄 Ingerindo offsets faltantes: ${slice.join(', ')}`);
+          await Promise.all(slice.map(async (off) => {
             const r = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method:'POST', headers:{ 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type':'application/json' }, body: JSON.stringify({ start:startISO, end:endISO, limit, offset:off, tracks:true, ...(store_id&&store_id!=='all'?{devices:[parseInt(store_id)]}:{}) }) });
             if (!r.ok) return;
             const j = await r.json(); const arr = j.payload || j || [];

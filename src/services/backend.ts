@@ -32,11 +32,13 @@ export async function fetchVisitorStats(deviceId?: string, start?: string, end?:
       const rangeDays = Math.max(1, Math.round((endD.getTime() - startD.getTime())/86400000) + 1);
       const isTodayOnly = effStart === today && effEnd === today;
       if (isTodayOnly) {
+        params.set("realtime", "1");
+        params.set("t", String(Date.now()));
         const rf = new URLSearchParams();
-        rf.set("endpoint", "refresh");
+        rf.set("endpoint", "refresh_recent");
         rf.set("start_date", effStart);
-        rf.set("end_date", effEnd);
         rf.set("store_id", deviceId && deviceId !== "all" ? deviceId : "all");
+        rf.set("count", "12");
         fetch(`${base}/api/assai/dashboard?${rf.toString()}`).catch(() => {});
       }
     } catch {}

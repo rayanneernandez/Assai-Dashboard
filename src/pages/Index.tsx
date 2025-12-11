@@ -115,6 +115,10 @@ const Index = () => {
     enabled: true,
     retry: 0,
     staleTime: 5_000,
+    refetchInterval: 5_000,
+    refetchOnWindowFocus: true,
+    refetchOnReconnect: true,
+    refetchIntervalInBackground: true,
   });
 
   const computed = calculateStats(visitors);

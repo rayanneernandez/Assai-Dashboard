@@ -534,9 +534,14 @@ async function calculateRealTimeSummary(req, res, start_date, end_date, store_id
     let totalRealTime = Number(row.total_visitors || 0);
     console.log(`🧮 Total em tempo real (DB): ${totalRealTime}`);
 
+<<<<<<< HEAD
     try {
       const isTodayOnly = sDate === today && eDate === sDate;
       if (isTodayOnly) {
+=======
+    if (process.env.SUMMARY_INGEST_ON_CALL !== '0') {
+      try {
+>>>>>>> f28641a (aa)
         const firstBody = { start: startISO, end: endISO, limit: 500, offset: 0, tracks: true };
         if (store_id && store_id !== 'all') firstBody.devices = [parseInt(store_id)];
         const firstResp = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method:'POST', headers:{ 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type':'application/json' }, body: JSON.stringify(firstBody) });

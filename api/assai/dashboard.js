@@ -5,18 +5,19 @@ import { Pool } from 'pg';
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
-  max: parseInt(process.env.PG_POOL_MAX || "10", 10),
+  max: parseInt(process.env.PG_POOL_MAX || "15", 10),
   idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 10000,
-  keepAlive: true
+  connectionTimeoutMillis: 30000,
+  keepAlive: true,
+  statement_timeout: 30000
 });
 
 async function q(sql, params) {
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < 5; i++) {
     try { return await pool.query(sql, params); } catch (e) {
       const msg = String(e?.message || "");
-      if (/Connection terminated unexpectedly|ECONNRESET|ETIMEDOUT/i.test(msg)) {
-        await new Promise(r => setTimeout(r, 200 * (i + 1)));
+      if (/Connection terminated unexpectedly|timeout exceeded when trying to connect|ECONNRESET|ETIMEDOUT/i.test(msg)) {
+        await new Promise(r => setTimeout(r, 250 * (i + 1)));
         continue;
       }
       throw e;
@@ -331,7 +332,7 @@ async function updateAllAggregatesForDevice(device_id) {
     
     query += ` ORDER BY day`;
     
-    const result = await pool.query(query, params);
+    const result = await q(query, params);
     const uniqueDates = result.rows.map(row => row.day);
     
     console.log(`📅 ${uniqueDates.length} datas únicas encontradas para ${device_id}`);
@@ -423,7 +424,7 @@ async function getHourlyAggregatesWithRealTime(start_date, end_date, store_id) {
     
     query += ` GROUP BY ${hourExpr} ORDER BY ${hourExpr}`;
     
-    const result = await pool.query(query, params);
+    const result = await q(query, params);
     
     const byHour = {};
     const byGenderHour = { male: {}, female: {} };
@@ -533,7 +534,7 @@ async function calculateRealTimeSummary(req, res, start_date, end_date, store_id
       params.push(store_id);
     }
     
-    const result = await pool.query(query, params);
+    const result = await q(query, params);
     let row = result.rows[0] || {};
     
     let totalRealTime = Number(row.total_visitors || 0);
@@ -575,7 +576,7 @@ async function calculateRealTimeSummary(req, res, start_date, end_date, store_id
               fetch(`${base}/api/assai/dashboard?endpoint=refresh_recent&start_date=${sDate}&count=24`).catch(()=>{});
               fetch(`${base}/api/assai/dashboard?endpoint=force_sync_today&t=${Date.now()}`).catch(()=>{});
             }
-            const re = await pool.query(query, params);
+            const re = await q(query, params);
             row = re.rows[0] || row;
             totalRealTime = Number(row.total_visitors || 0);
           }
@@ -813,7 +814,7 @@ async function getAgeGenderDistribution(start_date, end_date, store_id) {
       params.push(store_id);
     }
     
-    const result = await pool.query(query, params);
+    const result = await q(query, params);
     
     const byAgeGender = {
       "<20": { male: 0, female: 0 },

@@ -4,7 +4,7 @@ const BACKEND_URL = (import.meta as any).env?.VITE_BACKEND_URL || "";
 
 export async function fetchVisitorStats(deviceId?: string, start?: string, end?: string): Promise<VisitorStats> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30000);
+  const timeout = setTimeout(() => controller.abort(), 90000);
   try {
     if (BACKEND_URL) {
       try {
@@ -88,7 +88,7 @@ export async function fetchVisitorStats(deviceId?: string, start?: string, end?:
 
 export async function fetchVisitorsPage(deviceId?: string, start?: string, end?: string, page = 1, pageSize = 40): Promise<VisitorsPage> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 40000);
+  const timeout = setTimeout(() => controller.abort(), 90000);
   try {
     if (BACKEND_URL) {
       try {

@@ -23,11 +23,12 @@ export default async function handler(req, res) {
   }
   
   const { endpoint, start_date, end_date, store_id, source } = req.query;
+  const ep = String(endpoint || '').trim().toLowerCase();
   
   try {
-    console.log(`📊 Endpoint: ${endpoint}, Dates: ${start_date} - ${end_date}, Store: ${store_id}`);
+    console.log(`📊 Endpoint: ${ep}, Dates: ${start_date} - ${end_date}, Store: ${store_id}`);
     
-    switch (endpoint) {
+    switch (ep) {
       case 'visitors':
         return await getVisitors(req, res, start_date, end_date, store_id);
       
@@ -78,6 +79,12 @@ export default async function handler(req, res) {
       
       case 'backfill_local_time':
         return await backfillLocalTime(req, res);
+      
+      case 'sync_today':
+        return await forceSyncToday(req, res);
+      
+      case 'recent':
+        return await refreshRecent(req, res, start_date, store_id);
       
       case 'test':
         return res.status(200).json({

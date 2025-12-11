@@ -865,7 +865,7 @@ async function saveVisitorsToDatabase(visitors, forcedDay) {
         `INSERT INTO visitors (
           visitor_id, day, store_id, store_name, 
           timestamp, gender, age, day_of_week, smile, hour, local_time
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, EXTRACT(HOUR FROM $5::time), TO_CHAR($5::time, 'HH24:MI:SS'))
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, EXTRACT(HOUR FROM $5::time), ($5)::time)
         ON CONFLICT (visitor_id, timestamp) 
         DO UPDATE SET
           day = EXCLUDED.day,
@@ -876,7 +876,7 @@ async function saveVisitorsToDatabase(visitors, forcedDay) {
           day_of_week = EXCLUDED.day_of_week,
           smile = EXCLUDED.smile,
           hour = EXTRACT(HOUR FROM EXCLUDED.timestamp::time),
-          local_time = TO_CHAR(EXCLUDED.timestamp::time, 'HH24:MI:SS')`,
+          local_time = EXCLUDED.timestamp::time`,
         [
           visitorId,
           dateStr,
@@ -1610,7 +1610,7 @@ async function ensureIndexes(req, res) {
 
 async function backfillLocalTime(req, res) {
   try {
-    const upd = await pool.query("UPDATE visitors SET local_time = TO_CHAR(timestamp::time, 'HH24:MI:SS') WHERE local_time IS NULL");
+    const upd = await pool.query("UPDATE visitors SET local_time = timestamp::time WHERE local_time IS NULL");
     return res.status(200).json({ success:true, updated: upd.rowCount });
   } catch (e) {
     return res.status(500).json({ success:false, error:e.message });

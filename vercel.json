@@ -18,9 +18,5 @@
       ]
     }
   ],
-  "crons": [
-    { "path": "/api/assai/dashboard?endpoint=auto_refresh", "schedule": "0 6 * * *" },
-    { "path": "/api/assai/dashboard?endpoint=refresh_recent&count=24", "schedule": "*/1 * * * *" },
-    { "path": "/api/assai/dashboard?endpoint=rebuild_hourly&store_id=all", "schedule": "*/2 * * * *" }
-  ]
+  "crons": []
 }

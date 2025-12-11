@@ -547,20 +547,21 @@ async function calculateRealTimeSummary(res, start_date, end_date, store_id) {
         const firstResp = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method:'POST', headers:{ 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type':'application/json' }, body: JSON.stringify(firstBody) });
         if (firstResp.ok) {
           const firstData = await firstResp.json();
-          const limit = Number(firstData.pagination?.limit ?? 500);
+          const apiLimit = Number(firstData.pagination?.limit ?? 500);
+          const pageLimit = Math.min(apiLimit, 250);
           const apiTotal = Number(firstData.pagination?.total ?? (Array.isArray(firstData.payload)? firstData.payload.length:0));
           const missing = Math.max(0, apiTotal - totalRealTime);
           if (missing > 0) {
-            const startOffset = Math.floor(totalRealTime / limit) * limit;
-            const endOffset = Math.floor((apiTotal - 1) / limit) * limit;
+            const startOffset = Math.floor(totalRealTime / pageLimit) * pageLimit;
+            const endOffset = Math.floor((apiTotal - 1) / pageLimit) * pageLimit;
             const offsetsToFetch = [];
-            for (let off = startOffset; off <= endOffset; off += limit) offsetsToFetch.push(off);
-            const CONCURRENCY = 8; const MAX_PAGES = 64; const slice = offsetsToFetch.slice(0, MAX_PAGES);
+            for (let off = startOffset; off <= endOffset; off += pageLimit) offsetsToFetch.push(off);
+            const CONCURRENCY = 10; const MAX_PAGES = 128; const slice = offsetsToFetch.slice(0, MAX_PAGES);
             let idx = 0;
             while (idx < slice.length) {
               const batch = slice.slice(idx, idx + CONCURRENCY);
               await Promise.all(batch.map(async (off) => {
-                const r = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method:'POST', headers:{ 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type':'application/json' }, body: JSON.stringify({ start:startISO, end:endISO, limit, offset:off, tracks:true, ...(store_id&&store_id!=='all'?{devices:[parseInt(store_id)]}:{}) }) });
+                const r = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method:'POST', headers:{ 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type':'application/json' }, body: JSON.stringify({ start:startISO, end:endISO, limit: pageLimit, offset:off, tracks:true, ...(store_id&&store_id!=='all'?{devices:[parseInt(store_id)]}:{}) }) });
                 if (!r.ok) return;
                 const j = await r.json(); const arr = j.payload || j || [];
                 await saveVisitorsToDatabase(arr, sDate);

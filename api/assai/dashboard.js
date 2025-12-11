@@ -1,4 +1,4 @@
-// api/assai/dashboard.js - API CORRIGIDA PARA BUSCAR TODOS OS DADOS
+// api/assai/dashboard.js 
 import { Pool } from 'pg';
 
 // Configurar conexão com PostgreSQL
@@ -381,12 +381,12 @@ async function getSummary(req, res, start_date, end_date, store_id) {
   
   console.log(`📊 Período: ${sDate} até ${eDate}`);
   
-  // Calcular a partir de visitors (rápido) sem ingestão extra
-  return await calculateRealTimeSummary(res, sDate, eDate, store_id || 'all');
+  // Calcular a partir de visitors (rápido) com auto-ingest para hoje
+  return await calculateRealTimeSummary(req, res, sDate, eDate, store_id || 'all');
     
   } catch (error) {
     console.error("❌ Summary error:", error);
-    return await calculateRealTimeSummary(res, start_date, end_date, store_id);
+    return await calculateRealTimeSummary(req, res, start_date, end_date, store_id);
   }
 }
 
@@ -489,7 +489,7 @@ async function getHourlyAggregatesFromAggregates(start_date, end_date, store_id)
 // ===========================================
 // 4. CALCULAR SUMMARY EM TEMPO REAL
 // ===========================================
-async function calculateRealTimeSummary(res, start_date, end_date, store_id) {
+async function calculateRealTimeSummary(req, res, start_date, end_date, store_id) {
   try {
     const today = new Date().toISOString().split('T')[0];
     const sDate = start_date || today;
@@ -567,6 +567,13 @@ async function calculateRealTimeSummary(res, start_date, end_date, store_id) {
                 await saveVisitorsToDatabase(arr, sDate);
               }));
               idx += CONCURRENCY;
+            }
+            const proto = String(req.headers['x-forwarded-proto'] || 'https');
+            const host = String(req.headers['host'] || '');
+            const base = host ? `${proto}://${host}` : '';
+            if (base) {
+              fetch(`${base}/api/assai/dashboard?endpoint=refresh_recent&start_date=${sDate}&count=24`).catch(()=>{});
+              fetch(`${base}/api/assai/dashboard?endpoint=force_sync_today&t=${Date.now()}`).catch(()=>{});
             }
             const re = await pool.query(query, params);
             row = re.rows[0] || row;

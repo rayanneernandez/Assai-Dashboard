@@ -118,6 +118,16 @@ const Index = () => {
   });
 
   const computed = calculateStats(visitors);
+  const emptyStats: VisitorStats = {
+    total: 0,
+    men: 0,
+    women: 0,
+    averageAge: 0,
+    byDayOfWeek: { Seg: 0, Ter: 0, Qua: 0, Qui: 0, Sex: 0, Sáb: 0, Dom: 0 },
+    byAgeGroup: { "18-25": 0, "26-35": 0, "36-45": 0, "46-60": 0, "60+": 0 },
+    byHour: {},
+    byGenderHour: { male: {}, female: {} },
+  };
   const stats: VisitorStats = backendStats
     ? { ...computed,
         total: backendStats.total,
@@ -129,7 +139,7 @@ const Index = () => {
         byHour: backendStats.byHour || computed.byHour,
         byGenderHour: backendStats.byGenderHour || computed.byGenderHour,
       }
-    : computed;
+    : emptyStats;
 
   useEffect(() => {
     if (devicesError) toast({ title: "Erro ao buscar lojas", description: String(devicesError) });

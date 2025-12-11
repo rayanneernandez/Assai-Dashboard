@@ -424,24 +424,25 @@ async function getHourlyAggregatesWithRealTime(start_date, end_date, store_id) {
     const tzStr = `${sign}${hh}:00`;
     const startISO = `${start_date}T00:00:00${tzStr}`;
     const endISO = `${end_date}T23:59:59${tzStr}`;
+    const hourExpr = `COALESCE(EXTRACT(HOUR FROM local_time::time), hour)`;
     let query = `
       SELECT 
-        hour AS hour,
+        ${hourExpr} AS hour,
         COUNT(*) AS total,
         SUM(CASE WHEN gender = 'M' THEN 1 ELSE 0 END) AS male,
         SUM(CASE WHEN gender = 'F' THEN 1 ELSE 0 END) AS female
       FROM visitors
-      WHERE timestamp >= $1 AND timestamp <= $2
+      WHERE day >= $1 AND day <= $2
     `;
     
-    const params = [startISO, endISO];
+    const params = [start_date, end_date];
     
     if (store_id && store_id !== "all") {
       query += ` AND store_id = $3`;
       params.push(store_id);
     }
     
-    query += ` GROUP BY hour ORDER BY hour`;
+    query += ` GROUP BY ${hourExpr} ORDER BY ${hourExpr}`;
     
     const result = await pool.query(query, params);
     
@@ -542,10 +543,10 @@ async function calculateRealTimeSummary(res, start_date, end_date, store_id) {
         SUM(CASE WHEN day_of_week = 'Sex' THEN 1 ELSE 0 END) AS friday,
         SUM(CASE WHEN day_of_week = 'Sáb' THEN 1 ELSE 0 END) AS saturday
       FROM visitors
-      WHERE timestamp >= $1 AND timestamp <= $2
+      WHERE day >= $1 AND day <= $2
     `;
     
-    const params = [startISO, endISO];
+    const params = [sDate, eDate];
     
     if (store_id && store_id !== "all") {
       query += ` AND store_id = $3`;
@@ -573,7 +574,7 @@ async function calculateRealTimeSummary(res, start_date, end_date, store_id) {
           const endOffset = Math.floor((apiTotal - 1) / limit) * limit;
           const offsetsToFetch = [];
           for (let off = startOffset; off <= endOffset; off += limit) offsetsToFetch.push(off);
-          const MAX_PAGES = 96;
+          const MAX_PAGES = 128;
           const slice = offsetsToFetch.slice(0, MAX_PAGES);
           console.log(`🔄 Ingerindo offsets faltantes: ${slice.join(', ')}`);
           await Promise.all(slice.map(async (off) => {
@@ -704,9 +705,10 @@ async function updateHourlyStatsForDate(date, device_id) {
     );
     
     const tzOffset = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
+    const hourExpr = `COALESCE(EXTRACT(HOUR FROM local_time::time), hour)`;
     let query = `
       SELECT 
-        hour AS hour,
+        ${hourExpr} AS hour,
         COUNT(*) AS total,
         SUM(CASE WHEN gender = 'M' THEN 1 ELSE 0 END) AS male,
         SUM(CASE WHEN gender = 'F' THEN 1 ELSE 0 END) AS female
@@ -721,7 +723,7 @@ async function updateHourlyStatsForDate(date, device_id) {
       params.push(device_id);
     }
     
-    query += ` GROUP BY hour ORDER BY hour`;
+    query += ` GROUP BY ${hourExpr} ORDER BY ${hourExpr}`;
     
     const result = await pool.query(query, params);
     
@@ -1481,14 +1483,15 @@ async function rebuildHourlyFromVisitors(req, res, start_date, end_date, store_i
     const start = new Date(s); const end = new Date(e);
     for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
       const dayStr = d.toISOString().split('T')[0];
-      let q = `SELECT COALESCE(hour, ${adj}) AS hour,
+      const hourExpr = `COALESCE(EXTRACT(HOUR FROM local_time::time), ${adj})`;
+      let q = `SELECT ${hourExpr} AS hour,
                        SUM(CASE WHEN gender IN ('M','F') THEN 1 ELSE 0 END) AS total,
                        SUM(CASE WHEN gender='M' THEN 1 ELSE 0 END) AS male,
                        SUM(CASE WHEN gender='F' THEN 1 ELSE 0 END) AS female
                 FROM visitors WHERE day=$1`;
       const params = [dayStr];
       if (store_id && store_id !== 'all') { q += ` AND store_id=$2`; params.push(store_id); }
-      q += ` GROUP BY COALESCE(hour, ${adj}) ORDER BY 1`;
+      q += ` GROUP BY ${hourExpr} ORDER BY 1`;
       const { rows } = await pool.query(q, params);
       for (const r of rows) {
         await pool.query(`INSERT INTO dashboard_hourly (day, store_id, hour, total, male, female) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (day, store_id, hour) DO UPDATE SET total=EXCLUDED.total, male=EXCLUDED.male, female=EXCLUDED.female`, [dayStr, store_id && store_id !== 'all' ? store_id : 'all', Number(r.hour), Number(r.total||0), Number(r.male||0), Number(r.female||0)]);
@@ -1497,12 +1500,13 @@ async function rebuildHourlyFromVisitors(req, res, start_date, end_date, store_i
         const distinct = await pool.query(`SELECT DISTINCT store_id FROM visitors WHERE day=$1`, [dayStr]);
         for (const st of distinct.rows) {
           const sid = String(st.store_id);
-          const r2 = await pool.query(`SELECT COALESCE(hour, ${adj}) AS hour,
+          const hourExpr2 = `COALESCE(EXTRACT(HOUR FROM local_time::time), ${adj})`;
+          const r2 = await pool.query(`SELECT ${hourExpr2} AS hour,
                                        SUM(CASE WHEN gender IN ('M','F') THEN 1 ELSE 0 END) AS total,
                                        SUM(CASE WHEN gender='M' THEN 1 ELSE 0 END) AS male,
                                        SUM(CASE WHEN gender='F' THEN 1 ELSE 0 END) AS female
                                        FROM visitors WHERE day=$1 AND store_id=$2
-                                       GROUP BY COALESCE(hour, ${adj}) ORDER BY 1`, [dayStr, sid]);
+                                       GROUP BY ${hourExpr2} ORDER BY 1`, [dayStr, sid]);
           for (const rr of r2.rows) {
             await pool.query(`INSERT INTO dashboard_hourly (day, store_id, hour, total, male, female) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (day, store_id, hour) DO UPDATE SET total=EXCLUDED.total, male=EXCLUDED.male, female=EXCLUDED.female`, [dayStr, sid, Number(rr.hour), Number(rr.total||0), Number(rr.male||0), Number(rr.female||0)]);
           }

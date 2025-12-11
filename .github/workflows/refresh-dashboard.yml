@@ -25,6 +25,11 @@ jobs:
           BASE="https://visitor-insights-dashboard-five.vercel.app/api/assai/dashboard"
           curl -sS "$BASE?endpoint=rebuild_hourly&start_date=$DAY&end_date=$DAY&store_id=all&t=$(date +%s)" || true
 
+      - name: Force sync today (aggressive)
+        run: |
+          BASE="https://visitor-insights-dashboard-five.vercel.app/api/assai/dashboard"
+          curl -sS "$BASE?endpoint=force_sync_today&t=$(date +%s)" || true
+
       - name: Verify API vs DB counts
         run: |
           DAY=$(TZ=America/Sao_Paulo date +%F)

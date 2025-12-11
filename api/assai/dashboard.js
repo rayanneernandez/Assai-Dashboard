@@ -765,7 +765,7 @@ async function saveVisitorsToDatabase(visitors, forcedDay) {
       return `(${base+1}, ${base+2}, ${base+3}, ${base+4}, ${base+5}, ${base+6}, ${base+7}, ${base+8}, ${base+9}, EXTRACT(HOUR FROM ${base+10}::time), ${base+10}::time)`;
     }).join(', ');
     const sql = `INSERT INTO visitors (visitor_id, day, store_id, store_name, timestamp, gender, age, day_of_week, smile, hour, local_time) VALUES ${values} ON CONFLICT (visitor_id, timestamp) DO UPDATE SET day=EXCLUDED.day, store_id=EXCLUDED.store_id, store_name=EXCLUDED.store_name, gender=EXCLUDED.gender, age=EXCLUDED.age, day_of_week=EXCLUDED.day_of_week, smile=EXCLUDED.smile, hour=EXTRACT(HOUR FROM EXCLUDED.local_time::time), local_time=EXCLUDED.local_time`;
-    try { await pool.query(sql, params); savedCount += chunk.length; } catch {}
+    try { await q(sql, params); savedCount += chunk.length; } catch (e) { console.error('❌ Insert error:', String(e?.message||e)); }
   }
   return savedCount;
 }

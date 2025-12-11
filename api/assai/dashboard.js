@@ -581,21 +581,18 @@ async function calculateRealTimeSummary(res, start_date, end_date, store_id) {
     
     const ageGenderData = await getAgeGenderDistribution(sDate, eDate, store_id);
     
+    const dowRes = await pool.query(`SELECT EXTRACT(DOW FROM day::date)::int AS dow, COUNT(*)::int AS c FROM visitors WHERE day >= $1 AND day <= $2${store_id && store_id !== "all" ? " AND store_id = $3" : ""} GROUP BY 1`, params);
+    const dowMap = {0:0,1:0,2:0,3:0,4:0,5:0,6:0};
+    for (const r of dowRes.rows || []) { dowMap[Number(r.dow)] = Number(r.c); }
+    const visitsByDay = { Sunday: dowMap[0], Monday: dowMap[1], Tuesday: dowMap[2], Wednesday: dowMap[3], Thursday: dowMap[4], Friday: dowMap[5], Saturday: dowMap[6] };
+
     const response = {
       success: true,
       totalVisitors: totalRealTime,
       totalMale: Number(row.male || 0),
       totalFemale: Number(row.female || 0),
       averageAge: averageAge,
-      visitsByDay: {
-        Sunday: Number(row.sunday || 0),
-        Monday: Number(row.monday || 0),
-        Tuesday: Number(row.tuesday || 0),
-        Wednesday: Number(row.wednesday || 0),
-        Thursday: Number(row.thursday || 0),
-        Friday: Number(row.friday || 0),
-        Saturday: Number(row.saturday || 0),
-      },
+      visitsByDay: visitsByDay,
       byAgeGroup: {
         "18-25": Number(row.age_18_25 || 0),
         "26-35": Number(row.age_26_35 || 0),

@@ -76,7 +76,8 @@ export const fetchVisitors = async (
 
     const mapped = (raw as any[]).map((row: any) => {
       const ts = String(row.timestamp ?? new Date().toISOString());
-      const d = new Date(ts);
+      const lt = String(row.local_time ?? "");
+      const hh = lt ? Number(lt.slice(0, 2)) : new Date(ts).getHours();
       const genderStr = String(row.gender ?? "").toLowerCase();
       const gender = genderStr.startsWith("m") ? "M" : "F";
       return {
@@ -86,7 +87,7 @@ export const fetchVisitors = async (
         timestamp: ts,
         deviceId: String(row.store_id ?? ""),
         dayOfWeek: String(row.day_of_week ?? ""),
-        hour: d.getHours(),
+        hour: hh,
         smile: Boolean(row.smile),
       } as Visitor;
     });

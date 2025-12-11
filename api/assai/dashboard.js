@@ -4,12 +4,32 @@ import { Pool } from 'pg';
 // Configurar conexão com PostgreSQL
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
+  ssl: { rejectUnauthorized: false },
+  max: parseInt(process.env.PG_POOL_MAX || "10", 10),
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 10000,
+  keepAlive: true
 });
+
+async function q(sql, params) {
+  for (let i = 0; i < 3; i++) {
+    try { return await pool.query(sql, params); } catch (e) {
+      const msg = String(e?.message || "");
+      if (/Connection terminated unexpectedly|ECONNRESET|ETIMEDOUT/i.test(msg)) {
+        await new Promise(r => setTimeout(r, 200 * (i + 1)));
+        continue;
+      }
+      throw e;
+    }
+  }
+  return await pool.query(sql, params);
+}
 
 // Configurações DisplayForce
 const DISPLAYFORCE_TOKEN = process.env.DISPLAYFORCE_API_TOKEN || '4AUH-BX6H-G2RJ-G7PB';
 const DISPLAYFORCE_BASE = process.env.DISPLAYFORCE_API_URL || 'https://api.displayforce.ai/public/v1';
+const SUMMARY_CACHE = new Map();
+function cacheKey(sDate, eDate, storeId) { return `${sDate}|${eDate}|${storeId||'all'}`; }
 
 export default async function handler(req, res) {
   // Configurar CORS
@@ -590,10 +610,21 @@ async function calculateRealTimeSummary(res, start_date, end_date, store_id) {
       period: `${sDate} - ${eDate}`
     };
     
+    SUMMARY_CACHE.set(cacheKey(sDate, eDate, store_id || 'all'), response);
     return res.status(200).json(response);
     
   } catch (error) {
     console.error("❌ Real-time summary error:", error);
+    try {
+      const today = new Date().toISOString().split('T')[0];
+      const sDate = start_date || today;
+      const eDate = end_date || sDate;
+      const key = cacheKey(sDate, eDate, store_id || 'all');
+      if (SUMMARY_CACHE.has(key)) {
+        const cached = SUMMARY_CACHE.get(key);
+        return res.status(200).json({ ...cached, source: 'cache_db_last' });
+      }
+    } catch {}
     return res.status(200).json(createEmptySummary());
   }
 }
@@ -663,148 +694,71 @@ async function updateHourlyStatsForDate(date, device_id) { return; }
 // ===========================================
 async function saveVisitorsToDatabase(visitors, forcedDay) {
   if (!visitors || !Array.isArray(visitors) || visitors.length === 0) {
-    console.log('ℹ️ Nenhum visitante para salvar');
     return 0;
   }
-  
   const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
   const DAYS = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
-  let savedCount = 0;
-  let errorCount = 0;
-  
-  console.log(`💾 Salvando ${visitors.length} visitantes no banco...`);
-  const devList = await fetchDisplayForceDevices();
-  const nameMap = new Map(devList.map(d => [String(d.id), String(d.name || `Loja ${d.id}`)]));
-  
+  const records = [];
   for (const visitor of visitors) {
     try {
-      // Usa o timestamp de START (que é o momento real da visita)
       const timestamp = String(visitor.start ?? visitor.tracks?.[0]?.start ?? visitor.timestamp ?? new Date().toISOString());
       const dateObj = new Date(timestamp);
-      
-      if (isNaN(dateObj.getTime())) {
-        console.warn('⚠️ Data inválida, usando data atual');
-        continue;
-      }
-      
+      if (isNaN(dateObj.getTime())) { continue; }
       const localDate = new Date(dateObj.getTime() + (tz * 3600000));
       let localTime = '';
       const mt = String(timestamp).match(/T(\d{2}:\d{2}:\d{2})/);
-      if (mt) {
-        localTime = mt[1];
-      } else {
-        localTime = `${String(localDate.getHours()).padStart(2,'0')}:${String(localDate.getMinutes()).padStart(2,'0')}:${String(localDate.getSeconds()).padStart(2,'0')}`;
-      }
-      const hour = parseInt(localTime.slice(0,2), 10);
-      const y = localDate.getFullYear();
-      const m = String(localDate.getMonth() + 1).padStart(2, '0');
-      const d = String(localDate.getDate()).padStart(2, '0');
+      if (mt) { localTime = mt[1]; } else { localTime = `${String(localDate.getHours()).padStart(2,'0')}:${String(localDate.getMinutes()).padStart(2,'0')}:${String(localDate.getSeconds()).padStart(2,'0')}`; }
+      const y = localDate.getFullYear(); const m = String(localDate.getMonth() + 1).padStart(2, '0'); const d = String(localDate.getDate()).padStart(2, '0');
       const dateStr = String(forcedDay || `${y}-${m}-${d}`);
       const dayOfWeek = DAYS[localDate.getDay()];
-      
-      let deviceId = '';
-      let storeName = '';
+      let deviceId = ''; let storeName = '';
       const t0 = visitor.tracks && visitor.tracks.length > 0 ? visitor.tracks[0] : null;
-      if (t0) {
-        deviceId = String(t0.device_id ?? t0.id ?? '');
-        storeName = String(t0.device_name ?? t0.name ?? '');
-      }
+      if (t0) { deviceId = String(t0.device_id ?? t0.id ?? ''); storeName = String(t0.device_name ?? t0.name ?? ''); }
       if (!deviceId && visitor.devices && visitor.devices.length > 0) {
         const dev0 = visitor.devices[0];
-        if (typeof dev0 === 'object' && dev0) {
-          deviceId = String(dev0.id ?? dev0.device_id ?? '');
-          storeName = String(dev0.name ?? storeName);
-        } else {
-          deviceId = String(dev0 || '');
-        }
+        if (typeof dev0 === 'object' && dev0) { deviceId = String(dev0.id ?? dev0.device_id ?? ''); storeName = String(dev0.name ?? storeName); }
+        else { deviceId = String(dev0 || ''); }
       }
       if (!deviceId) deviceId = 'unknown';
-      if (!storeName) storeName = nameMap.get(deviceId) || `Loja ${deviceId}`;
-      
+      if (!storeName) storeName = `Loja ${deviceId}`;
       let gender = 'U';
       const sexNum = typeof visitor.sex === 'number' ? visitor.sex : (typeof visitor.gender === 'number' ? visitor.gender : null);
-      if (sexNum === 1) gender = 'M';
-      else if (sexNum === 2) gender = 'F';
-      else {
-        const gRaw = String(visitor.gender || '').toUpperCase();
-        if (gRaw.startsWith('M')) gender = 'M';
-        else if (gRaw.startsWith('F')) gender = 'F';
+      if (sexNum === 1) gender = 'M'; else if (sexNum === 2) gender = 'F'; else {
+        const gRaw = String(visitor.gender || '').toUpperCase(); if (gRaw.startsWith('M')) gender = 'M'; else if (gRaw.startsWith('F')) gender = 'F';
       }
-      
       let age = 0;
-      if (typeof visitor.age === 'number') {
-        age = Math.max(0, visitor.age);
-      } else {
-        const attrsA = Array.isArray(visitor.additional_attributes)
-          ? visitor.additional_attributes
-          : (visitor.additional_attributes && typeof visitor.additional_attributes === 'object' ? [visitor.additional_attributes] : []);
-        const attrsB = Array.isArray(visitor.additional_atributes)
-          ? visitor.additional_atributes
-          : (visitor.additional_atributes && typeof visitor.additional_atributes === 'object' ? [visitor.additional_atributes] : []);
+      if (typeof visitor.age === 'number') { age = Math.max(0, visitor.age); }
+      else {
+        const attrsA = Array.isArray(visitor.additional_attributes) ? visitor.additional_attributes : (visitor.additional_attributes && typeof visitor.additional_attributes === 'object' ? [visitor.additional_attributes] : []);
+        const attrsB = Array.isArray(visitor.additional_atributes) ? visitor.additional_atributes : (visitor.additional_atributes && typeof visitor.additional_atributes === 'object' ? [visitor.additional_atributes] : []);
         const attrsAll = [...attrsA, ...attrsB];
         const lastAttr = attrsAll.length ? attrsAll[attrsAll.length - 1] : null;
         const ageCandidate = (lastAttr?.age ?? visitor.face?.age ?? visitor.age_years);
         if (typeof ageCandidate === 'number') age = Math.max(0, ageCandidate);
       }
-      
       let smile = false;
       const attrs = visitor.additional_atributes || visitor.additional_attributes || [];
       if (Array.isArray(attrs) ? attrs.length > 0 : typeof attrs === 'object') {
         const lastAttr = Array.isArray(attrs) ? attrs[attrs.length - 1] : attrs;
         smile = String(lastAttr?.smile || '').toLowerCase() === 'yes';
       }
-      
-      const visitorId = String(
-        visitor.visitor_id ?? visitor.session_id ?? visitor.id ?? visitor.tracks?.[0]?.id ?? `${deviceId}|${timestamp}`
-      );
-      
-      // Insere no banco usando timestamp REAL (start time)
-      await pool.query(
-        `INSERT INTO visitors (
-          visitor_id, day, store_id, store_name, 
-          timestamp, gender, age, day_of_week, smile, hour, local_time
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, EXTRACT(HOUR FROM $10::time), $10::time)
-        ON CONFLICT (visitor_id, timestamp) 
-        DO UPDATE SET
-          day = EXCLUDED.day,
-          store_id = EXCLUDED.store_id,
-          store_name = EXCLUDED.store_name,
-          gender = EXCLUDED.gender,
-          age = EXCLUDED.age,
-          day_of_week = EXCLUDED.day_of_week,
-          smile = EXCLUDED.smile,
-          hour = EXTRACT(HOUR FROM EXCLUDED.local_time::time),
-          local_time = EXCLUDED.local_time`,
-        [
-          visitorId,
-          dateStr,
-          deviceId,
-          storeName,
-          timestamp,
-          gender,
-          age,
-          dayOfWeek,
-          smile,
-          localTime
-        ]
-      );
-      
-      savedCount++;
-      
-      // Log progresso a cada 100 registros
-      if (savedCount % 100 === 0) {
-        console.log(`💾 Progresso: ${savedCount} visitantes salvos...`);
-      }
-      
-    } catch (error) {
-      errorCount++;
-      if (errorCount <= 3) {
-        console.error('❌ Erro ao salvar visitante:', error.message);
-      }
-    }
+      const visitorId = String(visitor.visitor_id ?? visitor.session_id ?? visitor.id ?? visitor.tracks?.[0]?.id ?? `${deviceId}|${timestamp}`);
+      records.push([visitorId, dateStr, deviceId, storeName, timestamp, gender, age, dayOfWeek, smile, localTime]);
+    } catch {}
   }
-  
-  console.log(`✅ ${savedCount} visitantes salvos, ${errorCount} erros`);
+  if (records.length === 0) return 0;
+  const BATCH_SIZE = 200; let savedCount = 0;
+  for (let i = 0; i < records.length; i += BATCH_SIZE) {
+    const chunk = records.slice(i, i + BATCH_SIZE);
+    const params = [];
+    const values = chunk.map((r, idx) => {
+      const base = idx * 10;
+      params.push(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], r[9]);
+      return `(${base+1}, ${base+2}, ${base+3}, ${base+4}, ${base+5}, ${base+6}, ${base+7}, ${base+8}, ${base+9}, EXTRACT(HOUR FROM ${base+10}::time), ${base+10}::time)`;
+    }).join(', ');
+    const sql = `INSERT INTO visitors (visitor_id, day, store_id, store_name, timestamp, gender, age, day_of_week, smile, hour, local_time) VALUES ${values} ON CONFLICT (visitor_id, timestamp) DO UPDATE SET day=EXCLUDED.day, store_id=EXCLUDED.store_id, store_name=EXCLUDED.store_name, gender=EXCLUDED.gender, age=EXCLUDED.age, day_of_week=EXCLUDED.day_of_week, smile=EXCLUDED.smile, hour=EXTRACT(HOUR FROM EXCLUDED.local_time::time), local_time=EXCLUDED.local_time`;
+    try { await pool.query(sql, params); savedCount += chunk.length; } catch {}
+  }
   return savedCount;
 }
 
@@ -1037,10 +991,7 @@ async function getVisitors(req, res, start_date, end_date, store_id) {
     
   } catch (error) {
     console.error("❌ Visitors error:", error);
-    return res.status(500).json({
-      success: false,
-      error: error.message
-    });
+    return res.status(500).json({ success: false, error: error.message });
   }
 }
 
@@ -1326,7 +1277,7 @@ async function forceSyncToday(req, res) {
     const firstResp = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method:'POST', headers:{ 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type':'application/json' }, body: JSON.stringify(firstBody) });
     if (!firstResp.ok) return res.status(firstResp.status).json({ error: await firstResp.text() });
     const firstData = await firstResp.json(); const limit = Number(firstData.pagination?.limit ?? 500); const apiTotal = Number(firstData.pagination?.total ?? 0);
-    const { rows } = await pool.query(`SELECT COUNT(*)::int AS c FROM visitors WHERE day=$1`, [day]); const dbTotal = Number(rows[0]?.c || 0);
+    const { rows } = await q(`SELECT COUNT(*)::int AS c FROM visitors WHERE day=$1`, [day]); const dbTotal = Number(rows[0]?.c || 0);
     if (dbTotal >= apiTotal) return res.status(200).json({ success:true, day, apiTotal, dbTotal, synced:true });
     const startOffset = Math.floor(dbTotal/limit)*limit; const endOffset = Math.floor((apiTotal-1)/limit)*limit;
     const offsets = []; for (let off=startOffset; off<=endOffset; off+=limit) offsets.push(off);

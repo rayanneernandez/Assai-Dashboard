@@ -170,8 +170,6 @@ async function syncAllHistoricalData(req, res) {
         // Salva no banco
         const saved = await saveVisitorsToDatabase(visitors);
         
-        // Atualiza agregados para todas as datas
-        await updateAllAggregatesForDevice(device.id);
         
         results.push({
           device_id: device.id,
@@ -192,9 +190,6 @@ async function syncAllHistoricalData(req, res) {
       }
     }
     
-    // Atualiza agregado geral para todas as datas
-    console.log('🔄 Atualizando agregado geral (all)...');
-    await updateAllAggregatesForDevice('all');
     
     console.log('✅ Sincronização completa concluída');
     
@@ -458,33 +453,32 @@ async function getHourlyAggregatesWithRealTime(start_date, end_date, store_id) {
 
 async function getHourlyAggregatesFromAggregates(start_date, end_date, store_id) {
   try {
-    let q = `
-      SELECT hour, COALESCE(SUM(total),0) AS total, COALESCE(SUM(male),0) AS male, COALESCE(SUM(female),0) AS female
-      FROM dashboard_hourly
-      WHERE day >= $1 AND day <= $2 AND (store_id IS NOT DISTINCT FROM $3)
-      GROUP BY hour ORDER BY hour`;
-    let { rows } = await pool.query(q, [start_date, end_date, store_id]);
-    if (!rows || rows.length === 0) {
-      const tzOffset = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
-      const adj = `EXTRACT(HOUR FROM (timestamp + INTERVAL '${tzOffset} hour'))`;
-      let vq = `
-        SELECT COALESCE(hour, ${adj}) AS hour,
-               SUM(CASE WHEN gender IN ('M','F') THEN 1 ELSE 0 END) AS total,
-               SUM(CASE WHEN gender='M' THEN 1 ELSE 0 END) AS male,
-               SUM(CASE WHEN gender='F' THEN 1 ELSE 0 END) AS female
-        FROM visitors
-        WHERE day >= $1 AND day <= $2`;
-      const params = [start_date, end_date];
-      if (store_id && store_id !== 'all') { vq += ` AND store_id = $3`; params.push(store_id); }
-      vq += ` GROUP BY COALESCE(hour, ${adj}) ORDER BY 1`;
-      const r2 = await pool.query(vq, params);
-      rows = r2.rows;
+    const hourExpr = `COALESCE(EXTRACT(HOUR FROM local_time::time), hour)`;
+    let query = `
+      SELECT ${hourExpr} AS hour,
+             COUNT(*) AS total,
+             SUM(CASE WHEN gender = 'M' THEN 1 ELSE 0 END) AS male,
+             SUM(CASE WHEN gender = 'F' THEN 1 ELSE 0 END) AS female
+      FROM visitors
+      WHERE day >= $1 AND day <= $2`;
+    const params = [start_date, end_date];
+    if (store_id && store_id !== 'all') { query += ` AND store_id = $3`; params.push(store_id); }
+    query += ` GROUP BY ${hourExpr} ORDER BY ${hourExpr}`;
+    const { rows } = await pool.query(query, params);
+    const byHour = {}; const byGenderHour = { male: {}, female: {} };
+    for (let h = 0; h < 24; h++) { byHour[h] = 0; byGenderHour.male[h] = 0; byGenderHour.female[h] = 0; }
+    for (const r of rows) {
+      const h = Number(r.hour);
+      if (h >= 0 && h < 24) {
+        byHour[h] = Number(r.total || 0);
+        byGenderHour.male[h] = Number(r.male || 0);
+        byGenderHour.female[h] = Number(r.female || 0);
+      }
     }
-    const byHour = {}; const byGenderHour = { male:{}, female:{} };
-    for (let h=0; h<24; h++){ byHour[h]=0; byGenderHour.male[h]=0; byGenderHour.female[h]=0; }
-    for (const r of rows){ const h = Number(r.hour); if (h>=0 && h<24){ byHour[h]=Number(r.total||0); byGenderHour.male[h]=Number(r.male||0); byGenderHour.female[h]=Number(r.female||0); } }
     return { byHour, byGenderHour };
-  } catch { return createEmptyHourlyData(); }
+  } catch (error) {
+    return createEmptyHourlyData();
+  }
 }
 
 // ===========================================
@@ -1308,12 +1302,10 @@ async function wipeRange(req, res, start_date, end_date) {
   try {
     const s = start_date || new Date().toISOString().slice(0,10);
     const e = end_date || s;
-    const delH = await pool.query(`DELETE FROM public.dashboard_hourly WHERE day BETWEEN $1 AND $2`, [s, e]);
-    const delD = await pool.query(`DELETE FROM public.dashboard_daily  WHERE day BETWEEN $1 AND $2`, [s, e]);
-    const delV = await pool.query(`DELETE FROM public.visitors        WHERE day BETWEEN $1 AND $2`, [s, e]);
-    return res.status(200).json({ success:true, period:`${s} - ${e}`, deleted:{ hourly: delH.rowCount, daily: delD.rowCount, visitors: delV.rowCount } });
+    const delV = await pool.query(`DELETE FROM public.visitors WHERE day BETWEEN $1 AND $2`, [s, e]);
+    return res.status(200).json({ success: true, period: `${s} - ${e}`, deleted: { visitors: delV.rowCount } });
   } catch (error) {
-    return res.status(500).json({ success:false, error: error.message });
+    return res.status(500).json({ success: false, error: error.message });
   }
 }
 
@@ -1341,44 +1333,29 @@ async function rebuildHourlyFromVisitors(req, res, start_date, end_date, store_i
   try {
     const s = start_date || new Date().toISOString().slice(0,10);
     const e = end_date || s;
-    const tzOffset = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
-    const adj = `EXTRACT(HOUR FROM (timestamp + INTERVAL '${tzOffset} hour'))`;
-    const start = new Date(s); const end = new Date(e);
-    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-      const dayStr = d.toISOString().split('T')[0];
-      const hourExpr = `COALESCE(EXTRACT(HOUR FROM local_time::time), ${adj})`;
-      let q = `SELECT ${hourExpr} AS hour,
-                       SUM(CASE WHEN gender IN ('M','F') THEN 1 ELSE 0 END) AS total,
-                       SUM(CASE WHEN gender='M' THEN 1 ELSE 0 END) AS male,
-                       SUM(CASE WHEN gender='F' THEN 1 ELSE 0 END) AS female
-                FROM visitors WHERE day=$1`;
-      const params = [dayStr];
-      if (store_id && store_id !== 'all') { q += ` AND store_id=$2`; params.push(store_id); }
-      q += ` GROUP BY ${hourExpr} ORDER BY 1`;
-      const { rows } = await pool.query(q, params);
-      for (const r of rows) {
-        await pool.query(`INSERT INTO dashboard_hourly (day, store_id, hour, total, male, female) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (day, store_id, hour) DO UPDATE SET total=EXCLUDED.total, male=EXCLUDED.male, female=EXCLUDED.female`, [dayStr, store_id && store_id !== 'all' ? store_id : 'all', Number(r.hour), Number(r.total||0), Number(r.male||0), Number(r.female||0)]);
-      }
-      if (!store_id || store_id === 'all') {
-        const distinct = await pool.query(`SELECT DISTINCT store_id FROM visitors WHERE day=$1`, [dayStr]);
-        for (const st of distinct.rows) {
-          const sid = String(st.store_id);
-          const hourExpr2 = `COALESCE(EXTRACT(HOUR FROM local_time::time), ${adj})`;
-          const r2 = await pool.query(`SELECT ${hourExpr2} AS hour,
-                                       SUM(CASE WHEN gender IN ('M','F') THEN 1 ELSE 0 END) AS total,
-                                       SUM(CASE WHEN gender='M' THEN 1 ELSE 0 END) AS male,
-                                       SUM(CASE WHEN gender='F' THEN 1 ELSE 0 END) AS female
-                                       FROM visitors WHERE day=$1 AND store_id=$2
-                                       GROUP BY ${hourExpr2} ORDER BY 1`, [dayStr, sid]);
-          for (const rr of r2.rows) {
-            await pool.query(`INSERT INTO dashboard_hourly (day, store_id, hour, total, male, female) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (day, store_id, hour) DO UPDATE SET total=EXCLUDED.total, male=EXCLUDED.male, female=EXCLUDED.female`, [dayStr, sid, Number(rr.hour), Number(rr.total||0), Number(rr.male||0), Number(rr.female||0)]);
-          }
-        }
+    const hourExpr = `COALESCE(EXTRACT(HOUR FROM local_time::time), hour)`;
+    let query = `SELECT ${hourExpr} AS hour,
+                        SUM(CASE WHEN gender IN ('M','F') THEN 1 ELSE 0 END) AS total,
+                        SUM(CASE WHEN gender='M' THEN 1 ELSE 0 END) AS male,
+                        SUM(CASE WHEN gender='F' THEN 1 ELSE 0 END) AS female
+                 FROM visitors WHERE day >= $1 AND day <= $2`;
+    const params = [s, e];
+    if (store_id && store_id !== 'all') { query += ` AND store_id = $3`; params.push(store_id); }
+    query += ` GROUP BY ${hourExpr} ORDER BY 1`;
+    const { rows } = await pool.query(query, params);
+    const byHour = {}; const byGenderHour = { male: {}, female: {} };
+    for (let h = 0; h < 24; h++) { byHour[h] = 0; byGenderHour.male[h] = 0; byGenderHour.female[h] = 0; }
+    for (const r of rows) {
+      const h = Number(r.hour);
+      if (h >= 0 && h < 24) {
+        byHour[h] = Number(r.total || 0);
+        byGenderHour.male[h] = Number(r.male || 0);
+        byGenderHour.female[h] = Number(r.female || 0);
       }
     }
-    return res.status(200).json({ success:true, period:`${s} - ${e}` });
+    return res.status(200).json({ success: true, period: `${s} - ${e}`, byHour, byGenderHour, store_id: store_id || 'all', persisted: false });
   } catch (error) {
-    return res.status(500).json({ success:false, error: error.message });
+    return res.status(500).json({ success: false, error: error.message });
   }
 }
 

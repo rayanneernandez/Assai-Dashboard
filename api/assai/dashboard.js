@@ -534,54 +534,51 @@ async function calculateRealTimeSummary(req, res, start_date, end_date, store_id
     let totalRealTime = Number(row.total_visitors || 0);
     console.log(`🧮 Total em tempo real (DB): ${totalRealTime}`);
 
-<<<<<<< HEAD
-    try {
-      const isTodayOnly = sDate === today && eDate === sDate;
-      if (isTodayOnly) {
-=======
     if (process.env.SUMMARY_INGEST_ON_CALL !== '0') {
       try {
->>>>>>> f28641a (aa)
-        const firstBody = { start: startISO, end: endISO, limit: 500, offset: 0, tracks: true };
-        if (store_id && store_id !== 'all') firstBody.devices = [parseInt(store_id)];
-        const firstResp = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method:'POST', headers:{ 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type':'application/json' }, body: JSON.stringify(firstBody) });
-        if (firstResp.ok) {
-          const firstData = await firstResp.json();
-          const apiLimit = Number(firstData.pagination?.limit ?? 500);
-          const pageLimit = Math.min(apiLimit, 250);
-          const apiTotal = Number(firstData.pagination?.total ?? (Array.isArray(firstData.payload)? firstData.payload.length:0));
-          const missing = Math.max(0, apiTotal - totalRealTime);
-          if (missing > 0) {
-            const startOffset = Math.floor(totalRealTime / pageLimit) * pageLimit;
-            const endOffset = Math.floor((apiTotal - 1) / pageLimit) * pageLimit;
-            const offsetsToFetch = [];
-            for (let off = startOffset; off <= endOffset; off += pageLimit) offsetsToFetch.push(off);
-            const CONCURRENCY = 10; const MAX_PAGES = 128; const slice = offsetsToFetch.slice(0, MAX_PAGES);
-            let idx = 0;
-            while (idx < slice.length) {
-              const batch = slice.slice(idx, idx + CONCURRENCY);
-              await Promise.all(batch.map(async (off) => {
-                const r = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method:'POST', headers:{ 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type':'application/json' }, body: JSON.stringify({ start:startISO, end:endISO, limit: pageLimit, offset:off, tracks:true, ...(store_id&&store_id!=='all'?{devices:[parseInt(store_id)]}:{}) }) });
-                if (!r.ok) return;
-                const j = await r.json(); const arr = j.payload || j || [];
-                await saveVisitorsToDatabase(arr, sDate);
-              }));
-              idx += CONCURRENCY;
+        const isTodayOnly = sDate === today && eDate === sDate;
+        if (isTodayOnly) {
+          const firstBody = { start: startISO, end: endISO, limit: 500, offset: 0, tracks: true };
+          if (store_id && store_id !== 'all') firstBody.devices = [parseInt(store_id)];
+          const firstResp = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method:'POST', headers:{ 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type':'application/json' }, body: JSON.stringify(firstBody) });
+          if (firstResp.ok) {
+            const firstData = await firstResp.json();
+            const apiLimit = Number(firstData.pagination?.limit ?? 500);
+            const pageLimit = Math.min(apiLimit, 250);
+            const apiTotal = Number(firstData.pagination?.total ?? (Array.isArray(firstData.payload)? firstData.payload.length:0));
+            const missing = Math.max(0, apiTotal - totalRealTime);
+            if (missing > 0) {
+              const startOffset = Math.floor(totalRealTime / pageLimit) * pageLimit;
+              const endOffset = Math.floor((apiTotal - 1) / pageLimit) * pageLimit;
+              const offsetsToFetch = [];
+              for (let off = startOffset; off <= endOffset; off += pageLimit) offsetsToFetch.push(off);
+              const CONCURRENCY = 10; const MAX_PAGES = 128; const slice = offsetsToFetch.slice(0, MAX_PAGES);
+              let idx = 0;
+              while (idx < slice.length) {
+                const batch = slice.slice(idx, idx + CONCURRENCY);
+                await Promise.all(batch.map(async (off) => {
+                  const r = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method:'POST', headers:{ 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type':'application/json' }, body: JSON.stringify({ start:startISO, end:endISO, limit: pageLimit, offset:off, tracks:true, ...(store_id&&store_id!=='all'?{devices:[parseInt(store_id)]}:{}) }) });
+                  if (!r.ok) return;
+                  const j = await r.json(); const arr = j.payload || j || [];
+                  await saveVisitorsToDatabase(arr, sDate);
+                }));
+                idx += CONCURRENCY;
+              }
+              const proto = String(req.headers['x-forwarded-proto'] || 'https');
+              const host = String(req.headers['host'] || '');
+              const base = host ? `${proto}://${host}` : '';
+              if (base) {
+                fetch(`${base}/api/assai/dashboard?endpoint=refresh_recent&start_date=${sDate}&count=24`).catch(()=>{});
+                fetch(`${base}/api/assai/dashboard?endpoint=force_sync_today&t=${Date.now()}`).catch(()=>{});
+              }
+              const re = await q(query, params);
+              row = re.rows[0] || row;
+              totalRealTime = Number(row.total_visitors || 0);
             }
-            const proto = String(req.headers['x-forwarded-proto'] || 'https');
-            const host = String(req.headers['host'] || '');
-            const base = host ? `${proto}://${host}` : '';
-            if (base) {
-              fetch(`${base}/api/assai/dashboard?endpoint=refresh_recent&start_date=${sDate}&count=24`).catch(()=>{});
-              fetch(`${base}/api/assai/dashboard?endpoint=force_sync_today&t=${Date.now()}`).catch(()=>{});
-            }
-            const re = await q(query, params);
-            row = re.rows[0] || row;
-            totalRealTime = Number(row.total_visitors || 0);
           }
         }
-      }
-    } catch {}
+      } catch {}
+    }
 
     
     const avgAgeCount = Number(row.avg_age_count || 0);

@@ -76,6 +76,9 @@ export default async function handler(req, res) {
       case 'optimize':
         return await ensureIndexes(req, res);
       
+      case 'backfill_local_time':
+        return await backfillLocalTime(req, res);
+      
       case 'test':
         return res.status(200).json({
           success: true,
@@ -780,8 +783,14 @@ async function saveVisitorsToDatabase(visitors, forcedDay) {
       }
       
       const localDate = new Date(dateObj.getTime() + (tz * 3600000));
-      const hour = localDate.getHours();
-      const localTime = `${String(hour).padStart(2,'0')}:${String(localDate.getMinutes()).padStart(2,'0')}:${String(localDate.getSeconds()).padStart(2,'0')}`;
+      let localTime = '';
+      const mt = String(timestamp).match(/T(\d{2}:\d{2}:\d{2})/);
+      if (mt) {
+        localTime = mt[1];
+      } else {
+        localTime = `${String(localDate.getHours()).padStart(2,'0')}:${String(localDate.getMinutes()).padStart(2,'0')}:${String(localDate.getSeconds()).padStart(2,'0')}`;
+      }
+      const hour = parseInt(localTime.slice(0,2), 10);
       const y = localDate.getFullYear();
       const m = String(localDate.getMonth() + 1).padStart(2, '0');
       const d = String(localDate.getDate()).padStart(2, '0');
@@ -1591,6 +1600,15 @@ async function ensureIndexes(req, res) {
       success: false,
       error: error.message
     });
+  }
+}
+
+async function backfillLocalTime(req, res) {
+  try {
+    const upd = await pool.query("UPDATE visitors SET local_time = TO_CHAR(timestamp::time, 'HH24:MI:SS') WHERE local_time IS NULL");
+    return res.status(200).json({ success:true, updated: upd.rowCount });
+  } catch (e) {
+    return res.status(500).json({ success:false, error:e.message });
   }
 }
 

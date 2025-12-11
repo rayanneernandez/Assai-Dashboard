@@ -865,7 +865,7 @@ async function saveVisitorsToDatabase(visitors, forcedDay) {
         `INSERT INTO visitors (
           visitor_id, day, store_id, store_name, 
           timestamp, gender, age, day_of_week, smile, hour, local_time
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, EXTRACT(HOUR FROM $5::time), TO_CHAR($5::time, 'HH24:MI:SS'))
         ON CONFLICT (visitor_id, timestamp) 
         DO UPDATE SET
           day = EXCLUDED.day,
@@ -875,8 +875,8 @@ async function saveVisitorsToDatabase(visitors, forcedDay) {
           age = EXCLUDED.age,
           day_of_week = EXCLUDED.day_of_week,
           smile = EXCLUDED.smile,
-          hour = EXCLUDED.hour,
-          local_time = EXCLUDED.local_time`,
+          hour = EXTRACT(HOUR FROM EXCLUDED.timestamp::time),
+          local_time = TO_CHAR(EXCLUDED.timestamp::time, 'HH24:MI:SS')`,
         [
           visitorId,
           dateStr,
@@ -886,9 +886,7 @@ async function saveVisitorsToDatabase(visitors, forcedDay) {
           gender,
           age,
           dayOfWeek,
-          smile,
-          hour,
-          localTime
+          smile
         ]
       );
       

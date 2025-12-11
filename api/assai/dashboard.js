@@ -406,14 +406,15 @@ async function getSummary(req, res, start_date, end_date, store_id) {
   try {
     console.log(`📊 Summary request: ${start_date} - ${end_date}, store: ${store_id}`);
     
-    // Se não tem datas, usa um período maior
-    const sDate = start_date || '2025-01-01';
-    const eDate = end_date || new Date().toISOString().split('T')[0];
-    
-    console.log(`📊 Período: ${sDate} até ${eDate}`);
-    
-    // Sempre calcular do visitors para dados precisos e imediatos (inclui horário local)
-    return await calculateRealTimeSummary(res, sDate, eDate, store_id || 'all');
+    // Se não tem datas, usa o dia atual para resposta rápida
+  const today = new Date().toISOString().split('T')[0];
+  const sDate = start_date || today;
+  const eDate = end_date || sDate;
+  
+  console.log(`📊 Período: ${sDate} até ${eDate}`);
+  
+  // Calcular a partir de visitors (rápido) sem ingestão extra
+  return await calculateRealTimeSummary(res, sDate, eDate, store_id || 'all');
     
   } catch (error) {
     console.error("❌ Summary error:", error);
@@ -522,8 +523,9 @@ async function getHourlyAggregatesFromAggregates(start_date, end_date, store_id)
 // ===========================================
 async function calculateRealTimeSummary(res, start_date, end_date, store_id) {
   try {
-    const sDate = start_date || '2025-01-01';
-    const eDate = end_date || new Date().toISOString().split('T')[0];
+    const today = new Date().toISOString().split('T')[0];
+    const sDate = start_date || today;
+    const eDate = end_date || sDate;
     
     console.log(`🧮 Calculando summary em tempo real para ${sDate} - ${eDate}`);
     
@@ -569,39 +571,41 @@ async function calculateRealTimeSummary(res, start_date, end_date, store_id) {
     let totalRealTime = Number(row.total_visitors || 0);
     console.log(`🧮 Total em tempo real (DB): ${totalRealTime}`);
 
-    try {
-      const firstBody = { start: startISO, end: endISO, limit: 500, offset: 0, tracks: true };
-      if (store_id && store_id !== 'all') firstBody.devices = [parseInt(store_id)];
-      const firstResp = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method:'POST', headers:{ 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type':'application/json' }, body: JSON.stringify(firstBody) });
-      if (firstResp.ok) {
-        const firstData = await firstResp.json();
-        const limit = Number(firstData.pagination?.limit ?? 500);
-        const apiTotal = Number(firstData.pagination?.total ?? (Array.isArray(firstData.payload)? firstData.payload.length:0));
-        const missing = Math.max(0, apiTotal - totalRealTime);
-        console.log(`📡 API total=${apiTotal}, DB total=${totalRealTime}, faltando=${missing}`);
-        if (missing > 0) {
-          const startOffset = Math.floor(totalRealTime / limit) * limit;
-          const endOffset = Math.floor((apiTotal - 1) / limit) * limit;
-          const offsetsToFetch = [];
-          for (let off = startOffset; off <= endOffset; off += limit) offsetsToFetch.push(off);
-          const MAX_PAGES = 128;
-          const slice = offsetsToFetch.slice(0, MAX_PAGES);
-          console.log(`🔄 Ingerindo offsets faltantes: ${slice.join(', ')}`);
-          await Promise.all(slice.map(async (off) => {
-            const r = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method:'POST', headers:{ 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type':'application/json' }, body: JSON.stringify({ start:startISO, end:endISO, limit, offset:off, tracks:true, ...(store_id&&store_id!=='all'?{devices:[parseInt(store_id)]}:{}) }) });
-            if (!r.ok) return;
-            const j = await r.json(); const arr = j.payload || j || [];
-            await saveVisitorsToDatabase(arr, sDate);
-          }));
-          await updateAggregatesForDateAndDevice(sDate, store_id || 'all');
-          const { rows } = await pool.query(`SELECT DISTINCT store_id FROM visitors WHERE day=$1`, [sDate]);
-          for (const rr of rows) { await updateAggregatesForDateAndDevice(sDate, String(rr.store_id)); }
-          const re = await pool.query(query, params);
-          row = re.rows[0] || row;
-          totalRealTime = Number(row.total_visitors || 0);
+    if (process.env.SUMMARY_INGEST_ON_CALL === '1') {
+      try {
+        const firstBody = { start: startISO, end: endISO, limit: 500, offset: 0, tracks: true };
+        if (store_id && store_id !== 'all') firstBody.devices = [parseInt(store_id)];
+        const firstResp = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method:'POST', headers:{ 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type':'application/json' }, body: JSON.stringify(firstBody) });
+        if (firstResp.ok) {
+          const firstData = await firstResp.json();
+          const limit = Number(firstData.pagination?.limit ?? 500);
+          const apiTotal = Number(firstData.pagination?.total ?? (Array.isArray(firstData.payload)? firstData.payload.length:0));
+          const missing = Math.max(0, apiTotal - totalRealTime);
+          console.log(`📡 API total=${apiTotal}, DB total=${totalRealTime}, faltando=${missing}`);
+          if (missing > 0) {
+            const startOffset = Math.floor(totalRealTime / limit) * limit;
+            const endOffset = Math.floor((apiTotal - 1) / limit) * limit;
+            const offsetsToFetch = [];
+            for (let off = startOffset; off <= endOffset; off += limit) offsetsToFetch.push(off);
+            const MAX_PAGES = 128;
+            const slice = offsetsToFetch.slice(0, MAX_PAGES);
+            console.log(`🔄 Ingerindo offsets faltantes: ${slice.join(', ')}`);
+            await Promise.all(slice.map(async (off) => {
+              const r = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method:'POST', headers:{ 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type':'application/json' }, body: JSON.stringify({ start:startISO, end:endISO, limit, offset:off, tracks:true, ...(store_id&&store_id!=='all'?{devices:[parseInt(store_id)]}:{}) }) });
+              if (!r.ok) return;
+              const j = await r.json(); const arr = j.payload || j || [];
+              await saveVisitorsToDatabase(arr, sDate);
+            }));
+            await updateAggregatesForDateAndDevice(sDate, store_id || 'all');
+            const { rows } = await pool.query(`SELECT DISTINCT store_id FROM visitors WHERE day=$1`, [sDate]);
+            for (const rr of rows) { await updateAggregatesForDateAndDevice(sDate, String(rr.store_id)); }
+            const re = await pool.query(query, params);
+            row = re.rows[0] || row;
+            totalRealTime = Number(row.total_visitors || 0);
+          }
         }
-      }
-    } catch {}
+      } catch {}
+    }
 
     
     const avgAgeCount = Number(row.avg_age_count || 0);
@@ -865,7 +869,7 @@ async function saveVisitorsToDatabase(visitors, forcedDay) {
         `INSERT INTO visitors (
           visitor_id, day, store_id, store_name, 
           timestamp, gender, age, day_of_week, smile, hour, local_time
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, EXTRACT(HOUR FROM $5::time), ($5)::time)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, EXTRACT(HOUR FROM $10::time), $10::time)
         ON CONFLICT (visitor_id, timestamp) 
         DO UPDATE SET
           day = EXCLUDED.day,
@@ -875,8 +879,8 @@ async function saveVisitorsToDatabase(visitors, forcedDay) {
           age = EXCLUDED.age,
           day_of_week = EXCLUDED.day_of_week,
           smile = EXCLUDED.smile,
-          hour = EXTRACT(HOUR FROM EXCLUDED.timestamp::time),
-          local_time = EXCLUDED.timestamp::time`,
+          hour = EXTRACT(HOUR FROM EXCLUDED.local_time::time),
+          local_time = EXCLUDED.local_time`,
         [
           visitorId,
           dateStr,
@@ -886,7 +890,8 @@ async function saveVisitorsToDatabase(visitors, forcedDay) {
           gender,
           age,
           dayOfWeek,
-          smile
+          smile,
+          localTime
         ]
       );
       
@@ -1610,7 +1615,7 @@ async function ensureIndexes(req, res) {
 
 async function backfillLocalTime(req, res) {
   try {
-    const upd = await pool.query("UPDATE visitors SET local_time = timestamp::time WHERE local_time IS NULL");
+    const upd = await pool.query("UPDATE visitors SET local_time = to_char(timestamp, 'HH24:MI:SS')::time, hour = EXTRACT(HOUR FROM to_char(timestamp, 'HH24:MI:SS')::time) WHERE local_time IS NULL AND timestamp IS NOT NULL");
     return res.status(200).json({ success:true, updated: upd.rowCount });
   } catch (e) {
     return res.status(500).json({ success:false, error:e.message });

@@ -435,7 +435,7 @@ async function getHourlyAggregatesWithRealTime(start_date, end_date, store_id) {
     const tzStr = `${sign}${hh}:00`;
     const startISO = `${start_date}T00:00:00${tzStr}`;
     const endISO = `${end_date}T23:59:59${tzStr}`;
-    const hourExpr = `COALESCE(EXTRACT(HOUR FROM local_time::time), hour)`;
+    const hourExpr = `EXTRACT(HOUR FROM local_time::time)`;
     let query = `
       SELECT 
         ${hourExpr} AS hour,
@@ -443,7 +443,7 @@ async function getHourlyAggregatesWithRealTime(start_date, end_date, store_id) {
         SUM(CASE WHEN gender = 'M' THEN 1 ELSE 0 END) AS male,
         SUM(CASE WHEN gender = 'F' THEN 1 ELSE 0 END) AS female
       FROM visitors
-      WHERE day >= $1 AND day <= $2
+      WHERE day >= $1 AND day <= $2 AND local_time IS NOT NULL
     `;
     
     const params = [start_date, end_date];
@@ -817,7 +817,7 @@ async function updateHourlyStatsForDate(date, device_id) {
     );
     
     const tzOffset = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
-    const hourExpr = `COALESCE(EXTRACT(HOUR FROM local_time::time), hour)`;
+    const hourExpr = `EXTRACT(HOUR FROM local_time::time)`;
     let query = `
       SELECT 
         ${hourExpr} AS hour,
@@ -825,7 +825,7 @@ async function updateHourlyStatsForDate(date, device_id) {
         SUM(CASE WHEN gender = 'M' THEN 1 ELSE 0 END) AS male,
         SUM(CASE WHEN gender = 'F' THEN 1 ELSE 0 END) AS female
       FROM visitors
-      WHERE day = $1
+      WHERE day = $1 AND local_time IS NOT NULL
     `;
     
     const params = [date];
@@ -1571,13 +1571,15 @@ async function forceSyncToday(req, res) {
     if (dbTotal >= apiTotal) return res.status(200).json({ success:true, day, apiTotal, dbTotal, synced:true });
     const startOffset = Math.floor(dbTotal/limit)*limit; const endOffset = Math.floor((apiTotal-1)/limit)*limit;
     const offsets = []; for (let off=startOffset; off<=endOffset; off+=limit) offsets.push(off);
-    const CONCURRENCY = 8; const MAX_PAGES = 64; const slice = offsets.slice(0, MAX_PAGES);
+    const CONCURRENCY = 2; const MAX_PAGES = 16; const slice = offsets.slice(0, MAX_PAGES);
     let processed = 0; while (processed < slice.length) {
       const batch = slice.slice(processed, processed+CONCURRENCY);
-      await Promise.all(batch.map(async (off) => {
-        const r = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method:'POST', headers:{ 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type':'application/json' }, body: JSON.stringify({ start:startISO, end:endISO, limit, offset:off, tracks:true }) });
-        if (!r.ok) return; const j = await r.json(); const arr = j.payload || j || []; await saveVisitorsToDatabase(arr, day);
-      }));
+      for (const off of batch) {
+        try {
+          const r = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method:'POST', headers:{ 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type':'application/json' }, body: JSON.stringify({ start:startISO, end:endISO, limit, offset:off, tracks:true }) });
+          if (!r.ok) continue; const j = await r.json(); const arr = j.payload || j || []; await saveVisitorsToDatabase(arr, day);
+        } catch {}
+      }
       processed += CONCURRENCY;
     }
     await updateAggregatesForDateAndDevice(day, 'all'); const ds = await pool.query(`SELECT DISTINCT store_id FROM visitors WHERE day=$1`, [day]); for (const r of ds.rows) { await updateAggregatesForDateAndDevice(day, String(r.store_id)); }
@@ -1624,16 +1626,15 @@ async function rebuildHourlyFromVisitors(req, res, start_date, end_date, store_i
     const s = start_date || new Date().toISOString().slice(0,10);
     const e = end_date || s;
     const tzOffset = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
-    const adj = `EXTRACT(HOUR FROM (timestamp + INTERVAL '${tzOffset} hour'))`;
     const start = new Date(s); const end = new Date(e);
     for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
       const dayStr = d.toISOString().split('T')[0];
-      const hourExpr = `COALESCE(EXTRACT(HOUR FROM local_time::time), ${adj})`;
+      const hourExpr = `EXTRACT(HOUR FROM local_time::time)`;
       let q = `SELECT ${hourExpr} AS hour,
                        SUM(CASE WHEN gender IN ('M','F') THEN 1 ELSE 0 END) AS total,
                        SUM(CASE WHEN gender='M' THEN 1 ELSE 0 END) AS male,
                        SUM(CASE WHEN gender='F' THEN 1 ELSE 0 END) AS female
-                FROM visitors WHERE day=$1`;
+                FROM visitors WHERE day=$1 AND local_time IS NOT NULL`;
       const params = [dayStr];
       if (store_id && store_id !== 'all') { q += ` AND store_id=$2`; params.push(store_id); }
       q += ` GROUP BY ${hourExpr} ORDER BY 1`;
@@ -1645,12 +1646,12 @@ async function rebuildHourlyFromVisitors(req, res, start_date, end_date, store_i
         const distinct = await pool.query(`SELECT DISTINCT store_id FROM visitors WHERE day=$1`, [dayStr]);
         for (const st of distinct.rows) {
           const sid = String(st.store_id);
-          const hourExpr2 = `COALESCE(EXTRACT(HOUR FROM local_time::time), ${adj})`;
+          const hourExpr2 = `EXTRACT(HOUR FROM local_time::time)`;
           const r2 = await pool.query(`SELECT ${hourExpr2} AS hour,
                                        SUM(CASE WHEN gender IN ('M','F') THEN 1 ELSE 0 END) AS total,
                                        SUM(CASE WHEN gender='M' THEN 1 ELSE 0 END) AS male,
                                        SUM(CASE WHEN gender='F' THEN 1 ELSE 0 END) AS female
-                                       FROM visitors WHERE day=$1 AND store_id=$2
+                                       FROM visitors WHERE day=$1 AND store_id=$2 AND local_time IS NOT NULL
                                        GROUP BY ${hourExpr2} ORDER BY 1`, [dayStr, sid]);
           for (const rr of r2.rows) {
             await pool.query(`INSERT INTO dashboard_hourly (day, store_id, hour, total, male, female) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (day, store_id, hour) DO UPDATE SET total=EXCLUDED.total, male=EXCLUDED.male, female=EXCLUDED.female`, [dayStr, sid, Number(rr.hour), Number(rr.total||0), Number(rr.male||0), Number(rr.female||0)]);

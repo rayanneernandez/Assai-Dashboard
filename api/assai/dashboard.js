@@ -757,7 +757,7 @@ async function saveVisitorsToDatabase(visitors, forcedDay) {
       return `(${base+1}, ${base+2}, ${base+3}, ${base+4}, ${base+5}, ${base+6}, ${base+7}, ${base+8}, ${base+9}, EXTRACT(HOUR FROM ${base+10}::time), ${base+10}::time)`;
     }).join(', ');
     const sql = `INSERT INTO visitors (visitor_id, day, store_id, store_name, timestamp, gender, age, day_of_week, smile, hour, local_time) VALUES ${values} ON CONFLICT (visitor_id, timestamp) DO UPDATE SET day=EXCLUDED.day, store_id=EXCLUDED.store_id, store_name=EXCLUDED.store_name, gender=EXCLUDED.gender, age=EXCLUDED.age, day_of_week=EXCLUDED.day_of_week, smile=EXCLUDED.smile, hour=EXTRACT(HOUR FROM EXCLUDED.local_time::time), local_time=EXCLUDED.local_time`;
-    try { await pool.query(sql, params); savedCount += chunk.length; } catch {}
+    try { await q(sql, params); savedCount += chunk.length; } catch (e) {}
   }
   return savedCount;
 }
@@ -1321,7 +1321,7 @@ async function verifyDay(req, res, start_date, store_id) {
     if (!r.ok) return res.status(r.status).json({ error: await r.text() });
     const j = await r.json();
     const apiTotal = Number(j.pagination?.total || 0);
-    const { rows } = await pool.query(`SELECT COUNT(*)::int AS c FROM visitors WHERE day=$1`, [day]);
+    const { rows } = await q(`SELECT COUNT(*)::int AS c FROM visitors WHERE day=$1`, [day]);
     const dbTotal = Number(rows[0]?.c || 0);
     return res.status(200).json({ day, apiTotal, dbTotal, ok: apiTotal === dbTotal });
   } catch (e) {

@@ -1742,8 +1742,20 @@ async function ensureIndexes(req, res) {
 
 async function backfillLocalTime(req, res) {
   try {
-    const upd = await pool.query("UPDATE visitors SET local_time = to_char(timestamp, 'HH24:MI:SS')::time, hour = EXTRACT(HOUR FROM to_char(timestamp, 'HH24:MI:SS')::time) WHERE local_time IS NULL AND timestamp IS NOT NULL");
-    return res.status(200).json({ success:true, updated: upd.rowCount });
+    const s = String(req.query.start_date || new Date().toISOString().slice(0,10));
+    const e = String(req.query.end_date || s);
+    const start = new Date(s + 'T00:00:00Z');
+    const end = new Date(e + 'T00:00:00Z');
+    const days = [];
+    for (let d = new Date(start); d <= end && days.length < 3; d = new Date(d.getTime() + 86400000)) {
+      days.push(d.toISOString().slice(0,10));
+    }
+    let total = 0;
+    for (const day of days) {
+      const upd = await pool.query("UPDATE visitors SET local_time = to_char(timestamp, 'HH24:MI:SS')::time, hour = EXTRACT(HOUR FROM to_char(timestamp, 'HH24:MI:SS')::time) WHERE local_time IS NULL AND timestamp IS NOT NULL AND day = $1", [day]);
+      total += upd.rowCount || 0;
+    }
+    return res.status(200).json({ success:true, updated: total, processed_days: days });
   } catch (e) {
     return res.status(500).json({ success:false, error:e.message });
   }

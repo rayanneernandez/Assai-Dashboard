@@ -685,6 +685,67 @@ async function calculateRealTimeSummary(res, start_date, end_date, store_id) {
     
   } catch (error) {
     console.error("❌ Real-time summary error:", error);
+    try {
+      const lastQ = store_id && store_id !== 'all' ? `SELECT MAX(day) AS last_day FROM visitors WHERE store_id = $1` : `SELECT MAX(day) AS last_day FROM visitors`;
+      const lp = store_id && store_id !== 'all' ? [store_id] : [];
+      const lr = await pool.query(lastQ, lp);
+      const lastDay = String(lr.rows?.[0]?.last_day || '');
+      if (lastDay) {
+        const r2 = await pool.query(`
+          SELECT 
+            COUNT(*) AS total_visitors,
+            SUM(CASE WHEN gender = 'M' THEN 1 ELSE 0 END) AS male,
+            SUM(CASE WHEN gender = 'F' THEN 1 ELSE 0 END) AS female,
+            SUM(age) AS avg_age_sum,
+            SUM(CASE WHEN age > 0 THEN 1 ELSE 0 END) AS avg_age_count,
+            SUM(CASE WHEN age BETWEEN 18 AND 25 THEN 1 ELSE 0 END) AS age_18_25,
+            SUM(CASE WHEN age BETWEEN 26 AND 35 THEN 1 ELSE 0 END) AS age_26_35,
+            SUM(CASE WHEN age BETWEEN 36 AND 45 THEN 1 ELSE 0 END) AS age_36_45,
+            SUM(CASE WHEN age BETWEEN 46 AND 60 THEN 1 ELSE 0 END) AS age_46_60,
+            SUM(CASE WHEN EXTRACT(DOW FROM day::date) = 0 THEN 1 ELSE 0 END) AS sunday,
+            SUM(CASE WHEN EXTRACT(DOW FROM day::date) = 1 THEN 1 ELSE 0 END) AS monday,
+            SUM(CASE WHEN EXTRACT(DOW FROM day::date) = 2 THEN 1 ELSE 0 END) AS tuesday,
+            SUM(CASE WHEN EXTRACT(DOW FROM day::date) = 3 THEN 1 ELSE 0 END) AS wednesday,
+            SUM(CASE WHEN EXTRACT(DOW FROM day::date) = 4 THEN 1 ELSE 0 END) AS thursday,
+            SUM(CASE WHEN EXTRACT(DOW FROM day::date) = 5 THEN 1 ELSE 0 END) AS friday,
+            SUM(CASE WHEN EXTRACT(DOW FROM day::date) = 6 THEN 1 ELSE 0 END) AS saturday
+          FROM visitors WHERE day = $1${store_id && store_id !== 'all' ? ' AND store_id = $2' : ''}
+        `, store_id && store_id !== 'all' ? [lastDay, store_id] : [lastDay]);
+        const row2 = r2.rows[0] || {};
+        const avgCount2 = Number(row2.avg_age_count || 0);
+        const averageAge2 = avgCount2 > 0 ? Math.round(Number(row2.avg_age_sum || 0) / avgCount2) : 0;
+        const hourlyData = await getHourlyAggregatesWithRealTime(lastDay, lastDay, store_id);
+        const ageGenderData = await getAgeGenderDistribution(lastDay, lastDay, store_id);
+        return res.status(200).json({
+          success: true,
+          totalVisitors: Number(row2.total_visitors || 0),
+          totalMale: Number(row2.male || 0),
+          totalFemale: Number(row2.female || 0),
+          averageAge: averageAge2,
+          visitsByDay: {
+            Sunday: Number(row2.sunday || 0),
+            Monday: Number(row2.monday || 0),
+            Tuesday: Number(row2.tuesday || 0),
+            Wednesday: Number(row2.wednesday || 0),
+            Thursday: Number(row2.thursday || 0),
+            Friday: Number(row2.friday || 0),
+            Saturday: Number(row2.saturday || 0)
+          },
+          byAgeGroup: {
+            "18-25": Number(row2.age_18_25 || 0),
+            "26-35": Number(row2.age_26_35 || 0),
+            "36-45": Number(row2.age_36_45 || 0),
+            "46-60": Number(row2.age_46_60 || 0),
+            "60+": Number(row2.age_60_plus || 0)
+          },
+          byAgeGender: ageGenderData,
+          byHour: hourlyData.byHour,
+          byGenderHour: hourlyData.byGenderHour,
+          source: 'fallback_on_error',
+          period: `${lastDay} - ${lastDay}`
+        });
+      }
+    } catch {}
     return res.status(200).json(createEmptySummary());
   }
 }

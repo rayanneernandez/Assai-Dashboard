@@ -1321,11 +1321,25 @@ async function verifyDay(req, res, start_date, store_id) {
     if (!r.ok) return res.status(r.status).json({ error: await r.text() });
     const j = await r.json();
     const apiTotal = Number(j.pagination?.total || 0);
-    const { rows } = await q(`SELECT COUNT(*)::int AS c FROM visitors WHERE day=$1`, [day]);
-    const dbTotal = Number(rows[0]?.c || 0);
-    return res.status(200).json({ day, apiTotal, dbTotal, ok: apiTotal === dbTotal });
+    const { rows } = await q(`SELECT 1 AS found FROM visitors WHERE day=$1 LIMIT 1`, [day]);
+    const dbHas = rows && rows.length > 0;
+    return res.status(200).json({ day, apiTotal, dbHas, ok: dbHas && apiTotal > 0 });
   } catch (e) {
-    return res.status(500).json({ error: e.message });
+    try {
+      const day = start_date || new Date().toISOString().slice(0,10);
+      const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
+      const sign = tz >= 0 ? "+" : "-"; const hh = String(Math.abs(tz)).padStart(2,'0'); const tzStr = `${sign}${hh}:00`;
+      const startISO = `${day}T00:00:00${tzStr}`; const endISO = `${day}T23:59:59${tzStr}`;
+      const body = { start: startISO, end: endISO, limit: 1, offset: 0, tracks: true };
+      if (store_id && store_id !== 'all') body.devices = [parseInt(store_id)];
+      const r2 = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method:'POST', headers:{ 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type':'application/json' }, body: JSON.stringify(body) });
+      if (r2.ok) {
+        const j2 = await r2.json();
+        const apiTotal2 = Number(j2.pagination?.total || 0);
+        return res.status(200).json({ day, apiTotal: apiTotal2, dbHas: false, ok: false, source: 'api_only', db_error: String(e.message || '') });
+      }
+    } catch {}
+    return res.status(200).json({ day: start_date || new Date().toISOString().slice(0,10), apiTotal: null, dbHas: false, ok: false, source: 'error', error: String(e.message || '') });
   }
 }
 

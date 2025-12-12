@@ -1742,22 +1742,449 @@ async function backfillLocalTime(req, res) {
   try {
     const s = String(req.query.start_date || new Date().toISOString().slice(0,10));
     const e = String(req.query.end_date || s);
+    const storeId = String(req.query.store_id || '');
+    const batch = Math.max(1000, Math.min(20000, parseInt(String(req.query.batch || '5000'), 10) || 5000));
+    const maxBatches = Math.max(1, Math.min(20, parseInt(String(req.query.max_batches || '8'), 10) || 8));
     const start = new Date(s + 'T00:00:00Z');
     const end = new Date(e + 'T00:00:00Z');
     const days = [];
     for (let d = new Date(start); d <= end && days.length < 3; d = new Date(d.getTime() + 86400000)) {
       days.push(d.toISOString().slice(0,10));
     }
-    let total = 0;
+    const tzOffset = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
+    let total = 0; const details = [];
     for (const day of days) {
-      const tzOffset = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
-const upd = await pool.query(`
-        UPDATE visitors SET 
+      let processed = 0; let loops = 0;
+      while (loops < maxBatches) {
+        const where = storeId && storeId !== 'all' ? `day = $1 AND store_id = $2 AND timestamp IS NOT NULL` : `day = $1 AND timestamp IS NOT NULL`;
+        const sub = `SELECT ctid FROM visitors WHERE ${where} AND local_time IS NULL LIMIT ${batch}`;
+        const sql = `UPDATE visitors SET 
           local_time = CASE 
+            WHEN timestamp ~ '(Z|[+-]\\d{2}:\\d{2})
+function getDayOfWeek(timestamp) {
+  if (!timestamp) return '';
+  const DAYS = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+  const dm = String(timestamp).slice(0, 10);
+  const parts = dm.split('-').map(Number);
+  if (parts.length === 3) {
+    const dt = new Date(parts[0], parts[1] - 1, parts[2]);
+    return DAYS[dt.getDay()] || '';
+  }
+  return '';
+}
+
+function getHourFromTimestamp(timestamp) {
+  if (!timestamp) return 0;
+  const mt = String(timestamp).match(/(?:T|\s)(\d{2}):(\d{2}):(\d{2})/);
+  if (mt) return parseInt(mt[1], 10);
+  const d = new Date(timestamp);
+  const h = d.getHours();
+  return isNaN(h) ? 0 : h;
+}
+
+function getSmileStatus(attributes) {
+  if (!Array.isArray(attributes) || attributes.length === 0) return false;
+  const lastAttr = attributes[attributes.length - 1];
+  return String(lastAttr?.smile || '').toLowerCase() === 'yes';
+}
+ THEN to_char((timestamp::timestamptz + INTERVAL '${tzOffset} hour'), 'HH24:MI:SS')::time
+            ELSE substring(timestamp from 'T(\\d{2}:\\d{2}:\\d{2})')::time
+          END,
+          hour = CASE 
             WHEN timestamp ~ '(Z|[+-]\\d{2}:\\d{2})
       total += upd.rowCount || 0;
     }
     return res.status(200).json({ success:true, updated: total, processed_days: days });
+  } catch (e) {
+    return res.status(500).json({ success:false, error:e.message });
+  }
+}
+
+function getDayOfWeek(timestamp) {
+  if (!timestamp) return '';
+  const DAYS = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+  const d = new Date(timestamp);
+  const hasTZ = /([Z]|[+-]\d{2}:\d{2})$/.test(String(timestamp));
+  const local = hasTZ ? new Date(d.getTime() + (parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10) * 3600000)) : d;
+  return DAYS[local.getDay()] || '';
+}
+
+function getHourFromTimestamp(timestamp) {
+  if (!timestamp) return 0;
+  const d = new Date(timestamp);
+  const hasTZ = /([Z]|[+-]\d{2}:\d{2})$/.test(String(timestamp));
+  const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
+  const local = hasTZ ? new Date(d.getTime() + (tz * 3600000)) : d;
+  return local.getHours();
+}
+
+function getSmileStatus(attributes) {
+  if (!Array.isArray(attributes) || attributes.length === 0) return false;
+  const lastAttr = attributes[attributes.length - 1];
+  return String(lastAttr?.smile || '').toLowerCase() === 'yes';
+}
+ THEN EXTRACT(HOUR FROM to_char((timestamp::timestamptz + INTERVAL '${tzOffset} hour'), 'HH24:MI:SS')::time)
+            ELSE EXTRACT(HOUR FROM substring(timestamp from 'T(\\d{2}:\\d{2}:\\d{2})')::time)
+          END,
+          day = CASE 
+            WHEN timestamp ~ '(Z|[+-]\\d{2}:\\d{2})
+      total += upd.rowCount || 0;
+    }
+    return res.status(200).json({ success:true, updated: total, processed_days: days });
+  } catch (e) {
+    return res.status(500).json({ success:false, error:e.message });
+  }
+}
+
+function getDayOfWeek(timestamp) {
+  if (!timestamp) return '';
+  const DAYS = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+  const d = new Date(timestamp);
+  const hasTZ = /([Z]|[+-]\d{2}:\d{2})$/.test(String(timestamp));
+  const local = hasTZ ? new Date(d.getTime() + (parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10) * 3600000)) : d;
+  return DAYS[local.getDay()] || '';
+}
+
+function getHourFromTimestamp(timestamp) {
+  if (!timestamp) return 0;
+  const d = new Date(timestamp);
+  const hasTZ = /([Z]|[+-]\d{2}:\d{2})$/.test(String(timestamp));
+  const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
+  const local = hasTZ ? new Date(d.getTime() + (tz * 3600000)) : d;
+  return local.getHours();
+}
+
+function getSmileStatus(attributes) {
+  if (!Array.isArray(attributes) || attributes.length === 0) return false;
+  const lastAttr = attributes[attributes.length - 1];
+  return String(lastAttr?.smile || '').toLowerCase() === 'yes';
+}
+ THEN to_char((timestamp::timestamptz + INTERVAL '${tzOffset} hour'), 'YYYY-MM-DD')
+            ELSE substring(timestamp from '^(\\d{4}-\\d{2}-\\d{2})')
+          END
+        WHERE timestamp IS NOT NULL AND day = $1
+      `, [day]);
+      total += upd.rowCount || 0;
+    }
+    return res.status(200).json({ success:true, updated: total, processed_days: days });
+  } catch (e) {
+    return res.status(500).json({ success:false, error:e.message });
+  }
+}
+
+function getDayOfWeek(timestamp) {
+  if (!timestamp) return '';
+  const DAYS = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+  const d = new Date(timestamp);
+  const hasTZ = /([Z]|[+-]\d{2}:\d{2})$/.test(String(timestamp));
+  const local = hasTZ ? new Date(d.getTime() + (parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10) * 3600000)) : d;
+  return DAYS[local.getDay()] || '';
+}
+
+function getHourFromTimestamp(timestamp) {
+  if (!timestamp) return 0;
+  const d = new Date(timestamp);
+  const hasTZ = /([Z]|[+-]\d{2}:\d{2})$/.test(String(timestamp));
+  const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
+  const local = hasTZ ? new Date(d.getTime() + (tz * 3600000)) : d;
+  return local.getHours();
+}
+
+function getSmileStatus(attributes) {
+  if (!Array.isArray(attributes) || attributes.length === 0) return false;
+  const lastAttr = attributes[attributes.length - 1];
+  return String(lastAttr?.smile || '').toLowerCase() === 'yes';
+}
+ THEN to_char((timestamp::timestamptz + INTERVAL '${tzOffset} hour'), 'HH24:MI:SS')::time
+            ELSE substring(timestamp from 'T(\\d{2}:\\d{2}:\\d{2})')::time
+          END,
+          hour = CASE 
+            WHEN timestamp ~ '(Z|[+-]\\d{2}:\\d{2})
+function getDayOfWeek(timestamp) {
+  if (!timestamp) return '';
+  const DAYS = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+  const dm = String(timestamp).slice(0, 10);
+  const parts = dm.split('-').map(Number);
+  if (parts.length === 3) {
+    const dt = new Date(parts[0], parts[1] - 1, parts[2]);
+    return DAYS[dt.getDay()] || '';
+  }
+  return '';
+}
+
+function getHourFromTimestamp(timestamp) {
+  if (!timestamp) return 0;
+  const mt = String(timestamp).match(/(?:T|\s)(\d{2}):(\d{2}):(\d{2})/);
+  if (mt) return parseInt(mt[1], 10);
+  const d = new Date(timestamp);
+  const h = d.getHours();
+  return isNaN(h) ? 0 : h;
+}
+
+function getSmileStatus(attributes) {
+  if (!Array.isArray(attributes) || attributes.length === 0) return false;
+  const lastAttr = attributes[attributes.length - 1];
+  return String(lastAttr?.smile || '').toLowerCase() === 'yes';
+}
+ THEN to_char((timestamp::timestamptz + INTERVAL '${tzOffset} hour'), 'HH24:MI:SS')::time
+            ELSE substring(timestamp from 'T(\\d{2}:\\d{2}:\\d{2})')::time
+          END,
+          hour = CASE 
+            WHEN timestamp ~ '(Z|[+-]\\d{2}:\\d{2})
+      total += upd.rowCount || 0;
+    }
+    return res.status(200).json({ success:true, updated: total, processed_days: days });
+  } catch (e) {
+    return res.status(500).json({ success:false, error:e.message });
+  }
+}
+
+function getDayOfWeek(timestamp) {
+  if (!timestamp) return '';
+  const DAYS = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+  const d = new Date(timestamp);
+  const hasTZ = /([Z]|[+-]\d{2}:\d{2})$/.test(String(timestamp));
+  const local = hasTZ ? new Date(d.getTime() + (parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10) * 3600000)) : d;
+  return DAYS[local.getDay()] || '';
+}
+
+function getHourFromTimestamp(timestamp) {
+  if (!timestamp) return 0;
+  const d = new Date(timestamp);
+  const hasTZ = /([Z]|[+-]\d{2}:\d{2})$/.test(String(timestamp));
+  const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
+  const local = hasTZ ? new Date(d.getTime() + (tz * 3600000)) : d;
+  return local.getHours();
+}
+
+function getSmileStatus(attributes) {
+  if (!Array.isArray(attributes) || attributes.length === 0) return false;
+  const lastAttr = attributes[attributes.length - 1];
+  return String(lastAttr?.smile || '').toLowerCase() === 'yes';
+}
+ THEN EXTRACT(HOUR FROM to_char((timestamp::timestamptz + INTERVAL '${tzOffset} hour'), 'HH24:MI:SS')::time)
+            ELSE EXTRACT(HOUR FROM substring(timestamp from 'T(\\d{2}:\\d{2}:\\d{2})')::time)
+          END,
+          day = CASE 
+            WHEN timestamp ~ '(Z|[+-]\\d{2}:\\d{2})
+      total += upd.rowCount || 0;
+    }
+    return res.status(200).json({ success:true, updated: total, processed_days: days });
+  } catch (e) {
+    return res.status(500).json({ success:false, error:e.message });
+  }
+}
+
+function getDayOfWeek(timestamp) {
+  if (!timestamp) return '';
+  const DAYS = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+  const d = new Date(timestamp);
+  const hasTZ = /([Z]|[+-]\d{2}:\d{2})$/.test(String(timestamp));
+  const local = hasTZ ? new Date(d.getTime() + (parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10) * 3600000)) : d;
+  return DAYS[local.getDay()] || '';
+}
+
+function getHourFromTimestamp(timestamp) {
+  if (!timestamp) return 0;
+  const d = new Date(timestamp);
+  const hasTZ = /([Z]|[+-]\d{2}:\d{2})$/.test(String(timestamp));
+  const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
+  const local = hasTZ ? new Date(d.getTime() + (tz * 3600000)) : d;
+  return local.getHours();
+}
+
+function getSmileStatus(attributes) {
+  if (!Array.isArray(attributes) || attributes.length === 0) return false;
+  const lastAttr = attributes[attributes.length - 1];
+  return String(lastAttr?.smile || '').toLowerCase() === 'yes';
+}
+ THEN to_char((timestamp::timestamptz + INTERVAL '${tzOffset} hour'), 'YYYY-MM-DD')
+            ELSE substring(timestamp from '^(\\d{4}-\\d{2}-\\d{2})')
+          END
+        WHERE timestamp IS NOT NULL AND day = $1
+      `, [day]);
+      total += upd.rowCount || 0;
+    }
+    return res.status(200).json({ success:true, updated: total, processed_days: days });
+  } catch (e) {
+    return res.status(500).json({ success:false, error:e.message });
+  }
+}
+
+function getDayOfWeek(timestamp) {
+  if (!timestamp) return '';
+  const DAYS = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+  const d = new Date(timestamp);
+  const hasTZ = /([Z]|[+-]\d{2}:\d{2})$/.test(String(timestamp));
+  const local = hasTZ ? new Date(d.getTime() + (parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10) * 3600000)) : d;
+  return DAYS[local.getDay()] || '';
+}
+
+function getHourFromTimestamp(timestamp) {
+  if (!timestamp) return 0;
+  const d = new Date(timestamp);
+  const hasTZ = /([Z]|[+-]\d{2}:\d{2})$/.test(String(timestamp));
+  const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
+  const local = hasTZ ? new Date(d.getTime() + (tz * 3600000)) : d;
+  return local.getHours();
+}
+
+function getSmileStatus(attributes) {
+  if (!Array.isArray(attributes) || attributes.length === 0) return false;
+  const lastAttr = attributes[attributes.length - 1];
+  return String(lastAttr?.smile || '').toLowerCase() === 'yes';
+}
+ THEN EXTRACT(HOUR FROM to_char((timestamp::timestamptz + INTERVAL '${tzOffset} hour'), 'HH24:MI:SS')::time)
+            ELSE EXTRACT(HOUR FROM substring(timestamp from 'T(\\d{2}:\\d{2}:\\d{2})')::time)
+          END,
+          day = CASE 
+            WHEN timestamp ~ '(Z|[+-]\\d{2}:\\d{2})
+function getDayOfWeek(timestamp) {
+  if (!timestamp) return '';
+  const DAYS = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+  const dm = String(timestamp).slice(0, 10);
+  const parts = dm.split('-').map(Number);
+  if (parts.length === 3) {
+    const dt = new Date(parts[0], parts[1] - 1, parts[2]);
+    return DAYS[dt.getDay()] || '';
+  }
+  return '';
+}
+
+function getHourFromTimestamp(timestamp) {
+  if (!timestamp) return 0;
+  const mt = String(timestamp).match(/(?:T|\s)(\d{2}):(\d{2}):(\d{2})/);
+  if (mt) return parseInt(mt[1], 10);
+  const d = new Date(timestamp);
+  const h = d.getHours();
+  return isNaN(h) ? 0 : h;
+}
+
+function getSmileStatus(attributes) {
+  if (!Array.isArray(attributes) || attributes.length === 0) return false;
+  const lastAttr = attributes[attributes.length - 1];
+  return String(lastAttr?.smile || '').toLowerCase() === 'yes';
+}
+ THEN to_char((timestamp::timestamptz + INTERVAL '${tzOffset} hour'), 'HH24:MI:SS')::time
+            ELSE substring(timestamp from 'T(\\d{2}:\\d{2}:\\d{2})')::time
+          END,
+          hour = CASE 
+            WHEN timestamp ~ '(Z|[+-]\\d{2}:\\d{2})
+      total += upd.rowCount || 0;
+    }
+    return res.status(200).json({ success:true, updated: total, processed_days: days });
+  } catch (e) {
+    return res.status(500).json({ success:false, error:e.message });
+  }
+}
+
+function getDayOfWeek(timestamp) {
+  if (!timestamp) return '';
+  const DAYS = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+  const d = new Date(timestamp);
+  const hasTZ = /([Z]|[+-]\d{2}:\d{2})$/.test(String(timestamp));
+  const local = hasTZ ? new Date(d.getTime() + (parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10) * 3600000)) : d;
+  return DAYS[local.getDay()] || '';
+}
+
+function getHourFromTimestamp(timestamp) {
+  if (!timestamp) return 0;
+  const d = new Date(timestamp);
+  const hasTZ = /([Z]|[+-]\d{2}:\d{2})$/.test(String(timestamp));
+  const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
+  const local = hasTZ ? new Date(d.getTime() + (tz * 3600000)) : d;
+  return local.getHours();
+}
+
+function getSmileStatus(attributes) {
+  if (!Array.isArray(attributes) || attributes.length === 0) return false;
+  const lastAttr = attributes[attributes.length - 1];
+  return String(lastAttr?.smile || '').toLowerCase() === 'yes';
+}
+ THEN EXTRACT(HOUR FROM to_char((timestamp::timestamptz + INTERVAL '${tzOffset} hour'), 'HH24:MI:SS')::time)
+            ELSE EXTRACT(HOUR FROM substring(timestamp from 'T(\\d{2}:\\d{2}:\\d{2})')::time)
+          END,
+          day = CASE 
+            WHEN timestamp ~ '(Z|[+-]\\d{2}:\\d{2})
+      total += upd.rowCount || 0;
+    }
+    return res.status(200).json({ success:true, updated: total, processed_days: days });
+  } catch (e) {
+    return res.status(500).json({ success:false, error:e.message });
+  }
+}
+
+function getDayOfWeek(timestamp) {
+  if (!timestamp) return '';
+  const DAYS = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+  const d = new Date(timestamp);
+  const hasTZ = /([Z]|[+-]\d{2}:\d{2})$/.test(String(timestamp));
+  const local = hasTZ ? new Date(d.getTime() + (parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10) * 3600000)) : d;
+  return DAYS[local.getDay()] || '';
+}
+
+function getHourFromTimestamp(timestamp) {
+  if (!timestamp) return 0;
+  const d = new Date(timestamp);
+  const hasTZ = /([Z]|[+-]\d{2}:\d{2})$/.test(String(timestamp));
+  const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
+  const local = hasTZ ? new Date(d.getTime() + (tz * 3600000)) : d;
+  return local.getHours();
+}
+
+function getSmileStatus(attributes) {
+  if (!Array.isArray(attributes) || attributes.length === 0) return false;
+  const lastAttr = attributes[attributes.length - 1];
+  return String(lastAttr?.smile || '').toLowerCase() === 'yes';
+}
+ THEN to_char((timestamp::timestamptz + INTERVAL '${tzOffset} hour'), 'YYYY-MM-DD')
+            ELSE substring(timestamp from '^(\\d{4}-\\d{2}-\\d{2})')
+          END
+        WHERE timestamp IS NOT NULL AND day = $1
+      `, [day]);
+      total += upd.rowCount || 0;
+    }
+    return res.status(200).json({ success:true, updated: total, processed_days: days });
+  } catch (e) {
+    return res.status(500).json({ success:false, error:e.message });
+  }
+}
+
+function getDayOfWeek(timestamp) {
+  if (!timestamp) return '';
+  const DAYS = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+  const d = new Date(timestamp);
+  const hasTZ = /([Z]|[+-]\d{2}:\d{2})$/.test(String(timestamp));
+  const local = hasTZ ? new Date(d.getTime() + (parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10) * 3600000)) : d;
+  return DAYS[local.getDay()] || '';
+}
+
+function getHourFromTimestamp(timestamp) {
+  if (!timestamp) return 0;
+  const d = new Date(timestamp);
+  const hasTZ = /([Z]|[+-]\d{2}:\d{2})$/.test(String(timestamp));
+  const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
+  const local = hasTZ ? new Date(d.getTime() + (tz * 3600000)) : d;
+  return local.getHours();
+}
+
+function getSmileStatus(attributes) {
+  if (!Array.isArray(attributes) || attributes.length === 0) return false;
+  const lastAttr = attributes[attributes.length - 1];
+  return String(lastAttr?.smile || '').toLowerCase() === 'yes';
+}
+ THEN to_char((timestamp::timestamptz + INTERVAL '${tzOffset} hour'), 'YYYY-MM-DD')
+            ELSE substring(timestamp from '^(\\d{4}-\\d{2}-\\d{2})')
+          END
+        WHERE ctid IN (${sub})`;
+        const params = storeId && storeId !== 'all' ? [day, storeId] : [day];
+        const upd = await pool.query(sql, params);
+        if (!upd.rowCount) break;
+        processed += upd.rowCount; loops++;
+      }
+      total += processed; details.push({ day, updated: processed, loops });
+    }
+    return res.status(200).json({ success:true, updated: total, processed_days: details });
   } catch (e) {
     return res.status(500).json({ success:false, error:e.message });
   }

@@ -547,13 +547,13 @@ async function calculateRealTimeSummary(res, start_date, end_date, store_id) {
         SUM(CASE WHEN age BETWEEN 36 AND 45 THEN 1 ELSE 0 END) AS age_36_45,
         SUM(CASE WHEN age BETWEEN 46 AND 60 THEN 1 ELSE 0 END) AS age_46_60,
         SUM(CASE WHEN age > 60 THEN 1 ELSE 0 END) AS age_60_plus,
-        SUM(CASE WHEN day_of_week = 'Dom' THEN 1 ELSE 0 END) AS sunday,
-        SUM(CASE WHEN day_of_week = 'Seg' THEN 1 ELSE 0 END) AS monday,
-        SUM(CASE WHEN day_of_week = 'Ter' THEN 1 ELSE 0 END) AS tuesday,
-        SUM(CASE WHEN day_of_week = 'Qua' THEN 1 ELSE 0 END) AS wednesday,
-        SUM(CASE WHEN day_of_week = 'Qui' THEN 1 ELSE 0 END) AS thursday,
-        SUM(CASE WHEN day_of_week = 'Sex' THEN 1 ELSE 0 END) AS friday,
-        SUM(CASE WHEN day_of_week = 'Sáb' THEN 1 ELSE 0 END) AS saturday
+        SUM(CASE WHEN EXTRACT(DOW FROM day::date) = 0 THEN 1 ELSE 0 END) AS sunday,
+        SUM(CASE WHEN EXTRACT(DOW FROM day::date) = 1 THEN 1 ELSE 0 END) AS monday,
+        SUM(CASE WHEN EXTRACT(DOW FROM day::date) = 2 THEN 1 ELSE 0 END) AS tuesday,
+        SUM(CASE WHEN EXTRACT(DOW FROM day::date) = 3 THEN 1 ELSE 0 END) AS wednesday,
+        SUM(CASE WHEN EXTRACT(DOW FROM day::date) = 4 THEN 1 ELSE 0 END) AS thursday,
+        SUM(CASE WHEN EXTRACT(DOW FROM day::date) = 5 THEN 1 ELSE 0 END) AS friday,
+        SUM(CASE WHEN EXTRACT(DOW FROM day::date) = 6 THEN 1 ELSE 0 END) AS saturday
       FROM visitors
       WHERE day >= $1 AND day <= $2
     `;
@@ -705,13 +705,13 @@ async function calculateDailyStatsForDate(date, device_id) {
       SUM(CASE WHEN age BETWEEN 36 AND 45 THEN 1 ELSE 0 END) AS age_36_45,
       SUM(CASE WHEN age BETWEEN 46 AND 60 THEN 1 ELSE 0 END) AS age_46_60,
       SUM(CASE WHEN age > 60 THEN 1 ELSE 0 END) AS age_60_plus,
-      SUM(CASE WHEN day_of_week = 'Dom' THEN 1 ELSE 0 END) AS sunday,
-      SUM(CASE WHEN day_of_week = 'Seg' THEN 1 ELSE 0 END) AS monday,
-      SUM(CASE WHEN day_of_week = 'Ter' THEN 1 ELSE 0 END) AS tuesday,
-      SUM(CASE WHEN day_of_week = 'Qua' THEN 1 ELSE 0 END) AS wednesday,
-      SUM(CASE WHEN day_of_week = 'Qui' THEN 1 ELSE 0 END) AS thursday,
-      SUM(CASE WHEN day_of_week = 'Sex' THEN 1 ELSE 0 END) AS friday,
-      SUM(CASE WHEN day_of_week = 'Sáb' THEN 1 ELSE 0 END) AS saturday
+      SUM(CASE WHEN EXTRACT(DOW FROM day::date) = 0 THEN 1 ELSE 0 END) AS sunday,
+      SUM(CASE WHEN EXTRACT(DOW FROM day::date) = 1 THEN 1 ELSE 0 END) AS monday,
+      SUM(CASE WHEN EXTRACT(DOW FROM day::date) = 2 THEN 1 ELSE 0 END) AS tuesday,
+      SUM(CASE WHEN EXTRACT(DOW FROM day::date) = 3 THEN 1 ELSE 0 END) AS wednesday,
+      SUM(CASE WHEN EXTRACT(DOW FROM day::date) = 4 THEN 1 ELSE 0 END) AS thursday,
+      SUM(CASE WHEN EXTRACT(DOW FROM day::date) = 5 THEN 1 ELSE 0 END) AS friday,
+      SUM(CASE WHEN EXTRACT(DOW FROM day::date) = 6 THEN 1 ELSE 0 END) AS saturday
     FROM visitors
     WHERE day = $1
   `;

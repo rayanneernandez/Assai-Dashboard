@@ -1236,10 +1236,43 @@ async function getVisitors(req, res, start_date, end_date, store_id) {
     
   } catch (error) {
     console.error("❌ Visitors error:", error);
-    return res.status(500).json({
-      success: false,
-      error: error.message
-    });
+    try {
+      let lastQ = `SELECT MAX(day) AS last_day FROM visitors`;
+      const p = [];
+      if (store_id && store_id !== 'all') { lastQ += ` WHERE store_id = $1`; p.push(store_id); }
+      const lr = await pool.query(lastQ, p);
+      const lastDay = String(lr.rows?.[0]?.last_day || '');
+      if (lastDay) {
+        let q2 = `
+          SELECT 
+            visitor_id, day, store_id, store_name, timestamp, gender, age, day_of_week, smile, hour, local_time
+          FROM visitors
+          WHERE day = $1`;
+        const p2 = [lastDay];
+        if (store_id && store_id !== 'all') { q2 += ` AND store_id = $2`; p2.push(store_id); }
+        q2 += ` ORDER BY timestamp DESC LIMIT 1000`;
+        const r2 = await pool.query(q2, p2);
+        return res.status(200).json({
+          success: true,
+          data: r2.rows.map(row => ({
+            id: row.visitor_id,
+            date: row.day,
+            store_id: row.store_id,
+            store_name: row.store_name,
+            timestamp: row.timestamp,
+            gender: row.gender === 'M' ? 'Masculino' : row.gender === 'F' ? 'Feminino' : 'Desconhecido',
+            age: row.age,
+            day_of_week: row.day_of_week,
+            smile: row.smile,
+            hour: row.hour,
+            local_time: row.local_time
+          })),
+          count: r2.rows.length,
+          source: 'fallback_last_available'
+        });
+      }
+    } catch {}
+    return res.status(200).json({ success: true, data: [], count: 0, source: 'empty_fallback' });
   }
 }
 

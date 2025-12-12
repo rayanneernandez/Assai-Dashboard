@@ -891,15 +891,12 @@ async function saveVisitorsToDatabase(visitors) {
         continue;
       }
       
-      const hasTZ = /([Z]|[+-]\d{2}:\d{2})$/.test(String(timestamp));
-      const localDate = hasTZ ? new Date(dateObj.getTime() + (tz * 3600000)) : dateObj;
-      const localTime = `${String(localDate.getHours()).padStart(2,'0')}:${String(localDate.getMinutes()).padStart(2,'0')}:${String(localDate.getSeconds()).padStart(2,'0')}`;
-      const hour = localDate.getHours();
-      const y = localDate.getFullYear();
-      const m = String(localDate.getMonth() + 1).padStart(2, '0');
-      const d = String(localDate.getDate()).padStart(2, '0');
-      const dateStr = `${y}-${m}-${d}`;
-      const dayOfWeek = DAYS[localDate.getDay()];
+      const mt = String(timestamp).match(/(?:T|\s)(\d{2}:\d{2}:\d{2})/);
+      const localTime = mt ? mt[1] : `${String(dateObj.getHours()).padStart(2,'0')}:${String(dateObj.getMinutes()).padStart(2,'0')}:${String(dateObj.getSeconds()).padStart(2,'0')}`;
+      const hour = parseInt(localTime.slice(0,2), 10);
+      const dm = String(timestamp).match(/^(\d{4}-\d{2}-\d{2})/);
+      const dateStr = dm ? dm[1] : new Date().toISOString().slice(0,10);
+      const dayOfWeek = DAYS[new Date(`${dateStr}T12:00:00`).getDay()];
       
       let deviceId = '';
       let storeName = '';
@@ -1016,11 +1013,12 @@ function aggregateVisitors(visitors) {
   const byAgeGender = { "<20":{male:0,female:0}, "20-29":{male:0,female:0}, "30-45":{male:0,female:0}, ">45":{male:0,female:0} };
   const visitsByDay = { Sunday:0, Monday:0, Tuesday:0, Wednesday:0, Thursday:0, Friday:0, Saturday:0 };
   let total=0, male=0, female=0, avgAgeSum=0, avgAgeCount=0;
-  const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
   for (const v of visitors || []) {
     const ts = String(v.start ?? v.tracks?.[0]?.start ?? v.timestamp ?? new Date().toISOString());
-    const d = new Date(ts); const local = new Date(d.getTime() + (tz*3600000));
-    const h = local.getHours(); const dowEn = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][local.getDay()];
+    const mt = ts.match(/(?:T|\s)(\d{2}):(\d{2}):(\d{2})/);
+    const h = mt ? parseInt(mt[1], 10) : new Date(ts).getHours();
+    const dm = ts.match(/^(\d{4}-\d{2}-\d{2})/);
+    const dowEn = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][new Date(`${(dm?dm[1]:new Date().toISOString().slice(0,10))}T12:00:00`).getDay()];
     byHour[h] = (byHour[h]||0)+1;
     const gRaw = (v.sex===1?'M':(v.sex===2?'F':String(v.gender||'').toUpperCase().startsWith('M')?'M':'F'));
     if (gRaw==='M'){ male++; byGenderHour.male[h]=(byGenderHour.male[h]||0)+1; } else { female++; byGenderHour.female[h]=(byGenderHour.female[h]||0)+1; }
@@ -1768,19 +1766,22 @@ const upd = await pool.query(`
 function getDayOfWeek(timestamp) {
   if (!timestamp) return '';
   const DAYS = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
-  const d = new Date(timestamp);
-  const hasTZ = /([Z]|[+-]\d{2}:\d{2})$/.test(String(timestamp));
-  const local = hasTZ ? new Date(d.getTime() + (parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10) * 3600000)) : d;
-  return DAYS[local.getDay()] || '';
+  const dm = String(timestamp).slice(0, 10);
+  const parts = dm.split('-').map(Number);
+  if (parts.length === 3) {
+    const dt = new Date(parts[0], parts[1] - 1, parts[2]);
+    return DAYS[dt.getDay()] || '';
+  }
+  return '';
 }
 
 function getHourFromTimestamp(timestamp) {
   if (!timestamp) return 0;
+  const mt = String(timestamp).match(/(?:T|\s)(\d{2}):(\d{2}):(\d{2})/);
+  if (mt) return parseInt(mt[1], 10);
   const d = new Date(timestamp);
-  const hasTZ = /([Z]|[+-]\d{2}:\d{2})$/.test(String(timestamp));
-  const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
-  const local = hasTZ ? new Date(d.getTime() + (tz * 3600000)) : d;
-  return local.getHours();
+  const h = d.getHours();
+  return isNaN(h) ? 0 : h;
 }
 
 function getSmileStatus(attributes) {

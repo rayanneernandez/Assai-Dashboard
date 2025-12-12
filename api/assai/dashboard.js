@@ -611,10 +611,47 @@ async function calculateRealTimeSummary(res, start_date, end_date, store_id) {
     const avgAgeCount = Number(row.avg_age_count || 0);
     const averageAge = avgAgeCount > 0 ? Math.round(Number(row.avg_age_sum || 0) / avgAgeCount) : 0;
     
-    const hourlyData = await getHourlyAggregatesWithRealTime(sDate, eDate, store_id);
-    
-    const ageGenderData = await getAgeGenderDistribution(sDate, eDate, store_id);
-    
+    let useStart = sDate; let useEnd = eDate; let source = 'realtime_calculation';
+    if (totalRealTime === 0) {
+      let lastQ = `SELECT MAX(day) AS last_day FROM visitors`;
+      const p = [];
+      if (store_id && store_id !== 'all') { lastQ += ` WHERE store_id = $1`; p.push(store_id); }
+      const lr = await pool.query(lastQ, p);
+      const lastDay = String(lr.rows?.[0]?.last_day || '');
+      if (lastDay) {
+        useStart = lastDay; useEnd = lastDay; source = 'fallback_last_available';
+        let q2 = `
+          SELECT 
+            COUNT(*) AS total_visitors,
+            SUM(CASE WHEN gender = 'M' THEN 1 ELSE 0 END) AS male,
+            SUM(CASE WHEN gender = 'F' THEN 1 ELSE 0 END) AS female,
+            SUM(age) AS avg_age_sum,
+            SUM(CASE WHEN age > 0 THEN 1 ELSE 0 END) AS avg_age_count,
+            SUM(CASE WHEN age BETWEEN 18 AND 25 THEN 1 ELSE 0 END) AS age_18_25,
+            SUM(CASE WHEN age BETWEEN 26 AND 35 THEN 1 ELSE 0 END) AS age_26_35,
+            SUM(CASE WHEN age BETWEEN 36 AND 45 THEN 1 ELSE 0 END) AS age_36_45,
+            SUM(CASE WHEN age BETWEEN 46 AND 60 THEN 1 ELSE 0 END) AS age_46_60,
+            SUM(CASE WHEN age > 60 THEN 1 ELSE 0 END) AS age_60_plus,
+            SUM(CASE WHEN day_of_week = 'Dom' THEN 1 ELSE 0 END) AS sunday,
+            SUM(CASE WHEN day_of_week = 'Seg' THEN 1 ELSE 0 END) AS monday,
+            SUM(CASE WHEN day_of_week = 'Ter' THEN 1 ELSE 0 END) AS tuesday,
+            SUM(CASE WHEN day_of_week = 'Qua' THEN 1 ELSE 0 END) AS wednesday,
+            SUM(CASE WHEN day_of_week = 'Qui' THEN 1 ELSE 0 END) AS thursday,
+            SUM(CASE WHEN day_of_week = 'Sex' THEN 1 ELSE 0 END) AS friday,
+            SUM(CASE WHEN day_of_week = 'Sáb' THEN 1 ELSE 0 END) AS saturday
+          FROM visitors
+          WHERE day = $1`;
+        const p2 = [useStart];
+        if (store_id && store_id !== 'all') { q2 += ` AND store_id = $2`; p2.push(store_id); }
+        const r2 = await pool.query(q2, p2);
+        row = r2.rows[0] || row;
+        totalRealTime = Number(row.total_visitors || 0);
+        const avgCount2 = Number(row.avg_age_count || 0);
+        averageAge = avgCount2 > 0 ? Math.round(Number(row.avg_age_sum || 0) / avgCount2) : 0;
+      }
+    }
+    const hourlyData = await getHourlyAggregatesWithRealTime(useStart, useEnd, store_id);
+    const ageGenderData = await getAgeGenderDistribution(useStart, useEnd, store_id);
     const response = {
       success: true,
       totalVisitors: totalRealTime,
@@ -640,8 +677,8 @@ async function calculateRealTimeSummary(res, start_date, end_date, store_id) {
       byAgeGender: ageGenderData,
       byHour: hourlyData.byHour,
       byGenderHour: hourlyData.byGenderHour,
-      source: 'realtime_calculation',
-      period: `${sDate} - ${eDate}`
+      source: source,
+      period: `${useStart} - ${useEnd}`
     };
     
     return res.status(200).json(response);
@@ -793,15 +830,10 @@ async function saveVisitorsToDatabase(visitors, forcedDay) {
         continue;
       }
       
-      const localDate = new Date(dateObj.getTime() + (tz * 3600000));
-      let localTime = '';
-      const mt = String(timestamp).match(/T(\d{2}:\d{2}:\d{2})/);
-      if (mt) {
-        localTime = mt[1];
-      } else {
-        localTime = `${String(localDate.getHours()).padStart(2,'0')}:${String(localDate.getMinutes()).padStart(2,'0')}:${String(localDate.getSeconds()).padStart(2,'0')}`;
-      }
-      const hour = parseInt(localTime.slice(0,2), 10);
+      const hasTZ = /([Z]|[+-]\d{2}:\d{2})$/.test(String(timestamp));
+      const localDate = hasTZ ? new Date(dateObj.getTime() + (tz * 3600000)) : dateObj;
+      const localTime = `${String(localDate.getHours()).padStart(2,'0')}:${String(localDate.getMinutes()).padStart(2,'0')}:${String(localDate.getSeconds()).padStart(2,'0')}`;
+      const hour = localDate.getHours();
       const y = localDate.getFullYear();
       const m = String(localDate.getMonth() + 1).padStart(2, '0');
       const d = String(localDate.getDate()).padStart(2, '0');
@@ -1625,16 +1657,19 @@ async function backfillLocalTime(req, res) {
 function getDayOfWeek(timestamp) {
   if (!timestamp) return '';
   const DAYS = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
-  const date = new Date(timestamp);
-  return DAYS[date.getDay()] || '';
+  const d = new Date(timestamp);
+  const hasTZ = /([Z]|[+-]\d{2}:\d{2})$/.test(String(timestamp));
+  const local = hasTZ ? new Date(d.getTime() + (parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10) * 3600000)) : d;
+  return DAYS[local.getDay()] || '';
 }
 
 function getHourFromTimestamp(timestamp) {
   if (!timestamp) return 0;
-  const date = new Date(timestamp);
+  const d = new Date(timestamp);
+  const hasTZ = /([Z]|[+-]\d{2}:\d{2})$/.test(String(timestamp));
   const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
-  const localDate = new Date(date.getTime() + (tz * 3600000));
-  return localDate.getHours();
+  const local = hasTZ ? new Date(d.getTime() + (tz * 3600000)) : d;
+  return local.getHours();
 }
 
 function getSmileStatus(attributes) {

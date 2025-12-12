@@ -403,7 +403,7 @@ async function getHourlyAggregatesWithRealTime(start_date, end_date, store_id) {
     const tzStr = `${sign}${hh}:00`;
     const startISO = `${start_date}T00:00:00${tzStr}`;
     const endISO = `${end_date}T23:59:59${tzStr}`;
-    const hourExpr = `COALESCE(EXTRACT(HOUR FROM local_time::time), hour)`;
+    const hourExpr = `EXTRACT(HOUR FROM local_time::time)`;
     let query = `
       SELECT 
         ${hourExpr} AS hour,
@@ -411,7 +411,7 @@ async function getHourlyAggregatesWithRealTime(start_date, end_date, store_id) {
         SUM(CASE WHEN gender = 'M' THEN 1 ELSE 0 END) AS male,
         SUM(CASE WHEN gender = 'F' THEN 1 ELSE 0 END) AS female
       FROM visitors
-      WHERE day >= $1 AND day <= $2
+      WHERE day >= $1 AND day <= $2 AND local_time IS NOT NULL
     `;
     
     const params = [start_date, end_date];
@@ -1440,8 +1440,85 @@ async function ensureIndexes(req, res) {
 
 async function backfillLocalTime(req, res) {
   try {
-    const upd = await pool.query("UPDATE visitors SET local_time = to_char(timestamp, 'HH24:MI:SS')::time, hour = EXTRACT(HOUR FROM to_char(timestamp, 'HH24:MI:SS')::time) WHERE local_time IS NULL AND timestamp IS NOT NULL");
-    return res.status(200).json({ success:true, updated: upd.rowCount });
+    const s = String(req.query.start_date || new Date().toISOString().slice(0,10));
+    const e = String(req.query.end_date || s);
+    const storeId = String(req.query.store_id || '');
+    const batch = Math.max(100, Math.min(5000, parseInt(String(req.query.batch || '1000'), 10) || 1000));
+    const maxBatches = Math.max(1, Math.min(50, parseInt(String(req.query.max_batches || '20'), 10) || 20));
+    const tzName = process.env.PG_TIMEZONE || 'America/Sao_Paulo';
+    const start = new Date(s + 'T00:00:00Z');
+    const end = new Date(e + 'T00:00:00Z');
+    const days = [];
+    for (let d = new Date(start); d <= end && days.length < 7; d = new Date(d.getTime() + 86400000)) {
+      days.push(d.toISOString().slice(0,10));
+    }
+    let total = 0;
+    for (const day of days) {
+      let loops = 0;
+      while (loops < maxBatches) {
+        const where = storeId && storeId !== 'all' ? `day = $1 AND store_id = $2 AND timestamp IS NOT NULL` : `day = $1 AND timestamp IS NOT NULL`;
+        const params = storeId && storeId !== 'all' ? [day, storeId] : [day];
+        const sql = `UPDATE visitors SET 
+          local_time = CASE 
+            WHEN timestamp::text ~ '(Z|[+-]\\d{2}:\\d{2})
+
+function getDayOfWeek(timestamp) {
+  if (!timestamp) return '';
+  const DAYS = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+  const date = new Date(timestamp);
+  return DAYS[date.getDay()] || '';
+}
+
+function getHourFromTimestamp(timestamp) {
+  if (!timestamp) return 0;
+  const date = new Date(timestamp);
+  const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
+  const localDate = new Date(date.getTime() + (tz * 3600000));
+  return localDate.getHours();
+}
+
+function getSmileStatus(attributes) {
+  if (!Array.isArray(attributes) || attributes.length === 0) return false;
+  const lastAttr = attributes[attributes.length - 1];
+  return String(lastAttr?.smile || '').toLowerCase() === 'yes';
+} THEN (to_char((timestamp AT TIME ZONE '${tzName}'), 'HH24:MI:SS'))::time 
+            ELSE (to_char(timestamp, 'HH24:MI:SS'))::time 
+          END,
+          hour = EXTRACT(HOUR FROM CASE 
+            WHEN timestamp::text ~ '(Z|[+-]\\d{2}:\\d{2})
+
+function getDayOfWeek(timestamp) {
+  if (!timestamp) return '';
+  const DAYS = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+  const date = new Date(timestamp);
+  return DAYS[date.getDay()] || '';
+}
+
+function getHourFromTimestamp(timestamp) {
+  if (!timestamp) return 0;
+  const date = new Date(timestamp);
+  const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
+  const localDate = new Date(date.getTime() + (tz * 3600000));
+  return localDate.getHours();
+}
+
+function getSmileStatus(attributes) {
+  if (!Array.isArray(attributes) || attributes.length === 0) return false;
+  const lastAttr = attributes[attributes.length - 1];
+  return String(lastAttr?.smile || '').toLowerCase() === 'yes';
+} THEN (to_char((timestamp AT TIME ZONE '${tzName}'), 'HH24:MI:SS'))::time 
+            ELSE (to_char(timestamp, 'HH24:MI:SS'))::time 
+          END)
+        WHERE ctid IN (
+          SELECT ctid FROM visitors WHERE ${where} AND local_time IS NULL LIMIT ${batch}
+        )`;
+        const upd = await pool.query(sql, params);
+        if (!upd.rowCount) break;
+        total += upd.rowCount || 0;
+        loops++;
+      }
+    }
+    return res.status(200).json({ success:true, updated: total, batch, max_batches: maxBatches, processed_days: days });
   } catch (e) {
     return res.status(500).json({ success:false, error:e.message });
   }

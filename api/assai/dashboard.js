@@ -1443,7 +1443,7 @@ async function backfillLocalTime(req, res) {
     const s = String(req.query.start_date || new Date().toISOString().slice(0,10));
     const e = String(req.query.end_date || s);
     const storeId = String(req.query.store_id || '');
-    const batch = Math.max(100, Math.min(5000, parseInt(String(req.query.batch || '1000'), 10) || 1000));
+    const batch = Math.max(50, Math.min(2000, parseInt(String(req.query.batch || '500'), 10) || 500));
     const maxBatches = Math.max(1, Math.min(50, parseInt(String(req.query.max_batches || '20'), 10) || 20));
     const tzName = process.env.PG_TIMEZONE || 'America/Sao_Paulo';
     const start = new Date(s + 'T00:00:00Z');
@@ -1461,7 +1461,6 @@ async function backfillLocalTime(req, res) {
         const sql = `UPDATE visitors SET 
           local_time = CASE 
             WHEN timestamp::text ~ '(Z|[+-]\\d{2}:\\d{2})
-
 function getDayOfWeek(timestamp) {
   if (!timestamp) return '';
   const DAYS = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
@@ -1486,7 +1485,6 @@ function getSmileStatus(attributes) {
           END,
           hour = EXTRACT(HOUR FROM CASE 
             WHEN timestamp::text ~ '(Z|[+-]\\d{2}:\\d{2})
-
 function getDayOfWeek(timestamp) {
   if (!timestamp) return '';
   const DAYS = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];

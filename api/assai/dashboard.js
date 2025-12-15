@@ -750,14 +750,27 @@ async function saveVisitorsToDatabase(visitors, forcedDay) {
   const BATCH_SIZE = 200; let savedCount = 0;
   for (let i = 0; i < records.length; i += BATCH_SIZE) {
     const chunk = records.slice(i, i + BATCH_SIZE);
-    const params = [];
-    const values = chunk.map((r, idx) => {
-      const base = idx * 10;
-      params.push(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], r[9]);
-      return `(${base+1}, ${base+2}, ${base+3}, ${base+4}, ${base+5}, ${base+6}, ${base+7}, ${base+8}, ${base+9}, EXTRACT(HOUR FROM ${base+10}::time), ${base+10}::time)`;
-    }).join(', ');
-    const sql = `INSERT INTO visitors (visitor_id, day, store_id, store_name, timestamp, gender, age, day_of_week, smile, hour, local_time) VALUES ${values} ON CONFLICT (visitor_id, timestamp) DO UPDATE SET day=EXCLUDED.day, store_id=EXCLUDED.store_id, store_name=EXCLUDED.store_name, gender=EXCLUDED.gender, age=EXCLUDED.age, day_of_week=EXCLUDED.day_of_week, smile=EXCLUDED.smile, hour=EXTRACT(HOUR FROM EXCLUDED.local_time::time), local_time=EXCLUDED.local_time`;
-    try { await q(sql, params); savedCount += chunk.length; } catch (e) {}
+    if (process.env.INSERT_ONE_BY_ONE === '1') {
+      for (const r of chunk) {
+        const sql1 = `INSERT INTO visitors (
+          visitor_id, day, store_id, store_name, timestamp, gender, age, day_of_week, smile, hour, local_time
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,EXTRACT(HOUR FROM $10::time),$10::time)
+        ON CONFLICT (visitor_id, timestamp) DO UPDATE SET
+          day=EXCLUDED.day, store_id=EXCLUDED.store_id, store_name=EXCLUDED.store_name,
+          gender=EXCLUDED.gender, age=EXCLUDED.age, day_of_week=EXCLUDED.day_of_week,
+          smile=EXCLUDED.smile, hour=EXTRACT(HOUR FROM EXCLUDED.local_time::time), local_time=EXCLUDED.local_time`;
+        try { await q(sql1, r); savedCount += 1; } catch (e) {}
+      }
+    } else {
+      const params = [];
+      const values = chunk.map((r, idx) => {
+        const base = idx * 10;
+        params.push(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], r[9]);
+        return `(${base+1}, ${base+2}, ${base+3}, ${base+4}, ${base+5}, ${base+6}, ${base+7}, ${base+8}, ${base+9}, EXTRACT(HOUR FROM ${base+10}::time), ${base+10}::time)`;
+      }).join(', ');
+      const sql = `INSERT INTO visitors (visitor_id, day, store_id, store_name, timestamp, gender, age, day_of_week, smile, hour, local_time) VALUES ${values} ON CONFLICT (visitor_id, timestamp) DO UPDATE SET day=EXCLUDED.day, store_id=EXCLUDED.store_id, store_name=EXCLUDED.store_name, gender=EXCLUDED.gender, age=EXCLUDED.age, day_of_week=EXCLUDED.day_of_week, smile=EXCLUDED.smile, hour=EXTRACT(HOUR FROM EXCLUDED.local_time::time), local_time=EXCLUDED.local_time`;
+      try { await q(sql, params); savedCount += chunk.length; } catch (e) {}
+    }
   }
   return savedCount;
 }

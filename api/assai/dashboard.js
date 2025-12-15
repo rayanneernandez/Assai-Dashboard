@@ -601,7 +601,7 @@ async function calculateRealTimeSummary(res, start_date, end_date, store_id) {
         }
       } catch {}
     }
-    const hourlyData = await getHourlyAggregatesFromAggregates(useStart, useEnd, store_id);
+    const hourlyData = await getHourlyAggregatesWithRealTime(useStart, useEnd, store_id);
     const ageGenderData = await getAgeGenderDistribution(useStart, useEnd, store_id);
     const response = {
       success: true,

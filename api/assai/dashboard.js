@@ -704,9 +704,9 @@ async function saveVisitorsToDatabase(visitors, forcedDay) {
       const timestamp = String(visitor.start ?? visitor.tracks?.[0]?.start ?? visitor.timestamp ?? new Date().toISOString());
       const dateObj = new Date(timestamp);
       if (isNaN(dateObj.getTime())) { continue; }
-      const localDate = new Date(dateObj.getTime() + (tz * 3600000));
+      const localDate = dateObj;
       let localTime = '';
-      const mt = String(timestamp).match(/T(\d{2}:\d{2}:\d{2})/);
+      const mt = String(timestamp).match(/(?:T|\s)(\d{2}:\d{2}:\d{2})/);
       if (mt) { localTime = mt[1]; } else { localTime = `${String(localDate.getHours()).padStart(2,'0')}:${String(localDate.getMinutes()).padStart(2,'0')}:${String(localDate.getSeconds()).padStart(2,'0')}`; }
       const y = localDate.getFullYear(); const m = String(localDate.getMonth() + 1).padStart(2, '0'); const d = String(localDate.getDate()).padStart(2, '0');
       const dateStr = String(forcedDay || `${y}-${m}-${d}`);

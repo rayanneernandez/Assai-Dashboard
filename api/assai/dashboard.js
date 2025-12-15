@@ -573,10 +573,43 @@ async function calculateRealTimeSummary(res, start_date, end_date, store_id) {
     const avgAgeCount = Number(row.avg_age_count || 0);
     const averageAge = avgAgeCount > 0 ? Math.round(Number(row.avg_age_sum || 0) / avgAgeCount) : 0;
     
-    const hourlyData = await getHourlyAggregatesWithRealTime(sDate, eDate, store_id);
-    
-    const ageGenderData = await getAgeGenderDistribution(sDate, eDate, store_id);
-    
+    let useStart = sDate; let useEnd = eDate; let source = 'realtime_calculation';
+    if (totalRealTime === 0) {
+      try {
+        let lastQ = `SELECT MAX(day) AS last_day FROM visitors`;
+        const p = [];
+        if (store_id && store_id !== 'all') { lastQ += ` WHERE store_id = $1`; p.push(store_id); }
+        const lr = await q(lastQ, p);
+        const lastDay = String(lr.rows?.[0]?.last_day || '');
+        if (lastDay) {
+          useStart = lastDay; useEnd = lastDay; source = 'fallback_last_available';
+          const s2 = await calculateDailyStatsForDate(lastDay, store_id && store_id !== 'all' ? store_id : 'all');
+          row = {
+            total_visitors: s2.total_visitors,
+            male: s2.male,
+            female: s2.female,
+            avg_age_sum: s2.avg_age_sum,
+            avg_age_count: s2.avg_age_count,
+            age_18_25: s2.age_18_25,
+            age_26_35: s2.age_26_35,
+            age_36_45: s2.age_36_45,
+            age_46_60: s2.age_46_60,
+            age_60_plus: s2.age_60_plus,
+            sunday: s2.sunday,
+            monday: s2.monday,
+            tuesday: s2.tuesday,
+            wednesday: s2.wednesday,
+            thursday: s2.thursday,
+            friday: s2.friday,
+            saturday: s2.saturday
+          };
+          totalRealTime = Number(row.total_visitors || 0);
+          averageAge = totalRealTime > 0 ? Math.round(Number(row.avg_age_sum || 0) / Number(row.avg_age_count || 1)) : 0;
+        }
+      } catch {}
+    }
+    const hourlyData = await getHourlyAggregatesWithRealTime(useStart, useEnd, store_id);
+    const ageGenderData = await getAgeGenderDistribution(useStart, useEnd, store_id);
     const response = {
       success: true,
       totalVisitors: totalRealTime,
@@ -602,11 +635,11 @@ async function calculateRealTimeSummary(res, start_date, end_date, store_id) {
       byAgeGender: ageGenderData,
       byHour: hourlyData.byHour,
       byGenderHour: hourlyData.byGenderHour,
-      source: 'realtime_calculation',
-      period: `${sDate} - ${eDate}`
+      source: source,
+      period: `${useStart} - ${useEnd}`
     };
     
-    SUMMARY_CACHE.set(cacheKey(sDate, eDate, store_id || 'all'), response);
+    SUMMARY_CACHE.set(cacheKey(useStart, useEnd, store_id || 'all'), response);
     return res.status(200).json(response);
     
   } catch (error) {

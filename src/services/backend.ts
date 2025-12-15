@@ -164,7 +164,7 @@ export async function fetchVisitorsPage(deviceId?: string, start?: string, end?:
     try { json = await resp.json(); } catch { json = {}; }
     if (!Array.isArray((json as any).data)) {
       params.set("source", "displayforce");
-      resp = await fetch(`${base}/api/assai/dashboard?${params.toString()}`, { signal: controller.signal });
+      resp = await fetch(`${base}/api/assai/dashboard?${params.toString()}`, { signal: controller.signal, headers: { "Cache-Control": "no-store" } });
       if (!resp.ok) throw new Error(`Backend error [${resp.status}] ${await resp.text()}`);
       json = await resp.json();
     }

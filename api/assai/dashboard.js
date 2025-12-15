@@ -1294,14 +1294,20 @@ async function forceSyncToday(req, res) {
     if (dbTotal >= apiTotal) return res.status(200).json({ success:true, day, apiTotal, dbTotal, synced:true });
     const startOffset = Math.floor(dbTotal/limit)*limit; const endOffset = Math.floor((apiTotal-1)/limit)*limit;
     const offsets = []; for (let off=startOffset; off<=endOffset; off+=limit) offsets.push(off);
-    const CONCURRENCY = 8; const MAX_PAGES = 64; const slice = offsets.slice(0, MAX_PAGES);
-    let processed = 0; while (processed < slice.length) {
-      const batch = slice.slice(processed, processed+CONCURRENCY);
-      await Promise.all(batch.map(async (off) => {
+    const conc = Math.max(1, Math.min(parseInt(String(req.query.concurrency || '1'), 10) || 1, 4));
+    const maxPages = Math.max(1, Math.min(parseInt(String(req.query.max_pages || '16'), 10) || 16, 128));
+    const slice = offsets.slice(0, maxPages);
+    let processed = 0;
+    while (processed < slice.length) {
+      const batch = slice.slice(processed, processed + conc);
+      for (const off of batch) {
         const r = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method:'POST', headers:{ 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type':'application/json' }, body: JSON.stringify({ start:startISO, end:endISO, limit, offset:off, tracks:true }) });
-        if (!r.ok) return; const j = await r.json(); const arr = j.payload || j || []; await saveVisitorsToDatabase(arr, day, String(req.query.mode || ''));
-      }));
-      processed += CONCURRENCY;
+        if (!r.ok) { processed += 1; continue; }
+        const j = await r.json(); const arr = j.payload || j || [];
+        await saveVisitorsToDatabase(arr, day, String(req.query.mode || ''));
+        await new Promise(resolve => setTimeout(resolve, 150));
+        processed += 1;
+      }
     }
     ;
     const vr = await pool.query(`SELECT COUNT(*)::int AS c FROM visitors WHERE day=$1`, [day]);

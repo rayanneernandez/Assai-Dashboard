@@ -94,8 +94,8 @@ const Index = () => {
         appliedFilters.start,
         appliedFilters.end
       ),
-    staleTime: 5_000,
-    refetchInterval: 5_000,
+    staleTime: 1_000,
+    refetchInterval: 3_000,
     refetchOnWindowFocus: true,
     refetchOnReconnect: true,
     refetchIntervalInBackground: true,
@@ -166,7 +166,7 @@ const Index = () => {
   const dayOrder = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"];
   const dayOfWeekData = dayOrder.map((day) => ({
     day,
-    visitantes: backendStats?.byDayOfWeek?.[day] ?? 0,
+    visitantes: stats.byDayOfWeek[day] ?? 0,
   }));
 
   const genderData = [
@@ -226,25 +226,25 @@ const Index = () => {
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-6">
                 <StatCard
                   title="Total de Visitantes"
-                  value={backendStats ? backendStats.total : "—"}
+                  value={stats.total}
                   icon={Users}
                   colorClass="bg-stat-visitors"
                 />
                 <StatCard
                   title="Total de Homens"
-                  value={backendStats ? backendStats.men : "—"}
+                  value={stats.men}
                   icon={IconMale}
                   colorClass="bg-stat-men"
                 />
                 <StatCard
                   title="Total de Mulheres"
-                  value={backendStats ? backendStats.women : "—"}
+                  value={stats.women}
                   icon={IconFemale}
                   colorClass="bg-stat-women"
                 />
                 <StatCard
                   title="Média de Idade"
-                  value={backendStats ? `${backendStats.averageAge} anos` : "—"}
+                  value={`${stats.averageAge} anos`}
                   icon={CalendarIcon}
                   colorClass="bg-stat-age"
                 />

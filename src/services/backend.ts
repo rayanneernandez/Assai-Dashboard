@@ -6,19 +6,7 @@ export async function fetchVisitorStats(deviceId?: string, start?: string, end?:
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 90000);
   try {
-    if (BACKEND_URL) {
-      try {
-        const params = new URLSearchParams();
-        if (start) params.set("start", start);
-        if (end) params.set("end", end);
-        if (deviceId) params.set("deviceId", deviceId);
-        const resp = await fetch(`${BACKEND_URL}/stats/visitors?${params.toString()}`, { signal: controller.signal });
-        if (!resp.ok) throw new Error(`Backend error [${resp.status}] ${await resp.text()}`);
-        const remote = await resp.json();
-        const totRemote = Number((remote as any)?.total ?? 0);
-        if (totRemote > 0) return remote as VisitorStats;
-      } catch {}
-    }
+    if (BACKEND_URL) { }
     const base = typeof window !== "undefined" ? window.location.origin : "";
     const params = new URLSearchParams();
     params.set("endpoint", "summary");
@@ -47,7 +35,7 @@ export async function fetchVisitorStats(deviceId?: string, start?: string, end?:
     } catch {}
     let resp: Response;
     try {
-      resp = await fetch(`${base}/api/assai/dashboard?${params.toString()}`, { signal: controller.signal });
+      resp = await fetch(`${base}/api/assai/dashboard?${params.toString()}`, { signal: controller.signal, headers: { "Cache-Control": "no-store" } });
     } catch (e: any) {
       if (e?.name === "AbortError") {
         return {
@@ -107,7 +95,7 @@ export async function fetchVisitorStats(deviceId?: string, start?: string, end?:
     if (effStart === today && effEnd === today && (tot === 0 || isFallback || Object.keys(json).length === 0)) {
       params.set("source", "displayforce");
       try {
-        resp = await fetch(`${base}/api/assai/dashboard?${params.toString()}`, { signal: controller.signal });
+        resp = await fetch(`${base}/api/assai/dashboard?${params.toString()}`, { signal: controller.signal, headers: { "Cache-Control": "no-store" } });
       } catch (e: any) {
         if (e?.name === "AbortError") {
           return {

@@ -87,6 +87,30 @@ export async function fetchVisitorStats(deviceId?: string, start?: string, end?:
     const tot = Number((json as any).totalVisitors ?? 0);
     const isFallback = Boolean((json as any).isFallback);
     const byHourEmpty = Object.keys((json as any).byHour ?? {}).length === 0;
+    if (tot === 0) {
+      const baseUrl = BACKEND_URL || base;
+      const pi = new URLSearchParams();
+      pi.set("endpoint", "plan_ingest");
+      pi.set("start_date", effStart);
+      pi.set("store_id", deviceId && deviceId !== "all" ? deviceId : "all");
+      fetch(`${baseUrl}/api/assai/dashboard?${pi.toString()}`)
+        .then(r => r.ok ? r.json() : null)
+        .then(j => {
+          const offs: number[] = Array.isArray(j?.offsets) ? j.offsets : [];
+          const limit = Number(j?.limit ?? 500);
+          offs.slice(0, 16).forEach(off => {
+            const ii = new URLSearchParams();
+            ii.set("endpoint", "ingest_day");
+            ii.set("start_date", effStart);
+            ii.set("store_id", deviceId && deviceId !== "all" ? deviceId : "all");
+            ii.set("offset", String(off));
+            ii.set("limit", String(limit));
+            ii.set("mode", "one");
+            fetch(`${baseUrl}/api/assai/dashboard?${ii.toString()}`).catch(() => {});
+          });
+        })
+        .catch(() => {});
+    }
     if (effStart === today && effEnd === today && (tot === 0 || isFallback || Object.keys(json).length === 0)) {
       params.set("source", "displayforce");
       try {

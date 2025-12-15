@@ -162,6 +162,22 @@ const Index = () => {
     setAppliedFilters({ device: selectedDevice, start: startDate, end: endDate });
   }, [selectedDevice, startDate, endDate]);
 
+  useEffect(() => {
+    const today = new Date().toISOString().slice(0, 10);
+    const effStart = appliedFilters.start || today;
+    const effEnd = appliedFilters.end || effStart;
+    const isToday = effStart === today && effEnd === today;
+    const base = typeof window !== "undefined" ? window.location.origin : "";
+    if (isToday) {
+      const rf = new URLSearchParams();
+      rf.set("endpoint", "auto_refresh");
+      rf.set("start_date", effStart);
+      rf.set("end_date", effEnd);
+      fetch(`${base}/api/assai/dashboard?${rf.toString()}`).catch(() => {});
+      fetch(`${base}/api/assai/dashboard?endpoint=force_sync_today&mode=one&concurrency=1&max_pages=16&t=${Date.now()}`).catch(() => {});
+    }
+  }, [appliedFilters.start, appliedFilters.end, appliedFilters.device]);
+
   // Prepare chart data
   const dayOrder = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"];
   const dayOfWeekData = dayOrder.map((day) => ({

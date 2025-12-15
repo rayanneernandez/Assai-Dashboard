@@ -503,6 +503,39 @@ async function calculateRealTimeSummary(res, start_date, end_date, store_id) {
     const tzStr = `${sign}${hh}:00`;
     const startISO = `${sDate}T00:00:00${tzStr}`;
     const endISO = `${eDate}T23:59:59${tzStr}`;
+    let row = {};
+    let totalRealTime = 0;
+    try {
+      let qAgg = `
+        SELECT 
+          COALESCE(SUM(total_visitors),0) AS total_visitors,
+          COALESCE(SUM(male),0) AS male,
+          COALESCE(SUM(female),0) AS female,
+          COALESCE(SUM(avg_age_sum),0) AS avg_age_sum,
+          COALESCE(SUM(avg_age_count),0) AS avg_age_count,
+          COALESCE(SUM(age_18_25),0) AS age_18_25,
+          COALESCE(SUM(age_26_35),0) AS age_26_35,
+          COALESCE(SUM(age_36_45),0) AS age_36_45,
+          COALESCE(SUM(age_46_60),0) AS age_46_60,
+          COALESCE(SUM(age_60_plus),0) AS age_60_plus,
+          COALESCE(SUM(sunday),0)   AS sunday,
+          COALESCE(SUM(monday),0)   AS monday,
+          COALESCE(SUM(tuesday),0)  AS tuesday,
+          COALESCE(SUM(wednesday),0)AS wednesday,
+          COALESCE(SUM(thursday),0) AS thursday,
+          COALESCE(SUM(friday),0)   AS friday,
+          COALESCE(SUM(saturday),0) AS saturday
+        FROM dashboard_daily
+        WHERE day >= $1 AND day <= $2`;
+      const pAgg = [sDate, eDate];
+      if (store_id && store_id !== 'all') { qAgg += ` AND store_id = $3`; pAgg.push(store_id); }
+      const rAgg = await pool.query(qAgg, pAgg);
+      row = rAgg.rows[0] || {};
+      totalRealTime = Number(row.total_visitors || 0);
+    } catch {}
+
+    console.log(`🧮 Total rápido (dashboard_daily): ${totalRealTime}`);
+
     let query = `
       SELECT 
         COUNT(*) AS total_visitors,
@@ -525,19 +558,14 @@ async function calculateRealTimeSummary(res, start_date, end_date, store_id) {
       FROM visitors
       WHERE day >= $1 AND day <= $2
     `;
-    
     const params = [sDate, eDate];
-    
-    if (store_id && store_id !== "all") {
-      query += ` AND store_id = $3`;
-      params.push(store_id);
+    if (store_id && store_id !== 'all') { query += ` AND store_id = $3`; params.push(store_id); }
+    if (totalRealTime === 0) {
+      const result = await pool.query(query, params);
+      row = result.rows[0] || {};
+      totalRealTime = Number(row.total_visitors || 0);
     }
-    
-    const result = await pool.query(query, params);
-    let row = result.rows[0] || {};
-    
-    let totalRealTime = Number(row.total_visitors || 0);
-    console.log(`🧮 Total em tempo real (DB): ${totalRealTime}`);
+    console.log(`🧮 Total em tempo real (DB visitors): ${totalRealTime}`);
 
     try {
       const firstBody = { start: startISO, end: endISO, limit: 500, offset: 0, tracks: true };
@@ -608,7 +636,7 @@ async function calculateRealTimeSummary(res, start_date, end_date, store_id) {
         }
       } catch {}
     }
-    const hourlyData = await getHourlyAggregatesWithRealTime(useStart, useEnd, store_id);
+    const hourlyData = await getHourlyAggregatesFromAggregates(useStart, useEnd, store_id);
     const ageGenderData = await getAgeGenderDistribution(useStart, useEnd, store_id);
     const response = {
       success: true,
@@ -1484,6 +1512,8 @@ async function ensureIndexes(req, res) {
       CREATE INDEX IF NOT EXISTS idx_visitors_hour ON visitors(hour);
       CREATE INDEX IF NOT EXISTS idx_visitors_local_time ON visitors(local_time);
       CREATE UNIQUE INDEX IF NOT EXISTS uniq_visitors_id_ts ON visitors(visitor_id, timestamp);
+      CREATE INDEX IF NOT EXISTS idx_daily_day_store ON dashboard_daily(day, store_id);
+      CREATE INDEX IF NOT EXISTS idx_hourly_day_store_hour ON dashboard_hourly(day, store_id, hour);
     `);
     
     console.log('✅ Índices criados/verificados');

@@ -167,7 +167,7 @@ async function syncAllHistoricalData(req, res) {
         console.log(`📊 ${visitors.length} visitantes encontrados para dispositivo ${device.id}`);
         
         // Salva no banco
-        const saved = await saveVisitorsToDatabase(visitors);
+        const saved = await saveVisitorsToDatabase(visitors, undefined, String(req.query.mode || ''));
         
         // Atualiza agregados para todas as datas
         await updateAllAggregatesForDevice(device.id);
@@ -692,7 +692,7 @@ async function updateHourlyStatsForDate(date, device_id) { return; }
 // ===========================================
 // 6. SALVAR VISITANTES CORRETAMENTE (USANDO START TIME)
 // ===========================================
-async function saveVisitorsToDatabase(visitors, forcedDay) {
+async function saveVisitorsToDatabase(visitors, forcedDay, mode) {
   if (!visitors || !Array.isArray(visitors) || visitors.length === 0) {
     return 0;
   }
@@ -747,10 +747,10 @@ async function saveVisitorsToDatabase(visitors, forcedDay) {
     } catch {}
   }
   if (records.length === 0) return 0;
-  const BATCH_SIZE = 200; let savedCount = 0;
+  const BATCH_SIZE = 200; let savedCount = 0; const single = (process.env.INSERT_ONE_BY_ONE === '1') || (String(mode || '').toLowerCase() === 'one');
   for (let i = 0; i < records.length; i += BATCH_SIZE) {
     const chunk = records.slice(i, i + BATCH_SIZE);
-    if (process.env.INSERT_ONE_BY_ONE === '1') {
+    if (single) {
       for (const r of chunk) {
         const sql1 = `INSERT INTO visitors (
           visitor_id, day, store_id, store_name, timestamp, gender, age, day_of_week, smile, hour, local_time
@@ -1205,7 +1205,7 @@ async function refreshAll(req, res, start_date, end_date) {
     console.log(`🔄 Refresh all (fast): ${s} - ${e}`);
     // Busca todos os visitantes de todas as lojas em uma chamada paginada paralela
     const visitors = await fetchVisitorsFromDisplayForce(s, e, null);
-    const saved = await saveVisitorsToDatabase(visitors, s);
+    const saved = await saveVisitorsToDatabase(visitors, s, String(req.query.mode || ''));
     const start = new Date(s); const end = new Date(e);
     for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
       const dateStr = d.toISOString().split('T')[0];
@@ -1273,7 +1273,7 @@ async function ingestDay(req, res, start_date, end_date, store_id) {
     const r = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method: 'POST', headers: { 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     if (!r.ok) return res.status(r.status).json({ error: await r.text() });
     const j = await r.json(); const arr = j.payload || j || [];
-    const saved = await saveVisitorsToDatabase(arr, day);
+    const saved = await saveVisitorsToDatabase(arr, day, String(req.query.mode || ''));
     return res.status(200).json({ day, offset, limit, saved, count: arr.length });
   } catch (e) {
     return res.status(500).json({ error: e.message });
@@ -1299,7 +1299,7 @@ async function forceSyncToday(req, res) {
       const batch = slice.slice(processed, processed+CONCURRENCY);
       await Promise.all(batch.map(async (off) => {
         const r = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method:'POST', headers:{ 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type':'application/json' }, body: JSON.stringify({ start:startISO, end:endISO, limit, offset:off, tracks:true }) });
-        if (!r.ok) return; const j = await r.json(); const arr = j.payload || j || []; await saveVisitorsToDatabase(arr, day);
+        if (!r.ok) return; const j = await r.json(); const arr = j.payload || j || []; await saveVisitorsToDatabase(arr, day, String(req.query.mode || ''));
       }));
       processed += CONCURRENCY;
     }
@@ -1421,7 +1421,7 @@ async function refreshRecent(req, res, start_date, store_id) {
       const jr = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method:'POST', headers:{ 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type':'application/json' }, body: JSON.stringify({ start:startISO, end:endISO, limit, offset:off, tracks:true, ...(store_id&&store_id!=='all'?{devices:[parseInt(store_id)]}:{}) }) });
       if (!jr.ok) return { saved: 0, processed: 0 };
       const jj = await jr.json(); const arr = jj.payload || jj || [];
-      const saved = await saveVisitorsToDatabase(arr, day);
+      const saved = await saveVisitorsToDatabase(arr, day, String(req.query.mode || ''));
       return { saved, processed: arr.length };
     }));
     const saved = results.reduce((a,b)=>a+b.saved,0);

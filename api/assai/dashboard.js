@@ -733,10 +733,11 @@ async function saveVisitorsToDatabase(visitors, forcedDay, mode) {
       const timestamp = String(visitor.start ?? visitor.tracks?.[0]?.start ?? visitor.timestamp ?? new Date().toISOString());
       const dateObj = new Date(timestamp);
       if (isNaN(dateObj.getTime())) { continue; }
-      const localDate = dateObj;
-      let localTime = '';
-      const mt = String(timestamp).match(/(?:T|\s)(\d{2}:\d{2}:\d{2})/);
-      if (mt) { localTime = mt[1]; } else { localTime = `${String(localDate.getHours()).padStart(2,'0')}:${String(localDate.getMinutes()).padStart(2,'0')}:${String(localDate.getSeconds()).padStart(2,'0')}`; }
+      const localDate = new Date(dateObj.getTime() + (tz * 3600000));
+      const hh = String(localDate.getHours()).padStart(2,'0');
+      const mm = String(localDate.getMinutes()).padStart(2,'0');
+      const ss = String(localDate.getSeconds()).padStart(2,'0');
+      const localTime = `${hh}:${mm}:${ss}`;
       const y = localDate.getFullYear(); const m = String(localDate.getMonth() + 1).padStart(2, '0'); const d = String(localDate.getDate()).padStart(2, '0');
       const dateStr = String(forcedDay || `${y}-${m}-${d}`);
       const dayOfWeek = DAYS[localDate.getDay()];
@@ -1260,7 +1261,8 @@ async function autoRefresh(req, res) {
     while (d <= de) { days.push(d.toISOString().slice(0,10)); d = new Date(d.getTime() + 86400000); }
     const calls = [];
     for (const day of days) {
-      if (base) calls.push(fetch(`${base}/api/assai/dashboard?endpoint=refresh_all&start_date=${day}&end_date=${day}`).catch(()=>{}));
+      if (base) calls.push(fetch(`${base}/api/assai/dashboard?endpoint=force_sync_today&mode=one&concurrency=1&max_pages=16&start_date=${day}`).catch(()=>{}));
+      if (base) calls.push(fetch(`${base}/api/assai/dashboard?endpoint=refresh_recent&start_date=${day}&store_id=all&count=1&mode=one`).catch(()=>{}));
     }
     return res.status(202).json({ success:true, triggered:calls.length, start, end });
   } catch (error) {

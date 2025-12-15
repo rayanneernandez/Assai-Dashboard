@@ -515,13 +515,13 @@ async function calculateRealTimeSummary(res, start_date, end_date, store_id) {
         SUM(CASE WHEN age BETWEEN 36 AND 45 THEN 1 ELSE 0 END) AS age_36_45,
         SUM(CASE WHEN age BETWEEN 46 AND 60 THEN 1 ELSE 0 END) AS age_46_60,
         SUM(CASE WHEN age > 60 THEN 1 ELSE 0 END) AS age_60_plus,
-        SUM(CASE WHEN day_of_week = 'Dom' THEN 1 ELSE 0 END) AS sunday,
-        SUM(CASE WHEN day_of_week = 'Seg' THEN 1 ELSE 0 END) AS monday,
-        SUM(CASE WHEN day_of_week = 'Ter' THEN 1 ELSE 0 END) AS tuesday,
-        SUM(CASE WHEN day_of_week = 'Qua' THEN 1 ELSE 0 END) AS wednesday,
-        SUM(CASE WHEN day_of_week = 'Qui' THEN 1 ELSE 0 END) AS thursday,
-        SUM(CASE WHEN day_of_week = 'Sex' THEN 1 ELSE 0 END) AS friday,
-        SUM(CASE WHEN day_of_week = 'Sáb' THEN 1 ELSE 0 END) AS saturday
+        SUM(CASE WHEN EXTRACT(DOW FROM day) = 0 THEN 1 ELSE 0 END) AS sunday,
+        SUM(CASE WHEN EXTRACT(DOW FROM day) = 1 THEN 1 ELSE 0 END) AS monday,
+        SUM(CASE WHEN EXTRACT(DOW FROM day) = 2 THEN 1 ELSE 0 END) AS tuesday,
+        SUM(CASE WHEN EXTRACT(DOW FROM day) = 3 THEN 1 ELSE 0 END) AS wednesday,
+        SUM(CASE WHEN EXTRACT(DOW FROM day) = 4 THEN 1 ELSE 0 END) AS thursday,
+        SUM(CASE WHEN EXTRACT(DOW FROM day) = 5 THEN 1 ELSE 0 END) AS friday,
+        SUM(CASE WHEN EXTRACT(DOW FROM day) = 6 THEN 1 ELSE 0 END) AS saturday
       FROM visitors
       WHERE day >= $1 AND day <= $2
     `;
@@ -667,13 +667,13 @@ async function calculateDailyStatsForDate(date, device_id) {
       SUM(CASE WHEN age BETWEEN 36 AND 45 THEN 1 ELSE 0 END) AS age_36_45,
       SUM(CASE WHEN age BETWEEN 46 AND 60 THEN 1 ELSE 0 END) AS age_46_60,
       SUM(CASE WHEN age > 60 THEN 1 ELSE 0 END) AS age_60_plus,
-      SUM(CASE WHEN day_of_week = 'Dom' THEN 1 ELSE 0 END) AS sunday,
-      SUM(CASE WHEN day_of_week = 'Seg' THEN 1 ELSE 0 END) AS monday,
-      SUM(CASE WHEN day_of_week = 'Ter' THEN 1 ELSE 0 END) AS tuesday,
-      SUM(CASE WHEN day_of_week = 'Qua' THEN 1 ELSE 0 END) AS wednesday,
-      SUM(CASE WHEN day_of_week = 'Qui' THEN 1 ELSE 0 END) AS thursday,
-      SUM(CASE WHEN day_of_week = 'Sex' THEN 1 ELSE 0 END) AS friday,
-      SUM(CASE WHEN day_of_week = 'Sáb' THEN 1 ELSE 0 END) AS saturday
+      SUM(CASE WHEN EXTRACT(DOW FROM day) = 0 THEN 1 ELSE 0 END) AS sunday,
+      SUM(CASE WHEN EXTRACT(DOW FROM day) = 1 THEN 1 ELSE 0 END) AS monday,
+      SUM(CASE WHEN EXTRACT(DOW FROM day) = 2 THEN 1 ELSE 0 END) AS tuesday,
+      SUM(CASE WHEN EXTRACT(DOW FROM day) = 3 THEN 1 ELSE 0 END) AS wednesday,
+      SUM(CASE WHEN EXTRACT(DOW FROM day) = 4 THEN 1 ELSE 0 END) AS thursday,
+      SUM(CASE WHEN EXTRACT(DOW FROM day) = 5 THEN 1 ELSE 0 END) AS friday,
+      SUM(CASE WHEN EXTRACT(DOW FROM day) = 6 THEN 1 ELSE 0 END) AS saturday
     FROM visitors
     WHERE day = $1
   `;
@@ -724,15 +724,15 @@ async function upsertAggregatesForDate(date) {
         SUM(CASE WHEN age BETWEEN 26 AND 35 THEN 1 ELSE 0 END) AS age_26_35,
         SUM(CASE WHEN age BETWEEN 36 AND 45 THEN 1 ELSE 0 END) AS age_36_45,
         SUM(CASE WHEN age BETWEEN 46 AND 60 THEN 1 ELSE 0 END) AS age_46_60,
-        SUM(CASE WHEN age>60 THEN 1 ELSE 0 END) AS age_60_plus,
-        SUM(CASE WHEN day_of_week='Seg' THEN 1 ELSE 0 END) AS monday,
-        SUM(CASE WHEN day_of_week='Ter' THEN 1 ELSE 0 END) AS tuesday,
-        SUM(CASE WHEN day_of_week='Qua' THEN 1 ELSE 0 END) AS wednesday,
-        SUM(CASE WHEN day_of_week='Qui' THEN 1 ELSE 0 END) AS thursday,
-        SUM(CASE WHEN day_of_week='Sex' THEN 1 ELSE 0 END) AS friday,
-        SUM(CASE WHEN day_of_week='Sáb' THEN 1 ELSE 0 END) AS saturday,
-        SUM(CASE WHEN day_of_week='Dom' THEN 1 ELSE 0 END) AS sunday
-      FROM visitors WHERE day=$1`, [date]);
+          SUM(CASE WHEN age>60 THEN 1 ELSE 0 END) AS age_60_plus,
+          SUM(CASE WHEN EXTRACT(DOW FROM day) = 1 THEN 1 ELSE 0 END) AS monday,
+          SUM(CASE WHEN EXTRACT(DOW FROM day) = 2 THEN 1 ELSE 0 END) AS tuesday,
+          SUM(CASE WHEN EXTRACT(DOW FROM day) = 3 THEN 1 ELSE 0 END) AS wednesday,
+          SUM(CASE WHEN EXTRACT(DOW FROM day) = 4 THEN 1 ELSE 0 END) AS thursday,
+          SUM(CASE WHEN EXTRACT(DOW FROM day) = 5 THEN 1 ELSE 0 END) AS friday,
+          SUM(CASE WHEN EXTRACT(DOW FROM day) = 6 THEN 1 ELSE 0 END) AS saturday,
+          SUM(CASE WHEN EXTRACT(DOW FROM day) = 0 THEN 1 ELSE 0 END) AS sunday
+        FROM visitors WHERE day=$1`, [date]);
     const rAll = sAll.rows[0] || {};
     await pool.query(`INSERT INTO dashboard_daily (
       day, store_id, total_visitors, male, female, avg_age_sum, avg_age_count,
@@ -764,13 +764,13 @@ async function upsertAggregatesForDate(date) {
           SUM(CASE WHEN age BETWEEN 36 AND 45 THEN 1 ELSE 0 END) AS age_36_45,
           SUM(CASE WHEN age BETWEEN 46 AND 60 THEN 1 ELSE 0 END) AS age_46_60,
           SUM(CASE WHEN age>60 THEN 1 ELSE 0 END) AS age_60_plus,
-          SUM(CASE WHEN day_of_week='Seg' THEN 1 ELSE 0 END) AS monday,
-          SUM(CASE WHEN day_of_week='Ter' THEN 1 ELSE 0 END) AS tuesday,
-          SUM(CASE WHEN day_of_week='Qua' THEN 1 ELSE 0 END) AS wednesday,
-          SUM(CASE WHEN day_of_week='Qui' THEN 1 ELSE 0 END) AS thursday,
-          SUM(CASE WHEN day_of_week='Sex' THEN 1 ELSE 0 END) AS friday,
-          SUM(CASE WHEN day_of_week='Sáb' THEN 1 ELSE 0 END) AS saturday,
-          SUM(CASE WHEN day_of_week='Dom' THEN 1 ELSE 0 END) AS sunday
+          SUM(CASE WHEN EXTRACT(DOW FROM day) = 1 THEN 1 ELSE 0 END) AS monday,
+          SUM(CASE WHEN EXTRACT(DOW FROM day) = 2 THEN 1 ELSE 0 END) AS tuesday,
+          SUM(CASE WHEN EXTRACT(DOW FROM day) = 3 THEN 1 ELSE 0 END) AS wednesday,
+          SUM(CASE WHEN EXTRACT(DOW FROM day) = 4 THEN 1 ELSE 0 END) AS thursday,
+          SUM(CASE WHEN EXTRACT(DOW FROM day) = 5 THEN 1 ELSE 0 END) AS friday,
+          SUM(CASE WHEN EXTRACT(DOW FROM day) = 6 THEN 1 ELSE 0 END) AS saturday,
+          SUM(CASE WHEN EXTRACT(DOW FROM day) = 0 THEN 1 ELSE 0 END) AS sunday
         FROM visitors WHERE day=$1 AND store_id=$2`, [date, sid]);
       const r1 = s1.rows[0] || {};
       await pool.query(`INSERT INTO dashboard_daily (

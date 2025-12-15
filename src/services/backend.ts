@@ -34,13 +34,22 @@ export async function fetchVisitorStats(deviceId?: string, start?: string, end?:
       if (isTodayOnly) {
         params.set("realtime", "1");
         params.set("t", String(Date.now()));
-        const rf = new URLSearchParams();
-        rf.set("endpoint", "refresh_recent");
-        rf.set("start_date", effStart);
-        rf.set("store_id", deviceId && deviceId !== "all" ? deviceId : "all");
-        rf.set("count", "48");
-        fetch(`${base}/api/assai/dashboard?${rf.toString()}`).catch(() => {});
-        fetch(`${base}/api/assai/dashboard?endpoint=force_sync_today&t=${Date.now()}`).catch(() => {});
+        const triggerBase = BACKEND_URL || base;
+        if (BACKEND_URL) {
+          const bp = new URLSearchParams();
+          bp.set("start", effStart);
+          bp.set("end", effStart);
+          bp.set("deviceId", deviceId && deviceId !== "all" ? deviceId : "all");
+          fetch(`${triggerBase}/api/admin/refresh?${bp.toString()}`).catch(() => {});
+        } else {
+          const rf = new URLSearchParams();
+          rf.set("endpoint", "refresh_recent");
+          rf.set("start_date", effStart);
+          rf.set("store_id", deviceId && deviceId !== "all" ? deviceId : "all");
+          rf.set("count", "48");
+          fetch(`${triggerBase}/api/assai/dashboard?${rf.toString()}`).catch(() => {});
+          fetch(`${triggerBase}/api/assai/dashboard?endpoint=force_sync_today&t=${Date.now()}`).catch(() => {});
+        }
       }
     } catch {}
     let resp: Response;

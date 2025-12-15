@@ -1568,9 +1568,15 @@ async function refreshRecent(req, res, start_date, store_id) {
 
 async function ensureIndexes(req, res) {
   try {
-    console.log('🔧 Criando índices...');
-    
+    console.log('🔧 Criando/ajustando esquema e índices...');
+
+    const tzName = process.env.PG_TIMEZONE || 'America/Sao_Paulo';
+
     await pool.query(`
+      ALTER TABLE public.visitors ADD COLUMN IF NOT EXISTS day DATE;
+      ALTER TABLE public.visitors ADD COLUMN IF NOT EXISTS hour SMALLINT;
+      ALTER TABLE public.visitors ADD COLUMN IF NOT EXISTS local_time TIME;
+
       CREATE INDEX IF NOT EXISTS idx_visitors_day ON visitors(day);
       CREATE INDEX IF NOT EXISTS idx_visitors_store_id ON visitors(store_id);
       CREATE INDEX IF NOT EXISTS idx_visitors_day_store ON visitors(day, store_id);
@@ -1583,20 +1589,17 @@ async function ensureIndexes(req, res) {
       CREATE INDEX IF NOT EXISTS idx_daily_day_store ON dashboard_daily(day, store_id);
       CREATE INDEX IF NOT EXISTS idx_hourly_day_store_hour ON dashboard_hourly(day, store_id, hour);
     `);
-    
-    console.log('✅ Índices criados/verificados');
-    
-    return res.status(200).json({
-      success: true,
-      message: 'Índices otimizados'
-    });
-    
+
+    await pool.query(`UPDATE public.visitors SET day = DATE(timestamp) WHERE day IS NULL`);
+    await pool.query(`UPDATE public.visitors SET local_time = COALESCE(local_time, (to_char((timestamp AT TIME ZONE '${tzName}'), 'HH24:MI:SS'))::time) WHERE local_time IS NULL`);
+    await pool.query(`UPDATE public.visitors SET hour = EXTRACT(HOUR FROM local_time::time) WHERE hour IS NULL AND local_time IS NOT NULL`);
+
+    console.log('✅ Esquema e índices OK, dados retropreenchidos');
+
+    return res.status(200).json({ success: true, message: 'Esquema e índices otimizados, dados preenchidos' });
   } catch (error) {
     console.error('❌ Ensure indexes error:', error);
-    return res.status(500).json({
-      success: false,
-      error: error.message
-    });
+    return res.status(500).json({ success: false, error: error.message });
   }
 }
 

@@ -14,7 +14,9 @@ export async function fetchVisitorStats(deviceId?: string, start?: string, end?:
         if (deviceId) params.set("deviceId", deviceId);
         const resp = await fetch(`${BACKEND_URL}/stats/visitors?${params.toString()}`, { signal: controller.signal });
         if (!resp.ok) throw new Error(`Backend error [${resp.status}] ${await resp.text()}`);
-        return await resp.json();
+        const remote = await resp.json();
+        const totRemote = Number((remote as any)?.total ?? 0);
+        if (totRemote > 0) return remote as VisitorStats;
       } catch {}
     }
     const base = typeof window !== "undefined" ? window.location.origin : "";

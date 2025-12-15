@@ -744,7 +744,110 @@ async function calculateDailyStatsForDate(date, device_id) {
   };
 }
 
-async function updateHourlyStatsForDate(date, device_id) { return; }
+async function upsertAggregatesForDate(date) {
+  try {
+    const tzOffset = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
+    const adj = `COALESCE(EXTRACT(HOUR FROM local_time::time), EXTRACT(HOUR FROM (timestamp + INTERVAL '${tzOffset} hour')))`;
+    const sAll = await pool.query(`
+      SELECT 
+        COUNT(*) AS total_visitors,
+        SUM(CASE WHEN gender='M' THEN 1 ELSE 0 END) AS male,
+        SUM(CASE WHEN gender='F' THEN 1 ELSE 0 END) AS female,
+        SUM(age) AS avg_age_sum,
+        SUM(CASE WHEN age>0 THEN 1 ELSE 0 END) AS avg_age_count,
+        SUM(CASE WHEN age BETWEEN 18 AND 25 THEN 1 ELSE 0 END) AS age_18_25,
+        SUM(CASE WHEN age BETWEEN 26 AND 35 THEN 1 ELSE 0 END) AS age_26_35,
+        SUM(CASE WHEN age BETWEEN 36 AND 45 THEN 1 ELSE 0 END) AS age_36_45,
+        SUM(CASE WHEN age BETWEEN 46 AND 60 THEN 1 ELSE 0 END) AS age_46_60,
+        SUM(CASE WHEN age>60 THEN 1 ELSE 0 END) AS age_60_plus,
+        SUM(CASE WHEN day_of_week='Seg' THEN 1 ELSE 0 END) AS monday,
+        SUM(CASE WHEN day_of_week='Ter' THEN 1 ELSE 0 END) AS tuesday,
+        SUM(CASE WHEN day_of_week='Qua' THEN 1 ELSE 0 END) AS wednesday,
+        SUM(CASE WHEN day_of_week='Qui' THEN 1 ELSE 0 END) AS thursday,
+        SUM(CASE WHEN day_of_week='Sex' THEN 1 ELSE 0 END) AS friday,
+        SUM(CASE WHEN day_of_week='Sáb' THEN 1 ELSE 0 END) AS saturday,
+        SUM(CASE WHEN day_of_week='Dom' THEN 1 ELSE 0 END) AS sunday
+      FROM visitors WHERE day=$1`, [date]);
+    const rAll = sAll.rows[0] || {};
+    await pool.query(`INSERT INTO dashboard_daily (
+      day, store_id, total_visitors, male, female, avg_age_sum, avg_age_count,
+      age_18_25, age_26_35, age_36_45, age_46_60, age_60_plus,
+      monday, tuesday, wednesday, thursday, friday, saturday, sunday
+    ) VALUES ($1,'all',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+    ON CONFLICT (day, store_id) DO UPDATE SET
+      total_visitors=EXCLUDED.total_visitors, male=EXCLUDED.male, female=EXCLUDED.female,
+      avg_age_sum=EXCLUDED.avg_age_sum, avg_age_count=EXCLUDED.avg_age_count,
+      age_18_25=EXCLUDED.age_18_25, age_26_35=EXCLUDED.age_26_35, age_36_45=EXCLUDED.age_36_45,
+      age_46_60=EXCLUDED.age_46_60, age_60_plus=EXCLUDED.age_60_plus,
+      monday=EXCLUDED.monday, tuesday=EXCLUDED.tuesday, wednesday=EXCLUDED.wednesday,
+      thursday=EXCLUDED.thursday, friday=EXCLUDED.friday, saturday=EXCLUDED.saturday, sunday=EXCLUDED.sunday`,
+      [date, rAll.total_visitors||0, rAll.male||0, rAll.female||0, rAll.avg_age_sum||0, rAll.avg_age_count||0,
+       rAll.age_18_25||0, rAll.age_26_35||0, rAll.age_36_45||0, rAll.age_46_60||0, rAll.age_60_plus||0,
+       rAll.monday||0, rAll.tuesday||0, rAll.wednesday||0, rAll.thursday||0, rAll.friday||0, rAll.saturday||0, rAll.sunday||0]);
+    const sStores = await pool.query(`SELECT DISTINCT store_id FROM visitors WHERE day=$1`, [date]);
+    for (const st of sStores.rows) {
+      const sid = String(st.store_id);
+      const s1 = await pool.query(`
+        SELECT 
+          COUNT(*) AS total_visitors,
+          SUM(CASE WHEN gender='M' THEN 1 ELSE 0 END) AS male,
+          SUM(CASE WHEN gender='F' THEN 1 ELSE 0 END) AS female,
+          SUM(age) AS avg_age_sum,
+          SUM(CASE WHEN age>0 THEN 1 ELSE 0 END) AS avg_age_count,
+          SUM(CASE WHEN age BETWEEN 18 AND 25 THEN 1 ELSE 0 END) AS age_18_25,
+          SUM(CASE WHEN age BETWEEN 26 AND 35 THEN 1 ELSE 0 END) AS age_26_35,
+          SUM(CASE WHEN age BETWEEN 36 AND 45 THEN 1 ELSE 0 END) AS age_36_45,
+          SUM(CASE WHEN age BETWEEN 46 AND 60 THEN 1 ELSE 0 END) AS age_46_60,
+          SUM(CASE WHEN age>60 THEN 1 ELSE 0 END) AS age_60_plus,
+          SUM(CASE WHEN day_of_week='Seg' THEN 1 ELSE 0 END) AS monday,
+          SUM(CASE WHEN day_of_week='Ter' THEN 1 ELSE 0 END) AS tuesday,
+          SUM(CASE WHEN day_of_week='Qua' THEN 1 ELSE 0 END) AS wednesday,
+          SUM(CASE WHEN day_of_week='Qui' THEN 1 ELSE 0 END) AS thursday,
+          SUM(CASE WHEN day_of_week='Sex' THEN 1 ELSE 0 END) AS friday,
+          SUM(CASE WHEN day_of_week='Sáb' THEN 1 ELSE 0 END) AS saturday,
+          SUM(CASE WHEN day_of_week='Dom' THEN 1 ELSE 0 END) AS sunday
+        FROM visitors WHERE day=$1 AND store_id=$2`, [date, sid]);
+      const r1 = s1.rows[0] || {};
+      await pool.query(`INSERT INTO dashboard_daily (
+        day, store_id, total_visitors, male, female, avg_age_sum, avg_age_count,
+        age_18_25, age_26_35, age_36_45, age_46_60, age_60_plus,
+        monday, tuesday, wednesday, thursday, friday, saturday, sunday
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+      ON CONFLICT (day, store_id) DO UPDATE SET
+        total_visitors=EXCLUDED.total_visitors, male=EXCLUDED.male, female=EXCLUDED.female,
+        avg_age_sum=EXCLUDED.avg_age_sum, avg_age_count=EXCLUDED.avg_age_count,
+        age_18_25=EXCLUDED.age_18_25, age_26_35=EXCLUDED.age_26_35, age_36_45=EXCLUDED.age_36_45,
+        age_46_60=EXCLUDED.age_46_60, age_60_plus=EXCLUDED.age_60_plus,
+        monday=EXCLUDED.monday, tuesday=EXCLUDED.tuesday, wednesday=EXCLUDED.wednesday,
+        thursday=EXCLUDED.thursday, friday=EXCLUDED.friday, saturday=EXCLUDED.saturday, sunday=EXCLUDED.sunday`,
+        [date, sid, r1.total_visitors||0, r1.male||0, r1.female||0, r1.avg_age_sum||0, r1.avg_age_count||0,
+         r1.age_18_25||0, r1.age_26_35||0, r1.age_36_45||0, r1.age_46_60||0, r1.age_60_plus||0,
+         r1.monday||0, r1.tuesday||0, r1.wednesday||0, r1.thursday||0, r1.friday||0, r1.saturday||0, r1.sunday||0]);
+      const hRows = await pool.query(`SELECT ${adj} AS hour,
+                   SUM(CASE WHEN gender IN ('M','F') THEN 1 ELSE 0 END) AS total,
+                   SUM(CASE WHEN gender='M' THEN 1 ELSE 0 END) AS male,
+                   SUM(CASE WHEN gender='F' THEN 1 ELSE 0 END) AS female
+                 FROM visitors WHERE day=$1 AND store_id=$2 GROUP BY ${adj} ORDER BY 1`, [date, sid]);
+      for (const rr of hRows.rows) {
+        await pool.query(`INSERT INTO dashboard_hourly (day, store_id, hour, total, male, female)
+          VALUES ($1,$2,$3,$4,$5,$6)
+          ON CONFLICT (day, store_id, hour) DO UPDATE SET total=EXCLUDED.total, male=EXCLUDED.male, female=EXCLUDED.female`,
+          [date, sid, Number(rr.hour), Number(rr.total||0), Number(rr.male||0), Number(rr.female||0)]);
+      }
+    }
+    const hAll = await pool.query(`SELECT ${adj} AS hour,
+                   SUM(CASE WHEN gender IN ('M','F') THEN 1 ELSE 0 END) AS total,
+                   SUM(CASE WHEN gender='M' THEN 1 ELSE 0 END) AS male,
+                   SUM(CASE WHEN gender='F' THEN 1 ELSE 0 END) AS female
+                 FROM visitors WHERE day=$1 GROUP BY ${adj} ORDER BY 1`, [date]);
+    for (const r of hAll.rows) {
+      await pool.query(`INSERT INTO dashboard_hourly (day, store_id, hour, total, male, female)
+        VALUES ($1,'all',$2,$3,$4,$5)
+        ON CONFLICT (day, store_id, hour) DO UPDATE SET total=EXCLUDED.total, male=EXCLUDED.male, female=EXCLUDED.female`,
+        [date, Number(r.hour), Number(r.total||0), Number(r.male||0), Number(r.female||0)]);
+    }
+  } catch (e) {}
+}
 
 // ===========================================
 // 6. SALVAR VISITANTES CORRETAMENTE (USANDO START TIME)
@@ -830,6 +933,7 @@ async function saveVisitorsToDatabase(visitors, forcedDay, mode) {
       try { await q(sql, params); savedCount += chunk.length; } catch (e) {}
     }
   }
+  try { if (forcedDay) { await upsertAggregatesForDate(forcedDay); } } catch {}
   return savedCount;
 }
 

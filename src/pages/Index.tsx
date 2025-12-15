@@ -146,7 +146,7 @@ const Index = () => {
   useEffect(() => {
     if (backendError) {
       const msg = String(backendError);
-      if (!/Failed to fetch/i.test(msg)) {
+      if (!/Failed to fetch/i.test(msg) && !/AbortError/i.test(msg)) {
         toast({ title: "Erro ao buscar stats do backend", description: msg });
       }
     }
@@ -168,7 +168,7 @@ const Index = () => {
   const dayOrder = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"];
   const dayOfWeekData = dayOrder.map((day) => ({
     day,
-    visitantes: stats.byDayOfWeek[day] || 0,
+    visitantes: backendStats?.byDayOfWeek?.[day] ?? 0,
   }));
 
   const genderData = [

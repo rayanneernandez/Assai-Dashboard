@@ -43,7 +43,25 @@ export async function fetchVisitorStats(deviceId?: string, start?: string, end?:
         fetch(`${base}/api/assai/dashboard?endpoint=force_sync_today&t=${Date.now()}`).catch(() => {});
       }
     } catch {}
-    let resp = await fetch(`${base}/api/assai/dashboard?${params.toString()}`, { signal: controller.signal });
+    let resp: Response;
+    try {
+      resp = await fetch(`${base}/api/assai/dashboard?${params.toString()}`, { signal: controller.signal });
+    } catch (e: any) {
+      if (e?.name === "AbortError") {
+        return {
+          total: 0,
+          men: 0,
+          women: 0,
+          averageAge: 0,
+          byDayOfWeek: { Dom: 0, Seg: 0, Ter: 0, Qua: 0, Qui: 0, Sex: 0, Sáb: 0 },
+          byAgeGroup: {},
+          byAgeGender: undefined,
+          byHour: {},
+          byGenderHour: { male: {}, female: {} },
+        };
+      }
+      throw e;
+    }
     if (!resp.ok) throw new Error(`Backend error [${resp.status}] ${await resp.text()}`);
     let json: any;
     try {
@@ -62,7 +80,24 @@ export async function fetchVisitorStats(deviceId?: string, start?: string, end?:
     const byHourEmpty = Object.keys((json as any).byHour ?? {}).length === 0;
     if (effStart === today && effEnd === today && (tot === 0 || isFallback || Object.keys(json).length === 0)) {
       params.set("source", "displayforce");
-      resp = await fetch(`${base}/api/assai/dashboard?${params.toString()}`, { signal: controller.signal });
+      try {
+        resp = await fetch(`${base}/api/assai/dashboard?${params.toString()}`, { signal: controller.signal });
+      } catch (e: any) {
+        if (e?.name === "AbortError") {
+          return {
+            total: 0,
+            men: 0,
+            women: 0,
+            averageAge: 0,
+            byDayOfWeek: { Dom: 0, Seg: 0, Ter: 0, Qua: 0, Qui: 0, Sex: 0, Sáb: 0 },
+            byAgeGroup: {},
+            byAgeGender: undefined,
+            byHour: {},
+            byGenderHour: { male: {}, female: {} },
+          };
+        }
+        throw e;
+      }
       if (!resp.ok) throw new Error(`Backend error [${resp.status}] ${await resp.text()}`);
       json = await resp.json();
     }

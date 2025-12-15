@@ -539,39 +539,35 @@ async function calculateRealTimeSummary(res, start_date, end_date, store_id) {
     let totalRealTime = Number(row.total_visitors || 0);
     console.log(`🧮 Total em tempo real (DB): ${totalRealTime}`);
 
-    if (process.env.SUMMARY_INGEST_ON_CALL === '1') {
-      try {
-        const firstBody = { start: startISO, end: endISO, limit: 500, offset: 0, tracks: true };
-        if (store_id && store_id !== 'all') firstBody.devices = [parseInt(store_id)];
-        const firstResp = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method:'POST', headers:{ 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type':'application/json' }, body: JSON.stringify(firstBody) });
-        if (firstResp.ok) {
-          const firstData = await firstResp.json();
-          const limit = Number(firstData.pagination?.limit ?? 500);
-          const apiTotal = Number(firstData.pagination?.total ?? (Array.isArray(firstData.payload)? firstData.payload.length:0));
-          const missing = Math.max(0, apiTotal - totalRealTime);
-          console.log(`📡 API total=${apiTotal}, DB total=${totalRealTime}, faltando=${missing}`);
-          if (missing > 0) {
-            const startOffset = Math.floor(totalRealTime / limit) * limit;
-            const endOffset = Math.floor((apiTotal - 1) / limit) * limit;
-            const offsetsToFetch = [];
-            for (let off = startOffset; off <= endOffset; off += limit) offsetsToFetch.push(off);
-            const MAX_PAGES = 128;
-            const slice = offsetsToFetch.slice(0, MAX_PAGES);
-            console.log(`🔄 Ingerindo offsets faltantes: ${slice.join(', ')}`);
-            await Promise.all(slice.map(async (off) => {
-              const r = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method:'POST', headers:{ 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type':'application/json' }, body: JSON.stringify({ start:startISO, end:endISO, limit, offset:off, tracks:true, ...(store_id&&store_id!=='all'?{devices:[parseInt(store_id)]}:{}) }) });
-              if (!r.ok) return;
-              const j = await r.json(); const arr = j.payload || j || [];
-              await saveVisitorsToDatabase(arr, sDate);
-            }));
-            ;
-            const re = await pool.query(query, params);
-            row = re.rows[0] || row;
-            totalRealTime = Number(row.total_visitors || 0);
+    try {
+      const firstBody = { start: startISO, end: endISO, limit: 500, offset: 0, tracks: true };
+      if (store_id && store_id !== 'all') firstBody.devices = [parseInt(store_id)];
+      const firstResp = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method:'POST', headers:{ 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type':'application/json' }, body: JSON.stringify(firstBody) });
+      if (firstResp.ok) {
+        const firstData = await firstResp.json();
+        const limit = Number(firstData.pagination?.limit ?? 500);
+        const apiTotal = Number(firstData.pagination?.total ?? (Array.isArray(firstData.payload)? firstData.payload.length:0));
+        const missing = Math.max(0, apiTotal - totalRealTime);
+        console.log(`📡 API total=${apiTotal}, DB total=${totalRealTime}, faltando=${missing}`);
+        if (missing > 0) {
+          const startOffset = Math.floor(totalRealTime / limit) * limit;
+          const endOffset = Math.floor((apiTotal - 1) / limit) * limit;
+          const maxPages = Math.max(1, Math.min(parseInt(String(process.env.SUMMARY_INGEST_MAX_PAGES || '16'), 10) || 16, 128));
+          let processed = 0;
+          for (let off = startOffset; off <= endOffset && processed < maxPages; off += limit) {
+            const r = await fetch(`${DISPLAYFORCE_BASE}/stats/visitor/list`, { method:'POST', headers:{ 'X-API-Token': DISPLAYFORCE_TOKEN, 'Content-Type':'application/json' }, body: JSON.stringify({ start:startISO, end:endISO, limit, offset:off, tracks:true, ...(store_id&&store_id!=='all'?{devices:[parseInt(store_id)]}:{}) }) });
+            if (!r.ok) break;
+            const j = await r.json(); const arr = j.payload || j || [];
+            await saveVisitorsToDatabase(arr, sDate, 'one');
+            await new Promise(resolve => setTimeout(resolve, 120));
+            processed++;
           }
+          const re = await pool.query(query, params);
+          row = re.rows[0] || row;
+          totalRealTime = Number(row.total_visitors || 0);
         }
-      } catch {}
-    }
+      }
+    } catch {}
 
     
     const avgAgeCount = Number(row.avg_age_count || 0);

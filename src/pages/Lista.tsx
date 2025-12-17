@@ -1,14 +1,18 @@
-import { useState, useEffect } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useRef, useState } from "react";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
+
 import { DashboardHeader } from "@/components/DashboardHeader";
 import { DashboardSidebar } from "@/components/DashboardSidebar";
 import { ChatAssistant } from "@/components/ChatAssistant";
 import { DashboardFilters } from "@/components/DashboardFilters";
 import { toast } from "@/components/ui/use-toast";
+
 import { fetchVisitors, fetchDevices } from "@/services/api";
+import backend from "@/services/backend";
 import { Device, Visitor } from "@/types/api";
+
 import {
   Table,
   TableBody,
@@ -28,14 +32,12 @@ import {
   SelectContent,
   SelectItem,
 } from "@/components/ui/select";
+
 import { calculateStats } from "@/utils/statsCalculator";
-import backend from "@/services/backend";
 
 const Lista = () => {
   // ✅ Ajuste de horário só para exibição na lista
-  // (somar +3h para ficar alinhado com o esperado)
   const LIST_HOUR_SHIFT = 3;
-
   const toDisplayDate = (ts: unknown) => {
     const d = new Date(String(ts));
     if (isNaN(d.getTime())) return null;
@@ -43,25 +45,32 @@ const Lista = () => {
   };
 
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [selectedDevice, setSelectedDevice] = useState<string>("all");
+
   const todayStr = format(new Date(), "yyyy-MM-dd");
+  const [selectedDevice, setSelectedDevice] = useState<string>("all");
   const [startDate, setStartDate] = useState(todayStr);
   const [endDate, setEndDate] = useState(todayStr);
+
   const [appliedFilters, setAppliedFilters] = useState({
     device: "all",
     start: todayStr,
     end: todayStr,
   });
+
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
-  const [backendAvailable, setBackendAvailable] = useState(false);
+
+  // ✅ Preserva scroll durante refetch para não “pular pro topo”
+  const scrollYRef = useRef<number>(0);
 
   const { data: devices = [], error: devicesError } = useQuery<Device[]>({
     queryKey: ["devices"],
     queryFn: fetchDevices,
+    staleTime: 60_000,
   });
 
-  const { data: visitors = [], isLoading, error: visitorsError } = useQuery<Visitor[]>({
+  // ⚠️ Mantido (mas desabilitado) porque a página usa o backend paginado
+  const { data: visitors = [] } = useQuery<Visitor[]>({
     queryKey: ["visitors", appliedFilters],
     queryFn: () =>
       fetchVisitors(
@@ -72,7 +81,12 @@ const Lista = () => {
     enabled: false,
   });
 
-  const { data: backendPage, isLoading: isBackendLoading, error: backendPageError } = useQuery({
+  const {
+    data: backendPage,
+    isLoading: isBackendLoading,
+    isFetching: isBackendFetching,
+    error: backendPageError,
+  } = useQuery({
     queryKey: ["backendVisitors", appliedFilters, page, pageSize],
     queryFn: () =>
       backend.fetchVisitorsPage(
@@ -83,28 +97,36 @@ const Lista = () => {
         pageSize
       ),
     enabled: true,
+
+    // ✅ CRÍTICO: mantém dados anteriores durante refetch
+    placeholderData: keepPreviousData,
+
     staleTime: 5_000,
     refetchOnWindowFocus: true,
     refetchOnReconnect: true,
-    refetchInterval: appliedFilters.start === todayStr && appliedFilters.end === todayStr ? 10_000 : false,
+    refetchInterval:
+      appliedFilters.start === todayStr && appliedFilters.end === todayStr
+        ? 10_000
+        : false,
   });
 
   const stats = calculateStats(visitors);
 
   useEffect(() => {
-    if (devicesError) toast({ title: "Erro ao buscar lojas", description: String(devicesError) });
+    if (devicesError) {
+      toast({
+        title: "Erro ao buscar lojas",
+        description: String(devicesError),
+      });
+    }
   }, [devicesError]);
 
   useEffect(() => {
-    if (visitorsError) toast({ title: "Erro ao buscar visitantes", description: String(visitorsError) });
-  }, [visitorsError]);
-
-  useEffect(() => {
     if (backendPageError) {
-      const msg = String(backendPageError);
-      if (!/Failed to fetch/i.test(msg)) {
-        toast({ title: "Erro ao buscar visitantes do backend", description: msg });
-      }
+      toast({
+        title: "Erro ao buscar visitantes",
+        description: String(backendPageError),
+      });
     }
   }, [backendPageError]);
 
@@ -114,37 +136,40 @@ const Lista = () => {
       start: startDate,
       end: endDate,
     });
+    setPage(1);
   };
 
+  // ✅ NÃO reseta paginação em refetch; só quando o usuário troca filtros locais
   useEffect(() => {
-    setAppliedFilters({ device: selectedDevice, start: startDate, end: endDate });
-    setPage(1);
+    // mantém aplicado sincronizado (sem forçar page=1 aqui)
+    setAppliedFilters((prev) => ({
+      ...prev,
+      device: selectedDevice,
+      start: startDate,
+      end: endDate,
+    }));
+    // não mexe em page aqui
   }, [selectedDevice, startDate, endDate]);
 
+  // ✅ Clamp seguro: só calcula totalPages quando backendPage.total existir
   useEffect(() => {
-    setSelectedDevice("all");
-    setStartDate(todayStr);
-    setEndDate(todayStr);
-    setAppliedFilters({ device: "all", start: todayStr, end: todayStr });
-  }, []);
-
-  // ✅ FIX PAGINAÇÃO:
-  // Antes: usava visitors.length (mas visitors fica vazio, e isso resetava a página para 1)
-  useEffect(() => {
-    const total = (backendPage?.total ?? 0) || visitors.length;
-    const tp = Math.max(1, Math.ceil(total / pageSize));
+    if (backendPage?.total == null) return;
+    const tp = Math.max(1, Math.ceil(Number(backendPage.total) / pageSize));
     if (page > tp) setPage(tp);
-  }, [backendPage, visitors, pageSize, page]);
+  }, [backendPage?.total, page, pageSize]);
 
+  // ✅ Preserva scroll durante refetch (garante não voltar pro topo)
   useEffect(() => {
-    const controller = new AbortController();
-    const base = typeof window !== "undefined" ? window.location.origin : "";
-    const url = `${base}/api/assai/dashboard?endpoint=visitors&start_date=${appliedFilters.start}&end_date=${appliedFilters.end}&store_id=${appliedFilters.device}`;
-    fetch(url, { signal: controller.signal })
-      .then((r) => setBackendAvailable(r.ok))
-      .catch(() => setBackendAvailable(false));
-    return () => controller.abort();
-  }, [appliedFilters]);
+    if (typeof window === "undefined") return;
+
+    if (isBackendFetching) {
+      scrollYRef.current = window.scrollY;
+      return;
+    }
+
+    // quando termina o fetch, volta para o mesmo scroll
+    window.scrollTo({ top: scrollYRef.current });
+  }, [isBackendFetching]);
 
   const getDeviceName = (deviceId: string) => {
     const device = devices.find((d) => d.id === deviceId);
@@ -152,7 +177,7 @@ const Lista = () => {
   };
 
   const backendItems =
-    backendPage?.items?.map((i) => ({
+    backendPage?.items?.map((i: any) => ({
       id: i.visitor_id,
       gender: i.gender,
       age: i.age,
@@ -162,12 +187,9 @@ const Lista = () => {
       smile: i.smile,
     })) ?? [];
 
-  const totalCount = (backendPage?.total ?? 0) || visitors.length;
+  const totalCount = Number(backendPage?.total ?? 0);
   const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
   const currentPage = Math.min(page, totalPages);
-  const startIndex = (currentPage - 1) * pageSize;
-  const paginatedVisitors = visitors.slice(startIndex, startIndex + pageSize);
-  const displayVisitors = backendItems.length > 0 && !backendPageError ? backendItems : paginatedVisitors;
 
   return (
     <div className="min-h-screen bg-background flex">
@@ -178,7 +200,9 @@ const Lista = () => {
 
         <main className="p-6 space-y-6">
           <div>
-            <h2 className="text-2xl font-bold text-primary mb-2">Lista Completa de Visitantes</h2>
+            <h2 className="text-2xl font-bold text-primary mb-2">
+              Lista Completa de Visitantes
+            </h2>
             <p className="text-muted-foreground">
               Visualize todos os visitantes registrados no período selecionado
             </p>
@@ -208,48 +232,81 @@ const Lista = () => {
                     <TableHead>Sorriso</TableHead>
                   </TableRow>
                 </TableHeader>
+
                 <TableBody>
-                  {(isLoading || isBackendLoading) ? (
+                  {/* ✅ Só mostra skeleton no primeiro load (sem dados ainda) */}
+                  {isBackendLoading && backendItems.length === 0 ? (
                     Array.from({ length: 10 }).map((_, i) => (
                       <TableRow key={i}>
-                        <TableCell><Skeleton className="h-4 w-32" /></TableCell>
-                        <TableCell><Skeleton className="h-4 w-24" /></TableCell>
-                        <TableCell><Skeleton className="h-4 w-16" /></TableCell>
-                        <TableCell><Skeleton className="h-4 w-12" /></TableCell>
-                        <TableCell><Skeleton className="h-4 w-20" /></TableCell>
-                        <TableCell><Skeleton className="h-4 w-16" /></TableCell>
+                        <TableCell>
+                          <Skeleton className="h-4 w-32" />
+                        </TableCell>
+                        <TableCell>
+                          <Skeleton className="h-4 w-24" />
+                        </TableCell>
+                        <TableCell>
+                          <Skeleton className="h-4 w-16" />
+                        </TableCell>
+                        <TableCell>
+                          <Skeleton className="h-4 w-12" />
+                        </TableCell>
+                        <TableCell>
+                          <Skeleton className="h-4 w-20" />
+                        </TableCell>
+                        <TableCell>
+                          <Skeleton className="h-4 w-16" />
+                        </TableCell>
                       </TableRow>
                     ))
-                  ) : displayVisitors.length === 0 ? (
+                  ) : backendItems.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={6} className="text-center text-muted-foreground py-8">
+                      <TableCell
+                        colSpan={6}
+                        className="text-center text-muted-foreground py-8"
+                      >
                         Nenhum visitante encontrado no período selecionado
                       </TableCell>
                     </TableRow>
                   ) : (
-                    displayVisitors.map((visitor) => (
+                    backendItems.map((visitor: any) => (
                       <TableRow key={visitor.id}>
                         <TableCell className="font-medium">
                           {(() => {
                             const d = toDisplayDate(visitor.timestamp);
-                            return !d ? String(visitor.timestamp) : format(d, "dd/MM/yyyy HH:mm", { locale: ptBR });
+                            return !d
+                              ? String(visitor.timestamp)
+                              : format(d, "dd/MM/yyyy HH:mm", { locale: ptBR });
                           })()}
                         </TableCell>
+
                         <TableCell>{getDeviceName(visitor.deviceId)}</TableCell>
+
                         <TableCell>
-                          <Badge variant={visitor.gender === "M" ? "default" : "secondary"}>
+                          <Badge
+                            variant={
+                              visitor.gender === "M" ? "default" : "secondary"
+                            }
+                          >
                             {visitor.gender === "M" ? "Masculino" : "Feminino"}
                           </Badge>
                         </TableCell>
+
                         <TableCell>{visitor.age} anos</TableCell>
+
                         <TableCell className="capitalize">
-                          {visitor.dayOfWeek || (() => {
-                            const d = toDisplayDate(visitor.timestamp);
-                            return d ? format(d, "EEEE", { locale: ptBR }) : "";
-                          })()}
+                          {visitor.dayOfWeek ||
+                            (() => {
+                              const d = toDisplayDate(visitor.timestamp);
+                              return d
+                                ? format(d, "EEEE", { locale: ptBR })
+                                : "";
+                            })()}
                         </TableCell>
+
                         <TableCell>
-                          <Badge variant={visitor.smile ? "default" : "secondary"}>
+                          <Badge
+                            variant={visitor.smile ? "default" : "secondary"}
+                          >
                             {visitor.smile ? "Sim" : "Não"}
                           </Badge>
                         </TableCell>
@@ -260,15 +317,37 @@ const Lista = () => {
               </Table>
             </div>
 
-            {!(isLoading || isBackendLoading) && totalCount > 0 && (
+            {/* Rodapé + paginação */}
+            {backendItems.length > 0 && (
               <div className="p-4 border-t bg-muted/30 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-                <p className="text-sm text-muted-foreground">
-                  Total de visitantes: <span className="font-semibold text-foreground">{totalCount}</span>
-                </p>
+                <div className="flex items-center gap-3">
+                  <p className="text-sm text-muted-foreground">
+                    Total de visitantes:{" "}
+                    <span className="font-semibold text-foreground">
+                      {totalCount}
+                    </span>
+                  </p>
+
+                  {/* ✅ Indicador leve durante refetch (sem destruir tabela) */}
+                  {isBackendFetching && (
+                    <span className="text-xs text-muted-foreground">
+                      Atualizando…
+                    </span>
+                  )}
+                </div>
+
                 <div className="flex items-center gap-3">
                   <div className="flex items-center gap-2">
-                    <span className="text-sm text-muted-foreground">Itens por página</span>
-                    <Select value={String(pageSize)} onValueChange={(v) => { setPageSize(Number(v)); setPage(1); }}>
+                    <span className="text-sm text-muted-foreground">
+                      Itens por página
+                    </span>
+                    <Select
+                      value={String(pageSize)}
+                      onValueChange={(v) => {
+                        setPageSize(Number(v));
+                        setPage(1);
+                      }}
+                    >
                       <SelectTrigger className="w-[100px]">
                         <SelectValue />
                       </SelectTrigger>
@@ -280,14 +359,32 @@ const Lista = () => {
                       </SelectContent>
                     </Select>
                   </div>
+
                   <div className="flex items-center gap-2">
-                    <Button variant="outline" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={currentPage <= 1}>
+                    <Button
+                      variant="outline"
+                      onClick={() => setPage((p) => Math.max(1, p - 1))}
+                      disabled={currentPage <= 1}
+                    >
                       Anterior
                     </Button>
+
                     <span className="text-sm text-muted-foreground">
-                      Página <span className="font-semibold text-foreground">{currentPage}</span> de <span className="font-semibold text-foreground">{totalPages}</span>
+                      Página{" "}
+                      <span className="font-semibold text-foreground">
+                        {currentPage}
+                      </span>{" "}
+                      de{" "}
+                      <span className="font-semibold text-foreground">
+                        {totalPages}
+                      </span>
                     </span>
-                    <Button variant="outline" onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={currentPage >= totalPages}>
+
+                    <Button
+                      variant="outline"
+                      onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                      disabled={currentPage >= totalPages}
+                    >
                       Próxima
                     </Button>
                   </div>

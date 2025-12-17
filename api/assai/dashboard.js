@@ -31,19 +31,18 @@ const DISPLAYFORCE_BASE = process.env.DISPLAYFORCE_API_URL || 'https://api.displ
 const SUMMARY_CACHE = new Map();
 function cacheKey(sDate, eDate, storeId) { return `${sDate}|${eDate}|${storeId||'all'}`; }
 
-// ✅ COLE ISTO LOGO APÓS:
-// const SUMMARY_CACHE = new Map();
-// function cacheKey(sDate, eDate, storeId) { return `${sDate}|${eDate}|${storeId||'all'}`; }
-
 // ===========================================
-// AJUSTE DE HORÁRIO PARA GRÁFICOS (SHIFT +3h)
+// AJUSTE DE HORÁRIO PARA GRÁFICOS (SHIFT)
 // ===========================================
+// Se os horários estiverem “atrasados”/“adiantados” no dashboard, use esse shift.
+// Ex.: adicionar 3 horas no gráfico => CHART_HOUR_SHIFT=3 (ou mantenha o default 3).
 const CHART_HOUR_SHIFT = parseInt(process.env.CHART_HOUR_SHIFT || "3", 10);
 
 function shiftHourlyBuckets(byHour, byGenderHour, offsetHours) {
   const outByHour = {};
   const outByGenderHour = { male: {}, female: {} };
 
+  // Inicializa 0-23
   for (let h = 0; h < 24; h++) {
     outByHour[h] = 0;
     outByGenderHour.male[h] = 0;
@@ -58,131 +57,6 @@ function shiftHourlyBuckets(byHour, byGenderHour, offsetHours) {
   }
 
   return { byHour: outByHour, byGenderHour: outByGenderHour };
-}
-
-// ===========================================
-// SUBSTITUA A FUNÇÃO getHourlyAggregatesWithRealTime POR ESTA
-// ===========================================
-async function getHourlyAggregatesWithRealTime(start_date, end_date, store_id) {
-  try {
-    console.log(`⏰ Calculando fluxo horário REAL para ${start_date} - ${end_date}`);
-
-    const hourExpr = `EXTRACT(HOUR FROM local_time::time)`;
-    let query = `
-      SELECT 
-        ${hourExpr} AS hour,
-        COUNT(*) AS total,
-        SUM(CASE WHEN gender = 'M' THEN 1 ELSE 0 END) AS male,
-        SUM(CASE WHEN gender = 'F' THEN 1 ELSE 0 END) AS female
-      FROM visitors
-      WHERE day >= $1 AND day <= $2 AND local_time IS NOT NULL
-    `;
-
-    const params = [start_date, end_date];
-
-    if (store_id && store_id !== "all") {
-      query += ` AND store_id = $3`;
-      params.push(store_id);
-    }
-
-    query += ` GROUP BY ${hourExpr} ORDER BY ${hourExpr}`;
-
-    const result = await pool.query(query, params);
-
-    const byHour = {};
-    const byGenderHour = { male: {}, female: {} };
-
-    for (let h = 0; h < 24; h++) {
-      byHour[h] = 0;
-      byGenderHour.male[h] = 0;
-      byGenderHour.female[h] = 0;
-    }
-
-    for (const row of result.rows) {
-      const hour = Number(row.hour);
-      if (hour >= 0 && hour < 24) {
-        byHour[hour] = Number(row.total || 0);
-        byGenderHour.male[hour] = Number(row.male || 0);
-        byGenderHour.female[hour] = Number(row.female || 0);
-      }
-    }
-
-    console.log(
-      `⏰ Fluxo horário calculado: ${Object.values(byHour).reduce((a, b) => a + b, 0)} visitantes`
-    );
-
-    // ✅ AQUI acontece o +3h (ou CHART_HOUR_SHIFT)
-    if (CHART_HOUR_SHIFT && CHART_HOUR_SHIFT !== 0) {
-      return shiftHourlyBuckets(byHour, byGenderHour, CHART_HOUR_SHIFT);
-    }
-
-    return { byHour, byGenderHour };
-  } catch (error) {
-    console.error("❌ Hourly aggregates with real time error:", error);
-    return createEmptyHourlyData();
-  }
-}
-
-// ===========================================
-// SUBSTITUA A FUNÇÃO getHourlyAggregatesFromAggregates POR ESTA
-// ===========================================
-async function getHourlyAggregatesFromAggregates(start_date, end_date, store_id) {
-  try {
-    let q = `
-      SELECT hour, COALESCE(SUM(total),0) AS total, COALESCE(SUM(male),0) AS male, COALESCE(SUM(female),0) AS female
-      FROM dashboard_hourly
-      WHERE day >= $1 AND day <= $2 AND (store_id IS NOT DISTINCT FROM $3)
-      GROUP BY hour ORDER BY hour`;
-
-    let { rows } = await pool.query(q, [start_date, end_date, store_id]);
-
-    // fallback: se não tiver agregado, calcula do visitors
-    if (!rows || rows.length === 0) {
-      const tzOffset = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
-      const adj = `EXTRACT(HOUR FROM (timestamp + INTERVAL '${tzOffset} hour'))`;
-
-      let vq = `
-        SELECT COALESCE(hour, ${adj}) AS hour,
-               SUM(CASE WHEN gender IN ('M','F') THEN 1 ELSE 0 END) AS total,
-               SUM(CASE WHEN gender='M' THEN 1 ELSE 0 END) AS male,
-               SUM(CASE WHEN gender='F' THEN 1 ELSE 0 END) AS female
-        FROM visitors
-        WHERE day >= $1 AND day <= $2`;
-
-      const params = [start_date, end_date];
-      if (store_id && store_id !== 'all') { vq += ` AND store_id = $3`; params.push(store_id); }
-      vq += ` GROUP BY COALESCE(hour, ${adj}) ORDER BY 1`;
-
-      const r2 = await pool.query(vq, params);
-      rows = r2.rows;
-    }
-
-    const byHour = {};
-    const byGenderHour = { male: {}, female: {} };
-    for (let h = 0; h < 24; h++) {
-      byHour[h] = 0;
-      byGenderHour.male[h] = 0;
-      byGenderHour.female[h] = 0;
-    }
-
-    for (const r of rows) {
-      const h = Number(r.hour);
-      if (h >= 0 && h < 24) {
-        byHour[h] = Number(r.total || 0);
-        byGenderHour.male[h] = Number(r.male || 0);
-        byGenderHour.female[h] = Number(r.female || 0);
-      }
-    }
-
-    // ✅ AQUI também aplica +3h no caso dos agregados
-    if (CHART_HOUR_SHIFT && CHART_HOUR_SHIFT !== 0) {
-      return shiftHourlyBuckets(byHour, byGenderHour, CHART_HOUR_SHIFT);
-    }
-
-    return { byHour, byGenderHour };
-  } catch {
-    return createEmptyHourlyData();
-  }
 }
 
 export default async function handler(req, res) {
@@ -600,7 +474,12 @@ async function getHourlyAggregatesWithRealTime(start_date, end_date, store_id) {
     }
     
     console.log(`⏰ Fluxo horário calculado: ${Object.values(byHour).reduce((a, b) => a + b, 0)} visitantes`);
-    
+
+    // ✅ Ajuste de horário (ex.: +3 horas) apenas para exibição nos gráficos
+    if (CHART_HOUR_SHIFT && CHART_HOUR_SHIFT !== 0) {
+      return shiftHourlyBuckets(byHour, byGenderHour, CHART_HOUR_SHIFT);
+    }
+
     return { byHour, byGenderHour };
     
   } catch (error) {
@@ -636,6 +515,11 @@ async function getHourlyAggregatesFromAggregates(start_date, end_date, store_id)
     const byHour = {}; const byGenderHour = { male:{}, female:{} };
     for (let h=0; h<24; h++){ byHour[h]=0; byGenderHour.male[h]=0; byGenderHour.female[h]=0; }
     for (const r of rows){ const h = Number(r.hour); if (h>=0 && h<24){ byHour[h]=Number(r.total||0); byGenderHour.male[h]=Number(r.male||0); byGenderHour.female[h]=Number(r.female||0); } }
+    // ✅ Ajuste de horário (ex.: +3 horas) apenas para exibição nos gráficos
+    if (CHART_HOUR_SHIFT && CHART_HOUR_SHIFT !== 0) {
+      return shiftHourlyBuckets(byHour, byGenderHour, CHART_HOUR_SHIFT);
+    }
+
     return { byHour, byGenderHour };
   } catch { return createEmptyHourlyData(); }
 }
@@ -1759,91 +1643,82 @@ async function ensureIndexes(req, res) {
 
 async function backfillLocalTime(req, res) {
   try {
-    const s = String(req.query.start_date || new Date().toISOString().slice(0,10));
+    const s = String(req.query.start_date || new Date().toISOString().slice(0, 10));
     const e = String(req.query.end_date || s);
     const storeId = String(req.query.store_id || '');
     const batch = Math.max(50, Math.min(2000, parseInt(String(req.query.batch || '500'), 10) || 500));
     const maxBatches = Math.max(1, Math.min(50, parseInt(String(req.query.max_batches || '20'), 10) || 20));
+
     const tzName = process.env.PG_TIMEZONE || 'America/Sao_Paulo';
+
+    // Processa no máx 7 dias por chamada (proteção de tempo/limite de execução)
     const start = new Date(s + 'T00:00:00Z');
     const end = new Date(e + 'T00:00:00Z');
     const days = [];
     for (let d = new Date(start); d <= end && days.length < 7; d = new Date(d.getTime() + 86400000)) {
-      days.push(d.toISOString().slice(0,10));
+      days.push(d.toISOString().slice(0, 10));
     }
+
     let total = 0;
+
     for (const day of days) {
       let loops = 0;
+
       while (loops < maxBatches) {
-        const where = storeId && storeId !== 'all' ? `day = $1 AND store_id = $2 AND timestamp IS NOT NULL` : `day = $1 AND timestamp IS NOT NULL`;
+        const where =
+          storeId && storeId !== 'all'
+            ? `day = $1 AND store_id = $2 AND timestamp IS NOT NULL`
+            : `day = $1 AND timestamp IS NOT NULL`;
+
         const params = storeId && storeId !== 'all' ? [day, storeId] : [day];
-        const sql = `UPDATE visitors SET 
-          local_time = CASE 
-            WHEN timestamp::text ~ '(Z|[+-]\\d{2}:\\d{2})
-function getDayOfWeek(timestamp) {
-  if (!timestamp) return '';
-  const DAYS = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
-  const date = new Date(timestamp);
-  return DAYS[date.getDay()] || '';
-}
 
-function getHourFromTimestamp(timestamp) {
-  if (!timestamp) return 0;
-  const date = new Date(timestamp);
-  const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
-  const localDate = new Date(date.getTime() + (tz * 3600000));
-  return localDate.getHours();
-}
+        // Detecta timestamps com timezone explícito (Z ou ±HH:MM) e converte para o timezone do Postgres
+        const hasTzRegex = `(Z|[+-]\\d{2}:\\d{2})`;
 
-function getSmileStatus(attributes) {
-  if (!Array.isArray(attributes) || attributes.length === 0) return false;
-  const lastAttr = attributes[attributes.length - 1];
-  return String(lastAttr?.smile || '').toLowerCase() === 'yes';
-} THEN (to_char((timestamp AT TIME ZONE '${tzName}'), 'HH24:MI:SS'))::time 
-            ELSE (to_char(timestamp, 'HH24:MI:SS'))::time 
-          END,
-          hour = EXTRACT(HOUR FROM CASE 
-            WHEN timestamp::text ~ '(Z|[+-]\\d{2}:\\d{2})
-function getDayOfWeek(timestamp) {
-  if (!timestamp) return '';
-  const DAYS = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
-  const date = new Date(timestamp);
-  return DAYS[date.getDay()] || '';
-}
+        const sql = `
+          UPDATE visitors
+          SET
+            local_time = CASE
+              WHEN timestamp::text ~ '${hasTzRegex}'
+                THEN (to_char((timestamp AT TIME ZONE '${tzName}'), 'HH24:MI:SS'))::time
+              ELSE (to_char(timestamp, 'HH24:MI:SS'))::time
+            END,
+            hour = EXTRACT(HOUR FROM CASE
+              WHEN timestamp::text ~ '${hasTzRegex}'
+                THEN (to_char((timestamp AT TIME ZONE '${tzName}'), 'HH24:MI:SS'))::time
+              ELSE (to_char(timestamp, 'HH24:MI:SS'))::time
+            END)
+          WHERE ctid IN (
+            SELECT ctid
+            FROM visitors
+            WHERE ${where} AND local_time IS NULL
+            LIMIT ${batch}
+          )
+        `;
 
-function getHourFromTimestamp(timestamp) {
-  if (!timestamp) return 0;
-  const date = new Date(timestamp);
-  const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
-  const localDate = new Date(date.getTime() + (tz * 3600000));
-  return localDate.getHours();
-}
-
-function getSmileStatus(attributes) {
-  if (!Array.isArray(attributes) || attributes.length === 0) return false;
-  const lastAttr = attributes[attributes.length - 1];
-  return String(lastAttr?.smile || '').toLowerCase() === 'yes';
-} THEN (to_char((timestamp AT TIME ZONE '${tzName}'), 'HH24:MI:SS'))::time 
-            ELSE (to_char(timestamp, 'HH24:MI:SS'))::time 
-          END)
-        WHERE ctid IN (
-          SELECT ctid FROM visitors WHERE ${where} AND local_time IS NULL LIMIT ${batch}
-        )`;
         const upd = await pool.query(sql, params);
         if (!upd.rowCount) break;
+
         total += upd.rowCount || 0;
         loops++;
       }
     }
-    return res.status(200).json({ success:true, updated: total, batch, max_batches: maxBatches, processed_days: days });
+
+    return res.status(200).json({
+      success: true,
+      updated: total,
+      batch,
+      max_batches: maxBatches,
+      processed_days: days
+    });
   } catch (e) {
-    return res.status(500).json({ success:false, error:e.message });
+    return res.status(500).json({ success: false, error: e.message });
   }
 }
 
 function getDayOfWeek(timestamp) {
   if (!timestamp) return '';
-  const DAYS = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+  const DAYS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
   const date = new Date(timestamp);
   return DAYS[date.getDay()] || '';
 }
@@ -1851,8 +1726,8 @@ function getDayOfWeek(timestamp) {
 function getHourFromTimestamp(timestamp) {
   if (!timestamp) return 0;
   const date = new Date(timestamp);
-  const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
-  const localDate = new Date(date.getTime() + (tz * 3600000));
+  const tz = parseInt(process.env.TIMEZONE_OFFSET_HOURS || '-3', 10);
+  const localDate = new Date(date.getTime() + tz * 3600000);
   return localDate.getHours();
 }
 
@@ -1861,3 +1736,4 @@ function getSmileStatus(attributes) {
   const lastAttr = attributes[attributes.length - 1];
   return String(lastAttr?.smile || '').toLowerCase() === 'yes';
 }
+

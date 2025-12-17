@@ -31,6 +31,160 @@ const DISPLAYFORCE_BASE = process.env.DISPLAYFORCE_API_URL || 'https://api.displ
 const SUMMARY_CACHE = new Map();
 function cacheKey(sDate, eDate, storeId) { return `${sDate}|${eDate}|${storeId||'all'}`; }
 
+// ✅ COLE ISTO LOGO APÓS:
+// const SUMMARY_CACHE = new Map();
+// function cacheKey(sDate, eDate, storeId) { return `${sDate}|${eDate}|${storeId||'all'}`; }
+
+// ===========================================
+// AJUSTE DE HORÁRIO PARA GRÁFICOS (SHIFT +3h)
+// ===========================================
+const CHART_HOUR_SHIFT = parseInt(process.env.CHART_HOUR_SHIFT || "3", 10);
+
+function shiftHourlyBuckets(byHour, byGenderHour, offsetHours) {
+  const outByHour = {};
+  const outByGenderHour = { male: {}, female: {} };
+
+  for (let h = 0; h < 24; h++) {
+    outByHour[h] = 0;
+    outByGenderHour.male[h] = 0;
+    outByGenderHour.female[h] = 0;
+  }
+
+  for (let h = 0; h < 24; h++) {
+    const newH = (h + offsetHours + 24) % 24;
+    outByHour[newH] += Number(byHour?.[h] || 0);
+    outByGenderHour.male[newH] += Number(byGenderHour?.male?.[h] || 0);
+    outByGenderHour.female[newH] += Number(byGenderHour?.female?.[h] || 0);
+  }
+
+  return { byHour: outByHour, byGenderHour: outByGenderHour };
+}
+
+// ===========================================
+// SUBSTITUA A FUNÇÃO getHourlyAggregatesWithRealTime POR ESTA
+// ===========================================
+async function getHourlyAggregatesWithRealTime(start_date, end_date, store_id) {
+  try {
+    console.log(`⏰ Calculando fluxo horário REAL para ${start_date} - ${end_date}`);
+
+    const hourExpr = `EXTRACT(HOUR FROM local_time::time)`;
+    let query = `
+      SELECT 
+        ${hourExpr} AS hour,
+        COUNT(*) AS total,
+        SUM(CASE WHEN gender = 'M' THEN 1 ELSE 0 END) AS male,
+        SUM(CASE WHEN gender = 'F' THEN 1 ELSE 0 END) AS female
+      FROM visitors
+      WHERE day >= $1 AND day <= $2 AND local_time IS NOT NULL
+    `;
+
+    const params = [start_date, end_date];
+
+    if (store_id && store_id !== "all") {
+      query += ` AND store_id = $3`;
+      params.push(store_id);
+    }
+
+    query += ` GROUP BY ${hourExpr} ORDER BY ${hourExpr}`;
+
+    const result = await pool.query(query, params);
+
+    const byHour = {};
+    const byGenderHour = { male: {}, female: {} };
+
+    for (let h = 0; h < 24; h++) {
+      byHour[h] = 0;
+      byGenderHour.male[h] = 0;
+      byGenderHour.female[h] = 0;
+    }
+
+    for (const row of result.rows) {
+      const hour = Number(row.hour);
+      if (hour >= 0 && hour < 24) {
+        byHour[hour] = Number(row.total || 0);
+        byGenderHour.male[hour] = Number(row.male || 0);
+        byGenderHour.female[hour] = Number(row.female || 0);
+      }
+    }
+
+    console.log(
+      `⏰ Fluxo horário calculado: ${Object.values(byHour).reduce((a, b) => a + b, 0)} visitantes`
+    );
+
+    // ✅ AQUI acontece o +3h (ou CHART_HOUR_SHIFT)
+    if (CHART_HOUR_SHIFT && CHART_HOUR_SHIFT !== 0) {
+      return shiftHourlyBuckets(byHour, byGenderHour, CHART_HOUR_SHIFT);
+    }
+
+    return { byHour, byGenderHour };
+  } catch (error) {
+    console.error("❌ Hourly aggregates with real time error:", error);
+    return createEmptyHourlyData();
+  }
+}
+
+// ===========================================
+// SUBSTITUA A FUNÇÃO getHourlyAggregatesFromAggregates POR ESTA
+// ===========================================
+async function getHourlyAggregatesFromAggregates(start_date, end_date, store_id) {
+  try {
+    let q = `
+      SELECT hour, COALESCE(SUM(total),0) AS total, COALESCE(SUM(male),0) AS male, COALESCE(SUM(female),0) AS female
+      FROM dashboard_hourly
+      WHERE day >= $1 AND day <= $2 AND (store_id IS NOT DISTINCT FROM $3)
+      GROUP BY hour ORDER BY hour`;
+
+    let { rows } = await pool.query(q, [start_date, end_date, store_id]);
+
+    // fallback: se não tiver agregado, calcula do visitors
+    if (!rows || rows.length === 0) {
+      const tzOffset = parseInt(process.env.TIMEZONE_OFFSET_HOURS || "-3", 10);
+      const adj = `EXTRACT(HOUR FROM (timestamp + INTERVAL '${tzOffset} hour'))`;
+
+      let vq = `
+        SELECT COALESCE(hour, ${adj}) AS hour,
+               SUM(CASE WHEN gender IN ('M','F') THEN 1 ELSE 0 END) AS total,
+               SUM(CASE WHEN gender='M' THEN 1 ELSE 0 END) AS male,
+               SUM(CASE WHEN gender='F' THEN 1 ELSE 0 END) AS female
+        FROM visitors
+        WHERE day >= $1 AND day <= $2`;
+
+      const params = [start_date, end_date];
+      if (store_id && store_id !== 'all') { vq += ` AND store_id = $3`; params.push(store_id); }
+      vq += ` GROUP BY COALESCE(hour, ${adj}) ORDER BY 1`;
+
+      const r2 = await pool.query(vq, params);
+      rows = r2.rows;
+    }
+
+    const byHour = {};
+    const byGenderHour = { male: {}, female: {} };
+    for (let h = 0; h < 24; h++) {
+      byHour[h] = 0;
+      byGenderHour.male[h] = 0;
+      byGenderHour.female[h] = 0;
+    }
+
+    for (const r of rows) {
+      const h = Number(r.hour);
+      if (h >= 0 && h < 24) {
+        byHour[h] = Number(r.total || 0);
+        byGenderHour.male[h] = Number(r.male || 0);
+        byGenderHour.female[h] = Number(r.female || 0);
+      }
+    }
+
+    // ✅ AQUI também aplica +3h no caso dos agregados
+    if (CHART_HOUR_SHIFT && CHART_HOUR_SHIFT !== 0) {
+      return shiftHourlyBuckets(byHour, byGenderHour, CHART_HOUR_SHIFT);
+    }
+
+    return { byHour, byGenderHour };
+  } catch {
+    return createEmptyHourlyData();
+  }
+}
+
 export default async function handler(req, res) {
   // Configurar CORS
   res.setHeader('Access-Control-Allow-Origin', '*');

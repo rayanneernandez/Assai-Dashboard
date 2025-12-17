@@ -9,23 +9,39 @@ import { DashboardFilters } from "@/components/DashboardFilters";
 import { toast } from "@/components/ui/use-toast";
 import { fetchVisitors, fetchDevices } from "@/services/api";
 import { Device, Visitor } from "@/types/api";
-import { 
-  Table, 
-  TableBody, 
-  TableCell, 
-  TableHead, 
-  TableHeader, 
-  TableRow 
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
 } from "@/components/ui/table";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
-import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
+import {
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectContent,
+  SelectItem,
+} from "@/components/ui/select";
 import { calculateStats } from "@/utils/statsCalculator";
 import backend from "@/services/backend";
 
 const Lista = () => {
+  // ✅ Ajuste de horário só para exibição na lista
+  // (somar +3h para ficar alinhado com o esperado)
+  const LIST_HOUR_SHIFT = 3;
+
+  const toDisplayDate = (ts: unknown) => {
+    const d = new Date(String(ts));
+    if (isNaN(d.getTime())) return null;
+    return new Date(d.getTime() + LIST_HOUR_SHIFT * 60 * 60 * 1000);
+  };
+
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [selectedDevice, setSelectedDevice] = useState<string>("all");
   const todayStr = format(new Date(), "yyyy-MM-dd");
@@ -112,10 +128,13 @@ const Lista = () => {
     setAppliedFilters({ device: "all", start: todayStr, end: todayStr });
   }, []);
 
+  // ✅ FIX PAGINAÇÃO:
+  // Antes: usava visitors.length (mas visitors fica vazio, e isso resetava a página para 1)
   useEffect(() => {
-    const tp = Math.max(1, Math.ceil(visitors.length / pageSize));
+    const total = (backendPage?.total ?? 0) || visitors.length;
+    const tp = Math.max(1, Math.ceil(total / pageSize));
     if (page > tp) setPage(tp);
-  }, [visitors, pageSize, page]);
+  }, [backendPage, visitors, pageSize, page]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -153,10 +172,10 @@ const Lista = () => {
   return (
     <div className="min-h-screen bg-background flex">
       <DashboardSidebar isOpen={sidebarOpen} />
-      
+
       <div className="flex-1">
         <DashboardHeader onToggleSidebar={() => setSidebarOpen(!sidebarOpen)} />
-        
+
         <main className="p-6 space-y-6">
           <div>
             <h2 className="text-2xl font-bold text-primary mb-2">Lista Completa de Visitantes</h2>
@@ -211,7 +230,10 @@ const Lista = () => {
                     displayVisitors.map((visitor) => (
                       <TableRow key={visitor.id}>
                         <TableCell className="font-medium">
-                          {(() => { const d = new Date(String(visitor.timestamp)); return isNaN(d.getTime()) ? String(visitor.timestamp) : format(d, "dd/MM/yyyy HH:mm", { locale: ptBR }); })()}
+                          {(() => {
+                            const d = toDisplayDate(visitor.timestamp);
+                            return !d ? String(visitor.timestamp) : format(d, "dd/MM/yyyy HH:mm", { locale: ptBR });
+                          })()}
                         </TableCell>
                         <TableCell>{getDeviceName(visitor.deviceId)}</TableCell>
                         <TableCell>
@@ -221,7 +243,10 @@ const Lista = () => {
                         </TableCell>
                         <TableCell>{visitor.age} anos</TableCell>
                         <TableCell className="capitalize">
-                          {visitor.dayOfWeek || format(new Date(visitor.timestamp), "EEEE", { locale: ptBR })}
+                          {visitor.dayOfWeek || (() => {
+                            const d = toDisplayDate(visitor.timestamp);
+                            return d ? format(d, "EEEE", { locale: ptBR }) : "";
+                          })()}
                         </TableCell>
                         <TableCell>
                           <Badge variant={visitor.smile ? "default" : "secondary"}>
@@ -234,6 +259,7 @@ const Lista = () => {
                 </TableBody>
               </Table>
             </div>
+
             {!(isLoading || isBackendLoading) && totalCount > 0 && (
               <div className="p-4 border-t bg-muted/30 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
                 <p className="text-sm text-muted-foreground">
@@ -271,7 +297,7 @@ const Lista = () => {
           </Card>
         </main>
       </div>
-      
+
       <ChatAssistant visitors={visitors} devices={devices} stats={stats} />
     </div>
   );
